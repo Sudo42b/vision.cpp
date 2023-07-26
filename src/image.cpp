@@ -25,9 +25,13 @@ Image Image::load(std::string_view filepath) {
     return Image(Extent{width, height}, Channels::rgba, std::unique_ptr<uint8_t[]>(pixels));
 }
 
-void Image::save(ImageView const &img, std::string_view filepath) {
-    int comp = static_cast<int>(img.channels);
-    if (!stbi_write_png(filepath.data(), img.extent.width, img.extent.height, comp, img.pixels,
+void save_image(ImageView const& img, char const* filepath) {
+    if (!(img.channels == Channels::mask || img.channels == Channels::rgb ||
+          img.channels == Channels::rgba)) {
+        throw Exception(std::format("Unsupported channel order [{}]", int(img.channels)));
+    }
+    int comp = count(img.channels);
+    if (!stbi_write_png(filepath, img.extent.width, img.extent.height, comp, img.pixels,
                         img.extent.width * comp)) {
         throw Exception(std::format("Failed to save image {}", filepath));
     }
