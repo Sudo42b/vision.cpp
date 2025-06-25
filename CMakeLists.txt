@@ -47,7 +47,7 @@ if(MSVC)
   endforeach(tgt ggml ggml-base ggml-cpu)
 endif()
 
-add_subdirectory(src)
+add_subdirectory(src/visp)
 
 if(VISP_TESTS)
   enable_testing()

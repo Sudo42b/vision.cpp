@@ -7,7 +7,7 @@ target_sources(visioncpp PRIVATE
   migan.cpp
   mobile-sam.cpp
 )
-target_compile_definitions(visioncpp PRIVATE VISP_EXPORTS)
+target_compile_definitions(visioncpp PRIVATE VISP_EXPORTS ${VISP_ASSERT})
 target_include_directories(visioncpp PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -25,6 +25,6 @@ if (MSVC)
   target_compile_options(visioncpp PRIVATE /W4 /WX)
 
   if (VISP_TESTS)
-    set_target_properties(dlimgedit PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    set_target_properties(visioncpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
   endif()
 endif()

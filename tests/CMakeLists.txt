@@ -3,7 +3,6 @@
 add_executable(test-unit)
 target_sources(test-unit PRIVATE
   test-image.cpp
-  test-utils.cpp
 )
 target_include_directories(test-unit PRIVATE ../src)
 target_link_libraries(test-unit PRIVATE
