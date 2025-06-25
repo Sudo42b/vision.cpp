@@ -1,0 +1,13 @@
+build
+install
+.vscode
+.vtune
+.debug
+tests/result
+*.pt
+*.pth
+*.bin
+*.gguf
+*.zip
+*.tar.gz
+__pycache__
