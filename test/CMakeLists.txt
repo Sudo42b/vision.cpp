@@ -1,44 +1,33 @@
-# Unit tests with Catch2 
+# Main library C++ tests
 
-add_executable(test_dlimgedit)
-target_sources(test_dlimgedit PRIVATE
-  test_image.cpp
-  test_segmentation.cpp
-  test_utils.cpp
+add_executable(test-unit)
+target_sources(test-unit PRIVATE
+  test-image.cpp
+  test-utils.cpp
 )
-target_include_directories(test_dlimgedit PRIVATE ../src)
-target_link_libraries(test_dlimgedit PRIVATE
-  dlimgedit fmt onnxruntime Eigen3::Eigen ggml Catch2::Catch2WithMain
+target_include_directories(test-unit PRIVATE ../src)
+target_link_libraries(test-unit PRIVATE
+  visioncpp ggml
 )
 
-if (MSVC)
-  target_compile_options(test_dlimgedit PRIVATE /Zi /W4) # /WX
-  target_compile_options(test_dlimgedit PRIVATE /wd4127 /wd5054 /wd4245) # for Eigen
-  target_link_options(test_dlimgedit PRIVATE /DEBUG)
+if(MSVC)
+  target_compile_options(test-unit PRIVATE /W4 /WX)  
 endif()
 
-add_test(NAME test_dlimgedit COMMAND test_dlimgedit)
+add_test(NAME unit COMMAND test-unit)
 
-# Workbench library for python tests
+# Workbench library for Python tests
 
-add_library(dlimgedit_workbench workbench.cpp)
-target_include_directories(dlimgedit_workbench PRIVATE ../src)
-target_link_libraries(dlimgedit_workbench PRIVATE 
-  dlimgedit fmt ggml
+add_library(vision-workbench workbench.cpp)
+target_include_directories(vision-workbench PRIVATE ../src)
+target_link_libraries(vision-workbench PRIVATE 
+  visioncpp ggml
 )
-if (MSVC)
-  target_compile_options(dlimgedit_workbench PRIVATE /Zi /Od)
-  target_link_options(dlimgedit_workbench PRIVATE /DEBUG)
-endif()
 
 # Benchmark application for profiling
 
-add_executable(benchmark_dlimgedit benchmark.cpp)
-target_include_directories(benchmark_dlimgedit PRIVATE ../src)
-target_link_libraries(benchmark_dlimgedit PRIVATE 
-  dlimgedit fmt ggml
+add_executable(vision-prof benchmark.cpp)
+target_include_directories(vision-prof PRIVATE ../src)
+target_link_libraries(vision-prof PRIVATE 
+  visioncpp ggml
 )
-if (MSVC)
-  target_compile_options(benchmark_dlimgedit PRIVATE /Zi)
-  target_link_options(benchmark_dlimgedit PRIVATE /DEBUG)
-endif()

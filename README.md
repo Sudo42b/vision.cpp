@@ -63,6 +63,10 @@ allocations and performance.
 ## Models
 
 
+
+### Converting models
+
+
 ## Building
 
 Building requires CMake and a compiler with C++20 support.
@@ -88,3 +92,18 @@ cmake . -B build -DVISP_VULKAN=ON
 cmake --build build --config Release
 ```
 
+### Tests
+
+Run all tests with the following command:
+```
+ctest build -C Release
+```
+
+Some tests require a Python environment. It can be set up with [uv]():
+```
+# Setup venv and install dependencies
+uv sync
+
+# Run only python tests
+uv run pytest
+```

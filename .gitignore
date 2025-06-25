@@ -11,3 +11,6 @@ tests/result
 *.zip
 *.tar.gz
 __pycache__
+
+# Don't sync Python dependencies for now, latest versions should work
+uv.lock

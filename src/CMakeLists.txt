@@ -1,43 +1,30 @@
-add_library(dlimgedit SHARED)
+add_library(visioncpp SHARED)
 
-target_sources(dlimgedit PRIVATE
-  dlimgedit.cpp
+target_sources(visioncpp PRIVATE
   birefnet.cpp
-  environment.cpp
   esrgan.cpp
   image.cpp
   migan.cpp
-  mobile_sam.cpp
-  tensor.cpp
-  segmentation.cpp
-  session.cpp
+  mobile-sam.cpp
 )
-target_compile_definitions(dlimgedit PRIVATE DLIMGEDIT_EXPORTS)
-target_include_directories(dlimgedit PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+target_compile_definitions(visioncpp PRIVATE VISP_EXPORTS)
+target_include_directories(visioncpp PUBLIC
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   PRIVATE .
 )
-target_link_libraries(dlimgedit
-  PRIVATE fmt onnxruntime stb Eigen3::Eigen dylib ggml
+target_link_libraries(visioncpp
+  PRIVATE stb ggml
 )
-set_target_properties(dlimgedit PROPERTIES
+set_target_properties(visioncpp PROPERTIES
   VERSION ${PROJECT_VERSION}
   SOVERSION ${PROJECT_VERSION_MAJOR}
 )
 
 if (MSVC)
-  target_compile_options(dlimgedit PRIVATE /Zi /W4 /WX)
-  target_compile_options(dlimgedit PRIVATE /wd4127 /wd5054) # for Eigen
-  target_link_options(dlimgedit PRIVATE /DEBUG)
+  target_compile_options(visioncpp PRIVATE /W4 /WX)
 
-  foreach (file ${ONNX_RUNTIME_DEPENDENCIES})
-    add_custom_command(TARGET dlimgedit POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${file} $<TARGET_FILE_DIR:dlimgedit>
-    )
-  endforeach()
-
-  if (DLIMGEDIT_TESTS)
+  if (VISP_TESTS)
     set_target_properties(dlimgedit PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
   endif()
 endif()
