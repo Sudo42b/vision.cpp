@@ -1,0 +1,3 @@
+[submodule "depend/ggml"]
+	path = depend/ggml
+	url = git@github.com:Acly/ggml.git
