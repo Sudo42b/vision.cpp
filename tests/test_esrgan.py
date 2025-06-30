@@ -68,8 +68,7 @@ def test_upconv():
 
     x = to_channel_last(x)
     state = convert_to_channel_last(state, "1.")
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("esrgan_upconv", x, result, state)
+    result = workbench.invoke_test("esrgan_upconv", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -110,8 +109,7 @@ def test_residual_dense_block():
 
     x = to_channel_last(x)
     state = convert_to_channel_last(state, "conv")
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("esrgan_residual_dense_block", x, result, state)
+    result = workbench.invoke_test("esrgan_residual_dense_block", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -146,7 +144,7 @@ def test_rrdb():
     x = to_channel_last(x)
     state = convert_to_channel_last(state, "conv")
     result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("esrgan_rrdb", x, result, state)
+    result = workbench.invoke_test("esrgan_rrdb", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected, atol=1e-5)
@@ -249,10 +247,7 @@ def test_rrdbnet():
 
     x = to_channel_last(x)
     state = convert_to_channel_last(state, ".")
-    result = to_channel_last(torch.zeros_like(expected))
-    print(result.shape, expected.shape)
-    result = workbench.invoke_test("esrgan_rrdbnet", x, result, state)
+    result = workbench.invoke_test("esrgan_rrdbnet", x, state)
     result = revert_channel_last(result)
 
-    workbench.print_results(result, expected)
     assert torch.allclose(result, expected, atol=1e-4)

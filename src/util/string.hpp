@@ -1,43 +1,86 @@
 #pragma once
 
-#include <fmt/format.h>
+#include "visp/util.hpp"
 
-#include <array>
-#include <string_view>
+#include <cstdio>
+#include <format>
+#include <utility>
 
-namespace dlimg {
+#define UNUSED(x) (void)(x)
 
-template <size_t N>
-struct FixedString {
-    std::array<char, N> data{};
-    size_t length = 0;
+#ifdef VISP_ASSERT_DISABLE
+#    define ASSERT(cond, ...) UNUSED(cond)
+#else
+#    define ASSERT(cond, ...)                                                                      \
+        if (!(cond)) {                                                                             \
+            visp::assertion_failure(__FILE__, __LINE__, #cond #__VA_ARGS__);                       \
+        }
+#endif
 
-    constexpr FixedString() {}
+namespace visp {
 
-    FixedString(char const* str) {
-        auto view = std::string_view(str);
-        length = std::min(view.size(), N - 1);
-        std::copy(view.begin(), view.begin() + length, data.begin());
+struct truncating_iterator {
+    using iterator_category = std::output_iterator_tag;
+    using value_type = char;
+    using difference_type = std::ptrdiff_t;
+    using pointer = char*;
+    using reference = char&;
+
+    char* cur;
+    char* end;
+
+    truncating_iterator(char* data, size_t size) : cur(data), end(data + size) {}
+
+    truncating_iterator& operator=(char c) {
+        *cur = c;
+        return *this;
     }
-
-    template <typename... Args>
-    FixedString(char const* fmt, Args&&... args) {
-        format(fmt, std::forward<Args>(args)...);
+    truncating_iterator& operator++() {
+        if (cur < end - 1) {
+            ++cur;
+        }
+        return *this;
     }
-
-    char const* c_str() const { return data.data(); }
-
-    std::string_view view() const { return {data.data(), length}; }
-
-    template <typename... Args>
-    char const* format(char const* fmt, Args&&... args) {
-        fmt::vformat_to_n(data.data(), N, fmt, fmt::make_format_args(args...));
-        data[N - 1] = 0;
-        length = strlen(data.data());
-        return data.data();
-    }
-
-    explicit operator bool() const { return length > 0; }
+    truncating_iterator& operator++(int) { return ++(*this); }
+    truncating_iterator& operator*() { return *this; }
+    difference_type operator-(truncating_iterator const& other) const { return cur - other.cur; }
+    auto operator<=>(truncating_iterator const&) const = default;
 };
 
-} // namespace dlimg
+template <size_t N, typename... Args>
+char const* format(fixed_string<N>& dst, char const* fmt, Args&&... args) {
+    auto it = truncating_iterator(dst.data, N);
+    auto out = std::vformat_to(it, fmt, std::make_format_args(args...));
+    dst.data[N - 1] = 0;
+    dst.length = std::min(size_t(out - it), N - 1);
+    return dst.c_str();
+}
+
+template <typename String, typename... Args>
+String format(char const* fmt, Args&&... args) {
+    String result;
+    format(result, fmt, std::forward<Args>(args)...);
+    return result;
+}
+
+template <typename... Args>
+exception error(char const* fmt, Args&&... args) {
+    return exception(format<fixed_string<128>>(fmt, std::forward<Args>(args)...));
+}
+
+inline void assertion_failure(char const* file, int line, char const* expr) {
+    auto msg = format<fixed_string<256>>("Assertion failed at {}:{}: {}\n", file, line, expr);
+    fwrite(msg.data, 1, msg.length, stderr);
+
+#ifdef VISP_ASSERT_BREAK
+#    ifdef _MSC_VER
+    __debugbreak();
+#    else
+    __builtin_trap();
+#    endif
+#else
+    std::abort();
+#endif
+}
+
+} // namespace visp

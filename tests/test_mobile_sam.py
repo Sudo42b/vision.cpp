@@ -48,8 +48,7 @@ def test_conv_2d_batch_norm():
     add_variance_epsilon(state)
     convert_to_channel_last(state)
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    workbench.invoke_test("conv_2d_batch_norm", x, result, state)
+    result = workbench.invoke_test("sam_conv_2d_batch_norm", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -94,7 +93,7 @@ def test_patch_embed():
     convert_to_channel_last(state)
     x = to_channel_last(x)
     result = to_channel_last(torch.zeros_like(expected))
-    workbench.invoke_test("patch_embed", x, result, state)
+    result = workbench.invoke_test("sam_patch_embed", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
@@ -126,7 +125,7 @@ def test_layer_norm_2d():
 
     x = to_channel_last(x)
     result = to_channel_last(torch.zeros_like(expected))
-    workbench.invoke_test("layer_norm", x, result, state)
+    result = workbench.invoke_test("layer_norm", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
@@ -188,8 +187,7 @@ def test_mb_conv():
     add_variance_epsilon(state)
     convert_to_channel_last(state)
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    workbench.invoke_test("mb_conv", x, result, state)
+    result = workbench.invoke_test("sam_mb_conv", x, state)
     result = revert_channel_last(result)
 
     # precision: ggml_gelu uses fp16 look-up table & tanh approximation
@@ -240,8 +238,7 @@ def test_patch_merging():
     add_variance_epsilon(state)
     convert_to_channel_last(state)
     x = to_channel_last(x)
-    result = torch.zeros_like(expected).transpose(2, 1)
-    result = workbench.invoke_test("patch_merging", x, result, state)
+    result = result = workbench.invoke_test("sam_patch_merging", x, state)
     result = result.transpose(1, 2).reshape_as(expected)
 
     # precision: ggml_gelu uses fp16 look-up table & tanh approximation
@@ -286,8 +283,7 @@ def test_mlp():
     x = torch.rand(1, 6, 4)
     expected = mlp(x)
 
-    result = torch.zeros_like(expected).contiguous()
-    workbench.invoke_test("mlp", x, result, state)
+    result = workbench.invoke_test("sam_mlp", x, state)
 
     # precision: ggml_gelu uses fp16 look-up table & tanh approximation
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
@@ -389,8 +385,7 @@ def test_attention_rel_bias():
     state["attention_biases_indexed"] = state["attention_biases"][
         :, attention.attention_bias_idxs
     ]
-    result = torch.zeros_like(expected)
-    workbench.invoke_test("attention_rel_bias", x, result, state)
+    result = workbench.invoke_test("sam_attention_rel_bias", x, state)
 
     assert torch.allclose(result, expected, atol=0.001)
 
@@ -504,8 +499,7 @@ def test_tiny_vit_block():
     ]
     add_variance_epsilon(state)
     convert_to_channel_last(state)
-    result = torch.zeros_like(expected)
-    result = workbench.invoke_test("tiny_vit_block", x, result, state)
+    result = result = workbench.invoke_test("sam_tiny_vit_block", x, state)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
 
@@ -812,7 +806,7 @@ def test_tiny_vit():
 
     # add_variance_epsilon(state)
     # result = torch.zeros_like(expected).contiguous()
-    # workbench.invoke_test("tiny_vit", x, result, state)
+    # result = workbench.invoke_test("sam_tiny_vit", x, state)
 
     # assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
 
@@ -860,8 +854,7 @@ def test_position_embedding_random():
     x = torch.tensor([[[63.5, 55.5], [32.5, 0.5], [0.0, 0.0]]])
     expected = pos_enc.forward_with_coords(x, (64, 64))
 
-    result = torch.zeros_like(expected).contiguous()
-    workbench.invoke_test("position_embedding_random", x, result, state)
+    result = workbench.invoke_test("sam_position_embedding_random", x, state)
 
     assert torch.allclose(result, expected)
 
@@ -985,8 +978,7 @@ def test_prompt_encoder_points():
     )
 
     points = torch.cat([points, -torch.ones(1, 1, 2)], dim=1)
-    result = torch.zeros_like(expected).contiguous()
-    workbench.invoke_test("embed_points", points, result, state)
+    result = workbench.invoke_test("sam_embed_points", points, state)
 
     assert torch.allclose(result, expected)
 
@@ -1005,8 +997,7 @@ def test_prompt_encoder_box():
     boxes = torch.tensor([[[63.0, 55.0], [32.0, 0.0]]])
     expected, _ = prompt_encoder(points=None, boxes=boxes, masks=None)
 
-    result = torch.zeros_like(expected).contiguous()
-    workbench.invoke_test("embed_box", boxes, result, state)
+    result = workbench.invoke_test("sam_embed_box", boxes, state)
 
     assert torch.allclose(result, expected)
 
@@ -1082,10 +1073,9 @@ def test_attention():
     v = torch.rand(1, 8, 4)
     expected = attention(q, k, v)
 
-    result = torch.zeros_like(expected).contiguous()
     state["input_k"] = k
     state["input_v"] = v
-    workbench.invoke_test("attention", q, result, state)
+    result = workbench.invoke_test("sam_attention", q, state)
 
     assert torch.allclose(result, expected)
 
@@ -1193,13 +1183,12 @@ def test_two_way_attention_block(mode):
     state["input_query_pe"] = query_pe
     state["input_key_pe"] = key_pe
     state["result_keys"] = torch.zeros_like(expected_keys).contiguous()
-    result_queries = torch.zeros_like(expected_queries).contiguous()
-    workbench.invoke_test(
-        f"two_way_attention_block_{mode}", queries, result_queries, state
+    result_queries, result_keys = workbench.invoke_test(
+        "sam_two_way_attention_block", queries, state, {"mode": mode}
     )
 
     assert torch.allclose(result_queries, expected_queries)
-    assert torch.allclose(state["result_keys"], expected_keys)
+    assert torch.allclose(result_keys, expected_keys)
 
 
 class TwoWayTransformer(torch.nn.Module):
@@ -1296,12 +1285,12 @@ def test_two_way_transformer():
     image_embedding = to_channel_last(image_embedding)
     state["input_image_pe"] = to_channel_last(image_pe)
     state["input_point_embedding"] = point_embedding
-    state["result_keys"] = torch.zeros_like(expected_keys).contiguous()
-    result_queries = torch.zeros_like(expected_queries).contiguous()
-    workbench.invoke_test("two_way_transformer", image_embedding, result_queries, state)
+    result_queries, result_keys = workbench.invoke_test(
+        "sam_two_way_transformer", image_embedding, state
+    )
 
     assert torch.allclose(result_queries, expected_queries, atol=1e-6, rtol=1e-4)
-    assert torch.allclose(state["result_keys"], expected_keys, atol=1e-6, rtol=1e-4)
+    assert torch.allclose(result_keys, expected_keys, atol=1e-6, rtol=1e-4)
 
 
 class HypernetworkMLP(torch.nn.Module):
@@ -1342,8 +1331,7 @@ def test_hypernetwork_mlp():
     x = torch.rand(1, 4)
     expected = hypernetwork_mlp(x)
 
-    result = torch.zeros_like(expected).contiguous()
-    workbench.invoke_test("hypernetwork_mlp", x, result, state)
+    result = workbench.invoke_test("sam_hypernetwork_mlp", x, state)
 
     assert torch.allclose(result, expected)
 
@@ -1372,10 +1360,7 @@ def test_output_upscaling():
     expected = upscaling(x)
 
     x = to_channel_last(x)
-    result = torch.zeros_like(to_channel_last(expected))
-    result = workbench.invoke_test(
-        "output_upscaling", x, result, state, backend="vulkan"
-    )
+    result = workbench.invoke_test("sam_output_upscaling", x, state, backend="vulkan")
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected, atol=1e-4, rtol=1e-2)  # fp16 weights
@@ -1522,11 +1507,10 @@ def test_predict_masks():
     state["dense_positional_embedding"] = to_channel_last(image_pe)
     state["input_sparse_prompt"] = sparse_prompt_embeddings
     state["input_dense_prompt"] = to_channel_last(dense_prompt_embeddings)
-    state["result_iou_pred"] = torch.zeros_like(iou_pred).contiguous()
     result_masks = torch.zeros_like(expected_masks).contiguous()
-    workbench.invoke_test(
-        "predict_masks", image_embeddings, result_masks, state, backend="vulkan"
+    result_masks, result_iou_pred = workbench.invoke_test(
+        "sam_predict_masks", image_embeddings, state, backend="vulkan"
     )
 
     assert torch.allclose(result_masks, expected_masks, rtol=1e-2, atol=1e-2)
-    assert torch.allclose(state["result_iou_pred"], iou_pred, rtol=1e-2)
+    assert torch.allclose(result_iou_pred, iou_pred, rtol=1e-2)

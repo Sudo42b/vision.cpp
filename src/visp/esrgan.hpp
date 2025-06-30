@@ -2,20 +2,23 @@
 
 #include "ml.hpp"
 
-namespace dlimg::esrgan {
+namespace visp {
 
-struct ESRGANParams {
+struct esrgan_params {
     int scale = 4;
     int n_blocks = 23;
 
-    static ESRGANParams detect(ModelRef m);
+    static esrgan_params detect(model_ref);
 };
 
-Tensor upscale(ModelRef m, Tensor x, ESRGANParams const& p);
+tensor esrgan_upscale(model_ref, tensor image, esrgan_params const&);
 
-Tensor upsample(ModelRef m, Tensor x);
-Tensor conv_block(ModelRef m, Tensor x);
-Tensor risidual_dense_block(ModelRef m, Tensor x);
-Tensor rrdb(ModelRef m, Tensor x);
+namespace esrgan {
 
-} // namespace dlimg::esrgan
+tensor upsample(model_ref m, tensor x);
+tensor conv_block(model_ref m, tensor x);
+tensor risidual_dense_block(model_ref m, tensor x);
+tensor rrdb(model_ref m, tensor x);
+
+} // namespace esrgan
+} // namespace visp

@@ -1,40 +1,37 @@
 #include "birefnet.hpp"
-#include "assert.hpp"
-#include "image.hpp"
-#include "mobile_sam.hpp"
+#include "math.hpp"
+#include "nn.hpp"
+#include "string.hpp"
 
 #include <ggml.h>
 
-namespace dlimg::birefnet {
+#include <optional>
 
-using sam::batch_norm_2d;
-using sam::conv_2d;
-using sam::layer_norm;
-using sam::linear;
+namespace visp::birefnet {
 
-std::vector<float> preprocess_image(ImageView image, int image_size) {
-    constexpr float4 mean = float4(0.485f, 0.456f, 0.406f, 0.f);
-    constexpr float4 std = float4(0.229f, 0.224f, 0.225f, 1.f);
+image_data_t<f32x3> preprocess_image(image_view image, int image_size) {
+    constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
+    constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
 
-    std::optional<Image> resized;
-    if (image.extent.width != image_size || image.extent.height != image_size) {
-        resized = resize(image, Extent(image_size, image_size));
-        image = ImageView(*resized);
+    std::optional<image_data> resized;
+    if (image.extent[0] != image_size || image.extent[1] != image_size) {
+        resized = image_resize(image, i32x2{image_size, image_size});
+        image = image_view(*resized);
     }
 
-    std::vector<float> result(3 * image_size * image_size);
-    image_to_float(image, image_span<rgb32_t>(image.extent, result), -mean, 1.f / std);
+    image_data_t<f32x3> result = image_alloc<f32x3>(image.extent);
+    image_to_float(image, result.span(), -mean, 1.f / std);
     return result;
 }
 
-Tensor mlp(ModelRef m, Tensor x) {
+tensor mlp(model_ref m, tensor x) {
     x = linear(m["fc1"], x);
     x = ggml_gelu_inplace(m, x);
     x = linear(m["fc2"], x);
-    return m.named(x);
+    return named(m, x);
 }
 
-void compute_relative_position_index(int32_t* dst, int window_size) {
+void compute_relative_position_index(span<int32_t> dst, int window_size) {
     int n = window_size;
     int n2 = n * n;
     int n4 = n2 * n2;
@@ -47,18 +44,18 @@ void compute_relative_position_index(int32_t* dst, int window_size) {
     }
 }
 
-TensorAlloc<int32_t> create_relative_position_index(ggml_context* ctx, int window_size) {
+tensor_data create_relative_position_index(ggml_context* ctx, int window_size) {
     int n = window_size;
-    auto result = TensorAlloc<int32_t>(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n * n * n * n));
-    auto name = TensorName("window_attention_{}.rel_pos_index", n);
-    compute_relative_position_index(result.data.get(), n);
-    ggml_set_name(result.tensor, name.c_str());
+    auto result = tensor_data_alloc(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n * n * n * n));
+    auto name = format<tensor_name>("window_attention_{}.rel_pos_index", n);
+    compute_relative_position_index(result.as<int32_t>(), n);
+    ggml_set_name(result.x, name.c_str());
     return result;
 }
 
-Tensor window_partition(ModelRef m, Tensor x, int window) {
+tensor window_partition(model_ref m, tensor x, int window) {
     auto [c, w, h, b] = nelements(x);
-    ASSERT(w % window == 0 && h % window == 0 && "Expecting padded input");
+    ASSERT(w % window == 0 && h % window == 0, "Expecting padded input");
 
     x = ggml_reshape_4d(m, x, c * window, w / window, window, (h / window) * b);
     x = ggml_cont(m, ggml_permute(m, x, 0, 2, 1, 3));
@@ -66,10 +63,10 @@ Tensor window_partition(ModelRef m, Tensor x, int window) {
     return x;
 }
 
-Tensor window_reverse(ModelRef m, Tensor x, int w, int h, int window) {
+tensor window_reverse(model_ref m, tensor x, int64_t w, int64_t h, int window) {
     int64_t c = x->ne[0];
     int64_t b = x->ne[2] / (w / window) / (h / window);
-    ASSERT(x->ne[2] % (w / window) == 0 && "Expecting ne[2] to be multiple of window count");
+    ASSERT(x->ne[2] % (w / window) == 0, "Expecting ne[2] to be multiple of window count");
 
     x = ggml_reshape_4d(m, x, c * window, window, w / window, (h / window) * b);
     x = ggml_cont(m, ggml_permute(m, x, 0, 2, 1, 3));
@@ -77,14 +74,14 @@ Tensor window_reverse(ModelRef m, Tensor x, int w, int h, int window) {
     return x;
 }
 
-Tensor window_attention(ModelRef m, Tensor x, Tensor mask, int num_heads, int window) {
+tensor window_attention(model_ref m, tensor x, tensor mask, int num_heads, int window) {
     auto [c, n, b, _] = nelements(x);
 
-    Tensor qkv = linear(m["qkv"], x);
+    tensor qkv = linear(m["qkv"], x);
     qkv = ggml_reshape_4d(m, qkv, c / num_heads, num_heads, 3, n * b);
     qkv = ggml_cont(m, ggml_permute(m, qkv, 0, 1, 3, 2));
 
-    auto split = [=](Tensor tensor, size_t index, bool transpose = false) mutable {
+    auto split = [=](tensor tensor, size_t index, bool transpose = false) mutable {
         tensor = slice(m, tensor, {}, {}, {}, index);
         tensor = ggml_reshape_4d(m, tensor, c / num_heads, num_heads, n, b);
         if (transpose) {
@@ -94,21 +91,22 @@ Tensor window_attention(ModelRef m, Tensor x, Tensor mask, int num_heads, int wi
         }
         return tensor;
     };
-    Tensor q = split(qkv, 0);
-    Tensor k = split(qkv, 1);
-    Tensor v = split(qkv, 2, true);
+    tensor q = split(qkv, 0);
+    tensor k = split(qkv, 1);
+    tensor v = split(qkv, 2, true);
 
     q = ggml_scale_inplace(m, q, 1.0f / std::sqrtf(float(c / num_heads)));
 
-    Tensor attn = ggml_mul_mat(m, k, q);
+    tensor attn = ggml_mul_mat(m, k, q);
 
-    Tensor rel_pos_index =
-        m.with_prefix(TensorName("window_attention_{}", window)).weights("rel_pos_index");
-    Tensor rel_pos_table = m.weights("relative_position_bias_table");
-    Tensor rel_pos_bias = ggml_get_rows(m, rel_pos_table, rel_pos_index);
+    tensor rel_pos_index =
+        m.with_prefix(format<tensor_name>("window_attention_{}", window)).weights("rel_pos_index");
+    tensor rel_pos_table = m.weights("relative_position_bias_table");
+    tensor rel_pos_bias = ggml_get_rows(m, rel_pos_table, rel_pos_index);
     rel_pos_bias = ggml_reshape_4d(m, rel_pos_bias, num_heads, window * window, window * window, 1);
     rel_pos_bias = ggml_cont(m, ggml_permute(m, rel_pos_bias, 2, 0, 1, 3));
     attn = ggml_add_inplace(m, attn, rel_pos_bias);
+
     if (mask) {
         int64_t nw = mask->ne[2];
         attn = ggml_reshape_4d(m, attn, n * n, num_heads, nw, b / nw);
@@ -123,15 +121,15 @@ Tensor window_attention(ModelRef m, Tensor x, Tensor mask, int num_heads, int wi
     x = ggml_reshape_3d(m, x, c, n, b);
 
     x = linear(m["proj"], x);
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor swin_block(ModelRef m, Tensor x, Tensor mask, SwinBlockParams const& p) {
+tensor swin_block(model_ref m, tensor x, tensor mask, swin_block_params const& p) {
     auto [c, n, b, _] = nelements(x);
     auto [num_heads, window, w, h, shift] = p;
     ASSERT(n == w * h && "Spatial dimensions do not match");
 
-    Tensor shortcut = x;
+    tensor shortcut = x;
     x = layer_norm(m["norm1"], x);
     x = ggml_reshape_4d(m, x, c, w, h, b);
 
@@ -163,17 +161,17 @@ Tensor swin_block(ModelRef m, Tensor x, Tensor mask, SwinBlockParams const& p) {
     x = ggml_reshape_3d(m, x, c, n, b);
     x = ggml_add_inplace(m, x, shortcut);
 
-    Tensor x_mlp = layer_norm(m["norm2"], x);
+    tensor x_mlp = layer_norm(m["norm2"], x);
     x_mlp = mlp(m["mlp"], x_mlp);
     x = ggml_add_inplace(m, x, x_mlp);
 
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor patch_merging(ModelRef m, Tensor x, int w, int h) {
+tensor patch_merging(model_ref m, tensor x, int64_t w, int64_t h) {
     auto [c, n, b, _] = nelements(x);
-    ASSERT(n == w * h && "Spatial dimensions do not match");
-    ASSERT(w % 2 == 0 && h % 2 == 0 && "Expecting even spatial dimensions");
+    ASSERT(n == w * h, "Spatial dimensions do not match");
+    ASSERT(w % 2 == 0 && h % 2 == 0, "Expecting even spatial dimensions");
 
     x = ggml_reshape_4d(m, x, c, w, h, b);
     // clang-format off
@@ -187,10 +185,10 @@ Tensor patch_merging(ModelRef m, Tensor x, int w, int h) {
 
     x = layer_norm(m["norm"], x);
     x = linear(m["reduction"], x);
-    return m.named(x);
+    return named(m, x);
 }
 
-void compute_attention_mask(float* out, int64_t w, int64_t h, int window_size) {
+void compute_attention_mask(span<float> out, int64_t w, int64_t h, int window_size) {
     int n = window_size;
     int n2 = n * n;
     int n4 = n2 * n2;
@@ -200,7 +198,7 @@ void compute_attention_mask(float* out, int64_t w, int64_t h, int window_size) {
     int64_t w_pad = nw_x * n;
     int64_t h_pad = nw_y * n;
 
-    memset(out, 0, n4 * nw_x * nw_y * sizeof(float));
+    std::fill(out.begin(), out.end(), 0.0f);
 
     for (int iw_y = 0; iw_y < nw_y; ++iw_y) {
         for (int iw_x = 0; iw_x < nw_x; ++iw_x) {
@@ -236,40 +234,42 @@ void compute_attention_mask(float* out, int64_t w, int64_t h, int window_size) {
     }
 }
 
-TensorAlloc<float> create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int window_size) {
+tensor_data create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int window_size) {
     int n = window_size;
     int64_t nw_x = (w + n - 1) / n;
     int64_t nw_y = (h + n - 1) / n;
     auto result =
-        TensorAlloc<float>(ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n * n, n * n, nw_x * nw_y));
-    auto name = TensorName("swin_layer_{}x{}.attn_mask", w, h);
-    compute_attention_mask(result.data.get(), w, h, window_size);
-    ggml_set_name(result.tensor, name.c_str());
+        tensor_data_alloc(ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n * n, n * n, nw_x * nw_y));
+    auto name = format<tensor_name>("swin_layer_{}x{}.attn_mask", w, h);
+    compute_attention_mask(result.as<float>(), w, h, window_size);
+    ggml_set_name(result.x, name.c_str());
     return result;
 }
 
-SwinLayerResult swin_layer(ModelRef m, Tensor x, int64_t w, int64_t h, SwinLayer const& p,
-                           int window_size) {
+swin_layer_result swin_layer(
+    model_ref m, tensor x, int64_t w, int64_t h, swin_layer_t const& p, int window_size) {
     // Attention masks need to be precomputed
-    Tensor attn_mask = m.with_prefix(TensorName("swin_layer_{}x{}", w, h)).find("attn_mask");
+    tensor attn_mask =
+        m.with_prefix(format<tensor_name>("swin_layer_{}x{}", w, h)).find("attn_mask");
 
-    ModelRef blocks = m["blocks"];
+    model_ref blocks = m["blocks"];
     for (int i = 0; i < p.depth; ++i) {
-        SwinBlockParams b = {.num_heads = p.num_heads,
-                             .window_size = window_size,
-                             .w = w,
-                             .h = h,
-                             .shift = i % 2 == 0 ? 0 : window_size / 2};
-        x = swin_block(blocks[i], x, attn_mask, b);
+        swin_block_params block_params = {
+            .num_heads = p.num_heads,
+            .window_size = window_size,
+            .w = w,
+            .h = h,
+            .shift = i % 2 == 0 ? 0 : window_size / 2};
+        x = swin_block(blocks[i], x, attn_mask, block_params);
     }
     if (p.downsample) {
-        Tensor x_down = patch_merging(m["downsample"], x, w, h);
+        tensor x_down = patch_merging(m["downsample"], x, w, h);
         return {x, w, h, x_down, (w + 1) / 2, (h + 1) / 2};
     }
     return {x, w, h, x, w, h};
 }
 
-Tensor patch_embed(ModelRef m, Tensor x, int patch_size) {
+tensor patch_embed(model_ref m, tensor x, int patch_size) {
     ASSERT(x->ne[1] % patch_size == 0 && x->ne[2] % patch_size == 0);
 
     x = conv_2d(m["proj"], x, patch_size);
@@ -277,71 +277,69 @@ Tensor patch_embed(ModelRef m, Tensor x, int patch_size) {
     x = ggml_reshape_3d(m, x, c, ww * wh, b);
     x = layer_norm(m["norm"], x);
     x = ggml_reshape_4d(m, x, c, ww, wh, b);
-    return m.named(x);
+    return named(m, x);
 }
 
-SwinResult swin_transformer(ModelRef m, Tensor x, SwinParams const& p) {
+swin_result swin_transformer(model_ref m, tensor x, swin_params const& p) {
     x = patch_embed(m["patch_embed"], x, 4);
 
     auto [c, w, h, b] = nelements(x);
     x = ggml_reshape_3d(m, x, c, w * h, b);
 
-    SwinLayerResult r{x, w, h, x, w, h};
-    SwinResult outs = {};
+    swin_layer_result r{x, w, h, x, w, h};
+    swin_result outs = {};
 
-    for (int i = 0; i < SwinParams::num_layers; ++i) {
-        auto layer = m["layers"][i];
+    for (int i = 0; i < swin_params::num_layers; ++i) {
+        model_ref layer = m["layers"][i];
         r = swin_layer(layer, r.x_down, r.w_down, r.h_down, p.layers[i], p.window_size);
 
-        TensorName norm_layer("norm{}", i);
-        Tensor out = layer_norm(m[norm_layer.c_str()], r.x_out);
+        tensor_name norm_layer = format<tensor_name>("norm{}", i);
+        tensor out = layer_norm(m[norm_layer], r.x_out);
         out = ggml_reshape_4d(m, out, p.layers[i].num_features, r.w_out, r.h_out, b);
         outs[i] = out;
     }
     return outs;
 }
 
-SwinParams SwinParams::detect(ModelRef m) {
-    Tensor t = m.find("bb.layers.0.blocks.0.attn.proj.bias");
+swin_params swin_params::detect(model_ref m) {
+    tensor t = m.find("bb.layers.0.blocks.0.attn.proj.bias");
     if (t == nullptr) {
-        throw std::runtime_error("Failed to detect model parameters");
+        throw error("Failed to detect model parameters");
     }
     if (t->ne[0] == 96) {
         return swin_t_params;
     } else if (t->ne[0] == 192) {
         return swin_l_params;
     } else {
-        throw std::runtime_error(
-            fmt::format("Unsupported Swin Transformer embed dim: {}", t->ne[0]));
+        throw error("Unsupported Swin Transformer embed dim: {}", t->ne[0]);
     }
 }
 
-Tensor upscale_to_whcn(ModelRef m, Tensor x, Tensor target) {
-    return ggml_upscale_ext(m, x, target->ne[0], target->ne[1], x->ne[2], x->ne[3],
-                            GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS);
+constexpr int32_t bilinear_align_corners = GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS;
+
+tensor upscale_to_whcn(model_ref m, tensor x, tensor target) {
+    return interpolate(m, x, {target->ne[0], target->ne[1]}, bilinear_align_corners);
 }
 
-Tensor upscale_to(ModelRef m, Tensor x, Tensor target) {
+tensor upscale_to(model_ref m, tensor x, tensor target) {
     x = ggml_permute(m, x, 2, 0, 1, 3); // cwhn -> whcn
-    x = ggml_upscale_ext(m, x, target->ne[1], target->ne[2], x->ne[2], x->ne[3],
-                         GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS);
+    x = interpolate(m, x, {target->ne[1], target->ne[2]}, bilinear_align_corners);
     x = ggml_permute(m, x, 1, 2, 0, 3); // whcn -> cwhn
     return ggml_cont(m, x);
 }
 
-Tensor downscale_by_whcn(ModelRef m, Tensor x, int f) {
-    return ggml_upscale_ext(m, x, x->ne[0] / f, x->ne[1] / f, x->ne[2], x->ne[3],
-                            GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS);
+tensor downscale_by_whcn(model_ref m, tensor x, int f) {
+    return interpolate(m, x, {x->ne[0] / f, x->ne[1] / f}, bilinear_align_corners);
 }
 
-Tensor downscale_by(ModelRef m, Tensor x, int f) {
+tensor downscale_by(model_ref m, tensor x, int f) {
     x = ggml_permute(m, x, 2, 0, 1, 3); // cwhn -> whcn
     x = downscale_by_whcn(m, x, f);
     x = ggml_permute(m, x, 1, 2, 0, 3); // whcn -> cwhn
     return ggml_cont(m, x);
 }
 
-SwinResult encode_concat(ModelRef m, SwinResult& xs, SwinResult& xs_low) {
+swin_result encode_concat(model_ref m, swin_result& xs, swin_result& xs_low) {
     // TODO: implement cwhn upscale/interpolate which allows downscale & align_corners=True
     // cwhn -> whcn
     for (int i = 0; i < 4; ++i) {
@@ -354,10 +352,11 @@ SwinResult encode_concat(ModelRef m, SwinResult& xs, SwinResult& xs_low) {
     xs[2] = concat(m, {xs[2], upscale_to_whcn(m, xs_low[2], xs[2])}, 2);
     xs[3] = concat(m, {xs[3], upscale_to_whcn(m, xs_low[3], xs[3])}, 2);
 
-    xs[3] = concat(m,
-                   {downscale_by_whcn(m, xs[0], 8), downscale_by_whcn(m, xs[1], 4),
-                    downscale_by_whcn(m, xs[2], 2), xs[3]},
-                   /*dim = */ 2);
+    xs[3] = concat(
+        m,
+        {downscale_by_whcn(m, xs[0], 8), downscale_by_whcn(m, xs[1], 4),
+         downscale_by_whcn(m, xs[2], 2), xs[3]},
+        /*dim = */ 2);
 
     // whcn -> cwhn
     for (int i = 0; i < 4; ++i) {
@@ -366,7 +365,7 @@ SwinResult encode_concat(ModelRef m, SwinResult& xs, SwinResult& xs_low) {
     return xs;
 }
 
-SwinResult encode(ModelRef m, Tensor x, SwinParams const& p) {
+swin_result encode(model_ref m, tensor x, swin_params const& p) {
     auto xs = swin_transformer(m["bb"], x, p);
     auto x_low = downscale_by(m, x, 2);
     auto xs_low = swin_transformer(m["bb"], x_low, p);
@@ -378,30 +377,17 @@ SwinResult encode(ModelRef m, Tensor x, SwinParams const& p) {
 // Decoder
 //
 
-Tensor conv_2d_deform(ModelRef m, Tensor x, Tensor weight, Tensor offset, Tensor mask, int stride,
-                      int pad) {
-    x = ggml_permute(m, x, 2, 0, 1, 3);           // cwhn -> whcn
-    weight = ggml_permute(m, weight, 2, 0, 1, 3); // cwho -> whco
-    offset = ggml_permute(m, offset, 2, 0, 1, 3); // cwhn -> whcn
-    if (mask) {
-        mask = ggml_permute(m, mask, 2, 0, 1, 3); // cwhn -> whcn
-    }
-    x = ggml_conv_2d_deform(m, weight, x, offset, mask, stride, stride, pad, pad);
-    x = ggml_permute(m, x, 1, 2, 0, 3); // whcn -> cwhn
-    return x;
-}
-
-Tensor deformable_conv_2d(ModelRef m, Tensor x, int stride, int pad) {
-    Tensor offset = conv_2d(m["offset"], x, stride, pad);
-    Tensor modulator = conv_2d(m["modulator"], x, stride, pad);
+tensor deformable_conv_2d(model_ref m, tensor x, int stride, int pad) {
+    tensor offset = conv_2d(m["offset"], x, stride, pad);
+    tensor modulator = conv_2d(m["modulator"], x, stride, pad);
     modulator = ggml_sigmoid_inplace(m, modulator);
     modulator = ggml_scale_inplace(m, modulator, 2.0f);
 
     x = conv_2d_deform(m, x, m.weights("conv.weight"), offset, modulator, stride, pad);
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor mean_2d(ModelRef m, Tensor x) {
+tensor mean_2d(model_ref m, tensor x) {
     auto [c, w, h, n] = nelements(x);
     x = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3)); // cwhn -> whcn
     x = ggml_mean(m, x);
@@ -411,162 +397,162 @@ Tensor mean_2d(ModelRef m, Tensor x) {
     return x;
 }
 
-Tensor global_avg_pool(ModelRef m, Tensor x) {
+tensor global_avg_pool(model_ref m, tensor x) {
     x = mean_2d(m[0], x);
     x = conv_2d(m[1], x);
     x = batch_norm_2d(m[2], x);
     x = ggml_relu_inplace(m, x);
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor aspp_module_deformable(ModelRef m, Tensor x, int padding) {
+tensor aspp_module_deformable(model_ref m, tensor x, int padding) {
     x = deformable_conv_2d(m["conv"], x, 1, padding);
     x = batch_norm_2d(m["bn"], x);
     x = ggml_relu_inplace(m, x);
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor aspp_deformable(ModelRef m, Tensor x) {
+tensor aspp_deformable(model_ref m, tensor x) {
     const int kernel_sizes[] = {1, 3, 7};
 
-    Tensor x1 = aspp_module_deformable(m["aspp1"], x);
-    ModelRef aspp_deforms = m["aspp_deforms"];
-    Tensor x_deforms[3];
+    tensor x1 = aspp_module_deformable(m["aspp1"], x);
+    model_ref aspp_deforms = m["aspp_deforms"];
+    tensor x_deforms[3];
     for (int i = 0; i < 3; ++i) {
         int padding = kernel_sizes[i] / 2;
         x_deforms[i] = aspp_module_deformable(aspp_deforms[i], x, padding);
     }
-    Tensor x5 = global_avg_pool(m["global_avg_pool"], x);
+    tensor x5 = global_avg_pool(m["global_avg_pool"], x);
     x5 = ggml_permute(m, x5, 2, 0, 1, 3); // cwhn -> whcn
-    x5 = ggml_upscale_ext(m, x5, x1->ne[1], x1->ne[2], x5->ne[2], x5->ne[3],
-                          GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS);
+    x5 = interpolate(m, x5, {x1->ne[1], x1->ne[2]}, bilinear_align_corners);
     x5 = ggml_cont(m, ggml_permute(m, x5, 1, 2, 0, 3)); // whcn -> cwhn
     x = concat(m, {x1, x_deforms[0], x_deforms[1], x_deforms[2], x5}, 0);
 
     x = conv_2d(m["conv1"], x);
     x = batch_norm_2d(m["bn1"], x);
     x = ggml_relu_inplace(m, x);
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor basic_decoder_block(ModelRef m, Tensor x) {
+tensor basic_decoder_block(model_ref m, tensor x) {
     x = conv_2d(m["conv_in"], x, 1, 1);
     x = batch_norm_2d(m["bn_in"], x);
     x = ggml_relu_inplace(m, x);
     x = aspp_deformable(m["dec_att"], x);
     x = conv_2d(m["conv_out"], x, 1, 1);
     x = batch_norm_2d(m["bn_out"], x);
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor simple_conv(ModelRef m, Tensor x) {
+tensor simple_conv(model_ref m, tensor x) {
     x = conv_2d(m["conv1"], x, 1, 1);
     x = conv_2d(m["conv_out"], x, 1, 1);
-    return m.named(x);
+    return named(m, x);
 }
 
-Tensor image_to_patches(ModelRef m, Tensor x, int out_w, int out_h) {
+tensor image_to_patches(model_ref m, tensor x, int64_t out_w, int64_t out_h) {
     auto [w, h, c, b] = nelements(x);
     ASSERT(w % out_w == 0 && h % out_h == 0 && "Grid must divide image size");
-    int grid_w = w / out_w;
-    int grid_h = h / out_h;
+    int64_t grid_w = w / out_w;
+    int64_t grid_h = h / out_h;
     x = ggml_reshape_4d(m, x, out_w, grid_w, out_h, grid_h * c * b);
     x = ggml_cont(m, ggml_permute(m, x, 0, 2, 1, 3));
     x = ggml_reshape_4d(m, x, out_w, out_h, grid_w * grid_h * c, b);
     return x;
 }
 
-Tensor gdt_conv(ModelRef m, Tensor x) {
+tensor gdt_conv(model_ref m, tensor x) {
     x = conv_2d(m[0], x, 1, 1);
     x = batch_norm_2d(m[1], x);
     x = ggml_relu_inplace(m, x);
     return x;
 }
 
-Tensor decode(ModelRef m, Tensor x, SwinResult const& features) {
-    Tensor x1 = features[0];
-    Tensor x2 = features[1];
-    Tensor x3 = features[2];
-    Tensor x4 = features[3];
-    Tensor x_whcn = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3)); // cwhn -> whcn
+tensor decode(model_ref m, tensor x, swin_result const& features) {
+    tensor x1 = features[0];
+    tensor x2 = features[1];
+    tensor x3 = features[2];
+    tensor x4 = features[3];
+    tensor x_whcn = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3)); // cwhn -> whcn
 
     {
-        Tensor patches = image_to_patches(m, x_whcn, x4->ne[1], x4->ne[2]);
+        tensor patches = image_to_patches(m, x_whcn, x4->ne[1], x4->ne[2]);
         patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
         patches = simple_conv(m["ipt_blk5"], patches);
         x4 = ggml_concat(m, x4, patches, 0);
     }
-    Tensor p4 = basic_decoder_block(m["block4"], x4);
-    Tensor p4_gdt = gdt_conv(m["gdt_convs_4"], p4);
-    Tensor gdt_attn_4 = conv_2d(m["gdt_convs_attn_4.0"], p4_gdt);
+    tensor p4 = basic_decoder_block(m["block4"], x4);
+    tensor p4_gdt = gdt_conv(m["gdt_convs_4"], p4);
+    tensor gdt_attn_4 = conv_2d(m["gdt_convs_attn_4.0"], p4_gdt);
     gdt_attn_4 = ggml_sigmoid(m, gdt_attn_4);
     p4 = ggml_mul(m, p4, gdt_attn_4);
 
     x3 = conv_2d(m["lateral_block4.conv"], x3);
-    Tensor _p4 = upscale_to(m, p4, x3);
-    Tensor _p3 = ggml_add_inplace(m, _p4, x3);
+    tensor _p4 = upscale_to(m, p4, x3);
+    tensor _p3 = ggml_add_inplace(m, _p4, x3);
 
     {
-        Tensor patches = image_to_patches(m, x_whcn, _p3->ne[1], _p3->ne[2]);
+        tensor patches = image_to_patches(m, x_whcn, _p3->ne[1], _p3->ne[2]);
         patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
         patches = simple_conv(m["ipt_blk4"], patches);
         _p3 = ggml_concat(m, _p3, patches, 0);
     }
-    Tensor p3 = basic_decoder_block(m["block3"], _p3);
-    Tensor p3_gdt = gdt_conv(m["gdt_convs_3"], p3);
-    Tensor gdt_attn_3 = conv_2d(m["gdt_convs_attn_3.0"], p3_gdt);
+    tensor p3 = basic_decoder_block(m["block3"], _p3);
+    tensor p3_gdt = gdt_conv(m["gdt_convs_3"], p3);
+    tensor gdt_attn_3 = conv_2d(m["gdt_convs_attn_3.0"], p3_gdt);
     gdt_attn_3 = ggml_sigmoid(m, gdt_attn_3);
     p3 = ggml_mul(m, p3, gdt_attn_3);
 
     _p3 = upscale_to(m, p3, x2);
     x2 = conv_2d(m["lateral_block3.conv"], x2);
-    Tensor _p2 = ggml_add_inplace(m, _p3, x2);
+    tensor _p2 = ggml_add_inplace(m, _p3, x2);
 
     {
-        Tensor patches = image_to_patches(m, x_whcn, _p2->ne[1], _p2->ne[2]);
+        tensor patches = image_to_patches(m, x_whcn, _p2->ne[1], _p2->ne[2]);
         patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
         patches = simple_conv(m["ipt_blk3"], patches);
         _p2 = ggml_concat(m, _p2, patches, 0);
     }
-    Tensor p2 = basic_decoder_block(m["block2"], _p2);
-    Tensor p2_gdt = gdt_conv(m["gdt_convs_2"], p2);
-    Tensor gdt_attn2 = conv_2d(m["gdt_convs_attn_2.0"], p2_gdt);
+    tensor p2 = basic_decoder_block(m["block2"], _p2);
+    tensor p2_gdt = gdt_conv(m["gdt_convs_2"], p2);
+    tensor gdt_attn2 = conv_2d(m["gdt_convs_attn_2.0"], p2_gdt);
     gdt_attn2 = ggml_sigmoid(m, gdt_attn2);
     p2 = ggml_mul(m, p2, gdt_attn2);
 
     _p2 = upscale_to(m, p2, x1);
     x1 = conv_2d(m["lateral_block2.conv"], x1);
-    Tensor _p1 = ggml_add_inplace(m, _p2, x1);
+    tensor _p1 = ggml_add_inplace(m, _p2, x1);
 
     {
-        Tensor patches = image_to_patches(m, x_whcn, _p1->ne[1], _p1->ne[2]);
+        tensor patches = image_to_patches(m, x_whcn, _p1->ne[1], _p1->ne[2]);
         patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
         patches = simple_conv(m["ipt_blk2"], patches);
         _p1 = ggml_concat(m, _p1, patches, 0);
     }
     _p1 = basic_decoder_block(m["block1"], _p1);
     _p1 = upscale_to(m, _p1, x);
-    Tensor p1_ipt = simple_conv(m["ipt_blk1"], x);
+    tensor p1_ipt = simple_conv(m["ipt_blk1"], x);
     _p1 = ggml_concat(m, _p1, p1_ipt, 0);
 
-    Tensor p1_out = conv_2d(m["conv_out1.0"], _p1);
+    tensor p1_out = conv_2d(m["conv_out1.0"], _p1);
     p1_out = ggml_sigmoid_inplace(m, p1_out);
-    return m.named(p1_out);
+
+    return named(m, p1_out);
 }
 
 //
 //
 //
 
-Tensor run(ModelRef m, Tensor image, SwinParams const& encoder_params) {
+tensor run(model_ref m, tensor image, swin_params const& encoder_params) {
     // Encoder
-    SwinResult features = encode(m, image, encoder_params);
+    swin_result features = encode(m, image, encoder_params);
     // Squeeze block
     features[3] = basic_decoder_block(m["squeeze_module.0"], features[3]);
     // Decoder
-    Tensor scaled_preds = decode(m["decoder"], image, features);
+    tensor scaled_preds = decode(m["decoder"], image, features);
 
-    return mark_output(m, scaled_preds, "output");
+    return mark_output(m, scaled_preds);
 }
 
-} // namespace dlimg::birefnet
+} // namespace visp::birefnet

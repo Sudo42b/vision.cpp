@@ -9,6 +9,7 @@ dependencies = [
     "pytest",
     "opencv-python",
     "ruff",
+    "einops>=0.8.1",
 ]
 
 [tool.uv]

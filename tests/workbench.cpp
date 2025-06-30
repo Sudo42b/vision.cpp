@@ -1,41 +1,470 @@
-#include "birefnet.hpp"
-#include "esrgan.hpp"
-#include "migan.hpp"
-#include "mobile_sam.hpp"
+#include "util/string.hpp"
+#include "visp/birefnet.hpp"
+#include "visp/esrgan.hpp"
+#include "visp/migan.hpp"
+#include "visp/mobile-sam.hpp"
+#include "visp/nn.hpp"
 
-#include <fmt/format.h>
 #include <ggml-blas.h>
 #include <ggml-cpu.h>
 #include <ggml-vulkan.h>
 #include <ggml.h>
 
 #include <cassert>
+#include <exception>
 #include <numeric>
+#include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
-#ifdef _MSC_VER
-#    define API __declspec(dllexport)
-#else
-#    define API
-#endif
+using namespace std::literals;
 
-namespace dlimg {
+//
+// Workbench - environment for comparing Python torch and C++ ggml implementation
+//
+// 1) Create the NN module to test in Python
+// 2) Initialize state-dict with random weights
+// 3) Create some input tensors and compute `forward` to get the expected output
+// 4) Create an entry function here in C++ which calls the ggml implementation
+// 5) In Python, call `workbench.invoke_test("entry_function_name", input_tensor, state_dict)`
+// 6) Compare the result with the expected output (eg. `torch.allclose`)
 
-Tensor conv_2d_nchw(ModelRef m, Tensor x, int stride = 1, int pad = 0) {
-    x = ggml_conv_2d(m, m.weights("weight"), x, stride, stride, pad, pad, 1, 1);
-    if (auto bias = m.find("bias")) {
-        bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
-        x = ggml_add_inplace(m, x, bias);
+namespace visp {
+
+enum class param_type { int32, float32, string };
+
+struct test_param {
+    std::string_view name;
+    param_type type;
+    union {
+        int32_t i;
+        float f;
+        char const* s;
+    } value;
+};
+
+struct param_dict {
+    std::vector<test_param> params;
+
+    test_param const* find(char const* name) const;
+    int get(char const* name, int) const;
+    float get(char const* name, float) const;
+    char const* get(char const* name, char const*) const;
+};
+
+using test_function = std::vector<tensor> (*)(model_ref, std::span<tensor>, param_dict const&);
+
+backend const& workbench_backend();
+void workbench_add_test(char const* name, test_function func);
+
+struct test_case_def {
+    test_case_def(test_function func, char const* name) { workbench_add_test(name, func); }
+};
+
+#define DEF(name)                                                                                  \
+    std::vector<tensor> _test_func_##name(model_ref, std::span<tensor>, param_dict const&);        \
+    const test_case_def _test_def_##name(_test_func_##name, #name);                                \
+    std::vector<tensor> _test_func_##name
+
+//
+// Test entry points
+//
+
+DEF(conv_2d_depthwise_nchw)(model_ref m, span<tensor> input, param_dict const& p) {
+    int stride = p.get("stride", 1);
+    int pad = p.get("pad", 0);
+    int dil = p.get("dilation", 1);
+    tensor weight = m.weights("weight");
+    return {ggml_conv_2d_dw_direct(m, weight, input[0], stride, stride, pad, pad, dil, dil)};
+}
+
+DEF(conv_2d_depthwise_nhwc)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {conv_2d_depthwise(m, input[0], p.get("stride", 1), p.get("pad", 0))};
+}
+
+DEF(conv_2d_channels)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {conv_2d(m, input[0], p.get("stride", 1), p.get("pad", 0))};
+}
+
+DEF(conv_transpose_2d)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {conv_transpose_2d(m, input[0], p.get("stride", 1))};
+}
+
+DEF(conv_2d_deform)(model_ref m, span<tensor> input, param_dict const& p) {
+    tensor weight = m.weights("weight");
+    tensor offset = m.weights("offset");
+    tensor mask = m.find("mask");
+    return {conv_2d_deform(m, input[0], weight, offset, mask, 1, 1)};
+}
+
+DEF(batch_norm_2d)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {batch_norm_2d(m, input[0])};
+}
+
+DEF(roll)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {ggml_roll(m, input[0], p.get("s0", 0), p.get("s1", 0), p.get("s2", 0), p.get("s3", 0))};
+}
+
+DEF(layer_norm)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {layer_norm(m, input[0])};
+}
+
+DEF(linear)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {linear(m, input[0])};
+}
+
+//
+// Mobile SAM
+
+DEF(sam_conv_2d_batch_norm)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::conv_2d_batch_norm(m, input[0], 2, 1)};
+}
+
+DEF(sam_patch_embed)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::patch_embed(m, input[0])};
+}
+
+DEF(sam_mb_conv)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::mb_conv(m, input[0])};
+}
+
+DEF(sam_patch_merging)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::patch_merging(m, input[0], 32)};
+}
+
+DEF(sam_mlp)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::mlp(m, input[0])};
+}
+
+DEF(sam_attention_rel_bias)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::attention_rel_bias(m, input[0], 4, 2)};
+}
+
+DEF(sam_window_partition)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::window_partition(m, input[0], 3)};
+}
+
+DEF(sam_tiny_vit_block)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::tiny_vit_block(
+        m, input[0], 8, /*dim*/ 4, /*num_heads*/ 2,
+        /*window_size*/ 5)};
+}
+
+DEF(sam_tiny_vit)(model_ref m, span<tensor> input, param_dict const& p) {
+    sam::tiny_vit_params params;
+    return {sam::tiny_vit(m, input[0], params)};
+}
+
+DEF(sam_position_embedding_random)(model_ref m, span<tensor> input, param_dict const& p) {
+    float* input_data = reinterpret_cast<float*>(input[0]->data);
+    for (int i = 0; i < ggml_nelements(input[0]); ++i) {
+        input_data[i] = (input_data[i] / 64.f) * 2.f - 1.f;
     }
-    return x;
+    return {sam::position_embedding_random(m, input[0])};
 }
 
-Tensor depthwise_conv_2d_nchw(ModelRef m, Tensor x, int stride = 1, int pad = 0) {
-    return ggml_conv_2d_dw_direct(m, m.weights("weight"), x, stride, stride, pad, pad, 1, 1);
+DEF(sam_embed_points)(model_ref m, span<tensor> input, param_dict const& p) {
+    float* input_data = reinterpret_cast<float*>(input[0]->data);
+    for (int i = 0; i < ggml_nelements(input[0]) - 2; ++i) {
+        input_data[i] = sam::transform_coord(input_data[i], 1.0f, 64);
+    }
+    return {sam::embed_points(m, input[0])};
 }
 
-struct RawTensor {
+DEF(sam_embed_box)(model_ref m, span<tensor> input, param_dict const& p) {
+    float* input_data = reinterpret_cast<float*>(input[0]->data);
+    for (int i = 0; i < ggml_nelements(input[0]); ++i) {
+        input_data[i] = sam::transform_coord(input_data[i], 1.0f, 64);
+    }
+    return {sam::embed_box(m, input[0])};
+}
+
+DEF(sam_attention)(model_ref m, span<tensor> input, param_dict const& p) {
+    tensor q = input[0];
+    tensor k = m.weights("input_k");
+    tensor v = m.weights("input_v");
+    return {sam::attention(m, q, k, v, 2)};
+}
+
+DEF(sam_two_way_attention_block)(model_ref m, span<tensor> input, param_dict const& p) {
+    tensor queries = input[0];
+    tensor keys = m.weights("input_keys");
+    tensor query_pe = m.weights("input_query_pe");
+    tensor key_pe = m.weights("input_key_pe");
+    bool skip_first_layer_pe = p.get("mode", "default") == "skip_first_layer_pe"sv;
+    auto [result_queries, result_keys] = sam::two_way_attention_block(
+        m, queries, keys, query_pe, key_pe, 2, skip_first_layer_pe);
+    return {result_queries, result_keys};
+}
+
+DEF(sam_two_way_transformer)(model_ref m, span<tensor> input, param_dict const& p) {
+    tensor image_embedding = input[0];
+    tensor image_pe = m.weights("input_image_pe");
+    tensor point_embedding = m.weights("input_point_embedding");
+    auto [result_queries, result_keys] = sam::two_way_transformer(
+        m, image_embedding, image_pe, point_embedding, 2, 2);
+    return {result_queries, result_keys};
+}
+
+DEF(sam_hypernetwork_mlp)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::hypernetwork_mlp(m, input[0], 2)};
+}
+
+DEF(sam_output_upscaling)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam::upscale_outputs(m, input[0])};
+}
+
+DEF(sam_predict_masks)(model_ref m, span<tensor> input, param_dict const& p) {
+    tensor image_embeddings = input[0];
+    tensor sparse_prompt = m.weights("input_sparse_prompt");
+    tensor dense_prompt = m.weights("input_dense_prompt");
+    auto [masks, iou] = sam::predict_masks(m, image_embeddings, sparse_prompt, dense_prompt);
+    return {masks, iou};
+}
+
+//
+// BiRefNet
+
+DEF(biref_patch_embed)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {birefnet::patch_embed(m, input[0])};
+}
+
+DEF(biref_relative_position_index)(model_ref m, span<tensor> input, param_dict const& p) {
+    auto dst = span(reinterpret_cast<int32_t*>(input[0]->data), ggml_nelements(input[0]));
+    birefnet::compute_relative_position_index(dst, 3);
+    return {input[0]};
+}
+
+DEF(biref_window_attention)(model_ref m, span<tensor> input, param_dict const& p) {
+    int window_size = 3;
+    tensor mask = m.find("mask");
+    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, window_size);
+    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+    transfer_to_backend(rel_pos_index);
+    return {birefnet::window_attention(m, input[0], mask, 2, window_size)};
+}
+
+DEF(biref_swin_block)(model_ref m, span<tensor> input, param_dict const& p) {
+    birefnet::swin_block_params block;
+    block.num_heads = 2;
+    block.window_size = 3;
+    block.w = 6;
+    block.h = 6;
+    block.shift = 0;
+    tensor mask = m.find("mask");
+    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
+    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+    transfer_to_backend(rel_pos_index);
+    return {birefnet::swin_block(m, input[0], mask, block)};
+}
+
+DEF(biref_patch_merging)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {birefnet::patch_merging(m, input[0], 6, 4)};
+}
+
+DEF(biref_attention_mask)(model_ref m, span<tensor> input, param_dict const& p) {
+    auto dst = span((float*)input[0]->data, ggml_nelements(input[0]));
+    birefnet::compute_attention_mask(dst, 18, 18, 6);
+    return {input[0]};
+}
+
+DEF(biref_swin_layer)(model_ref m, span<tensor> input, param_dict const& p) {
+    birefnet::swin_layer_t layer;
+    layer.depth = 2;
+    layer.num_heads = 2;
+    layer.num_features = 8;
+    layer.downsample = true;
+    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
+    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+    transfer_to_backend(rel_pos_index);
+    auto result = birefnet::swin_layer(m, input[0], 6, 6, layer, 3);
+    ASSERT(result.w_down == 3 && result.h_down == 3);
+    return {result.x_down};
+}
+
+DEF(biref_swin_transformer)(model_ref m, span<tensor> input, param_dict const& p) {
+    birefnet::swin_params swinp = {
+        .embed_dim = 8,
+        .window_size = 3,
+        .layers = {
+            birefnet::swin_layer_t{2, 2, 8 * 1, true},
+            birefnet::swin_layer_t{2, 2, 8 * 2, true},
+            birefnet::swin_layer_t{2, 4, 8 * 4, true},
+            birefnet::swin_layer_t{2, 2, 8 * 8, false},
+        }};
+    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
+    auto attn_masks = std::array{
+        birefnet::create_attention_mask(m.weights_context, 8, 8, 3), birefnet::create_attention_mask(m.weights_context, 4, 4, 3),
+        birefnet::create_attention_mask(m.weights_context, 2, 2, 3), birefnet::create_attention_mask(m.weights_context, 1, 1, 3)};
+    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+    transfer_to_backend(rel_pos_index);
+    for (auto&& attn_mask : attn_masks) {
+        transfer_to_backend(attn_mask);
+    }
+    auto result = birefnet::swin_transformer(m, input[0], swinp);
+    return {result[0], result[1], result[2], result[3]};
+}
+
+DEF(biref_encode)(model_ref m, span<tensor> input, param_dict const& p) {
+    birefnet::swin_result xs, xs_low;
+    for (int i = 0; i < 4; ++i) {
+        xs[i] = m.find(format<tensor_name>("input{}", i).c_str());
+        xs_low[i] = m.find(format<tensor_name>("input_low{}", i).c_str());
+    }
+    birefnet::encode_concat(m, xs, xs_low);
+    return std::vector{xs[0], xs[1], xs[2], xs[3]};
+}
+
+DEF(biref_deformable_conv_2d)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {birefnet::deformable_conv_2d(m, input[0], 1, 1)};
+}
+
+DEF(biref_global_avg_pool)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {birefnet::global_avg_pool(m, input[0])};
+}
+
+DEF(biref_aspp_deformable)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {birefnet::aspp_deformable(m, input[0])};
+}
+
+DEF(biref_basic_dec_blk)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {birefnet::basic_decoder_block(m, input[0])};
+}
+
+DEF(biref_image_to_patches_2)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {birefnet::image_to_patches(m, input[0], 4, 4)};
+}
+
+DEF(biref_decode)(model_ref m, span<tensor> input, param_dict const& p) {
+    birefnet::swin_result features;
+    for (int i = 0; i < 4; ++i) {
+        features[i] = m.find(format<tensor_name>("x{}", i + 1).c_str());
+    }
+    return {birefnet::decode(m, input[0], features)};
+}
+
+//
+// MI-GAN
+
+DEF(migan_lrelu_agc)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {migan::lrelu_agc(m, input[0], 0.2f, std::sqrtf(2), 1.0f)};
+}
+
+DEF(migan_downsample_2d)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {migan::downsample_2d(m, input[0])};
+}
+
+DEF(migan_upsample_2d)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {ggml_cont(m, migan::upsample_2d(m, input[0]))};
+}
+
+DEF(migan_separable_conv_2d)(model_ref m, span<tensor> input, param_dict const& p) {
+    auto flags = migan::conv::noise | migan::conv::activation;
+    return {migan::separable_conv_2d(m, input[0], flags)};
+}
+
+DEF(migan_encoder)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {migan::encode(m, input[0], 16).first};
+}
+
+DEF(migan_synthesis)(model_ref m, span<tensor> input, param_dict const& p) {
+    migan::features feats;
+    feats[0] = m.weights("feat16");
+    feats[1] = m.weights("feat8");
+    feats[2] = m.weights("feat4");
+    return {migan::synthesis(m, input[0], feats, 16)};
+}
+
+//
+// ESRGAN
+
+DEF(esrgan_upconv)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {esrgan::upsample(m[1], input[0])};
+}
+
+DEF(esrgan_residual_dense_block)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {esrgan::risidual_dense_block(m, input[0])};
+}
+
+DEF(esrgan_rrdb)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {esrgan::rrdb(m, input[0])};
+}
+
+DEF(esrgan_rrdbnet)(model_ref m, span<tensor> input, param_dict const& p) {
+    esrgan_params params;
+    params.n_blocks = 2;
+    params.scale = 2;
+    return {esrgan_upscale(m, input[0], params)};
+}
+
+//
+// Workbench implementation
+//
+
+struct raw_param {
+    char const* name;
+    char const* value;
+    int32_t type;
+};
+
+param_dict build_dict(span<raw_param const> raw_params) {
+    param_dict dict;
+    for (const auto& raw : raw_params) {
+        test_param param;
+        param.name = raw.name;
+
+        switch (param_type(raw.type)) {
+        case param_type::int32:
+            param.type = param_type::int32;
+            param.value.i = std::stoi(raw.value);
+            break;
+        case param_type::float32:
+            param.type = param_type::float32;
+            param.value.f = std::stof(raw.value);
+            break;
+        case param_type::string:
+            param.type = param_type::string;
+            param.value.s = raw.value;
+            break;
+        default: throw error("Unknown parameter type");
+        }
+        dict.params.push_back(param);
+    }
+    return dict;
+}
+
+test_param const* param_dict::find(char const* name) const {
+    auto it = std::find_if(
+        params.begin(), params.end(), [name](test_param const& p) { return p.name == name; });
+    return it != params.end() ? &(*it) : nullptr;
+}
+
+int param_dict::get(char const* name, int default_value) const {
+    if (auto param = find(name)) {
+        ASSERT(param->type == param_type::int32);
+        return param->value.i;
+    }
+    return default_value;
+}
+
+float param_dict::get(char const* name, float default_value) const {
+    if (auto param = find(name)) {
+        ASSERT(param->type == param_type::float32);
+        return param->value.f;
+    }
+    return default_value;
+}
+
+char const* param_dict::get(char const* name, char const* default_value) const {
+    if (auto param = find(name)) {
+        ASSERT(param->type == param_type::string);
+        return param->value.s;
+    }
+    return default_value;
+}
+
+struct raw_tensor {
     char const* name;
     float* data;
     int32_t type_;
@@ -46,357 +475,136 @@ struct RawTensor {
     size_t size_bytes() const { return size() * ggml_type_size(type()); }
 };
 
-struct Workbench {
 
-    Workbench(int input_count, RawTensor* inputs_raw, RawTensor const& output_raw,
-              GGMLBackend backend) {
-
-        auto context_params = ggml_init_params{};
-        context_params.mem_size = ggml_tensor_overhead() * (input_count + 1) +
-                                  ggml_graph_overhead() + 2048 * ggml_tensor_overhead();
-        context_params.no_alloc = true;
-        m.weights_context = m.graph_context = ggml_init(context_params);
-        m.graph = ggml_new_graph(m);
-        m.backend = backend;
-        backends[1] = ggml_backend_cpu_init();
-        ggml_backend_cpu_set_n_threads(backends[1], 1);
-
-        if (backend == GGMLBackend::vulkan) {
-            backends[0] = ggml_backend_vk_init(0);
-        } else {
-            backends[0] = backends[1];
-        }
-
-        for (int i = 0; i < input_count; ++i) {
-            auto& raw = inputs_raw[i];
-            auto tensor = ggml_new_tensor_4d(
-                m, GGML_TYPE_F32, raw.ne[0], raw.ne[1], raw.ne[2], raw.ne[3]);
-            ggml_set_name(tensor, raw.name);
-        }
-        auto output = ggml_new_tensor_4d(m, GGML_TYPE_F32, output_raw.ne[0], output_raw.ne[1],
-                                         output_raw.ne[2], output_raw.ne[3]);
-        ggml_set_name(output, output_raw.name);
-
-        ggml_backend_alloc_ctx_tensors(m, backends[0]);
-        for (auto&& raw : std::span(inputs_raw, input_count)) {
-            auto tensor = ggml_get_tensor(m, raw.name);
-            ggml_backend_tensor_set(tensor, raw.data, 0, raw.size_bytes());
-        }
-    }
-
-    void output(Tensor tensor, RawTensor dest) {
-        GGML_ASSERT(dest.size_bytes() == ggml_nbytes(tensor));
-
-        Tensor out = ggml_cont(m, tensor);
-        ggml_build_forward_expand(m.graph, out);
-        outputs.emplace_back(out, dest);
-    }
-
-    void run() {
-        ggml_backend_alloc_ctx_tensors(m, backends[0]);
-        ggml_backend_buffer_type_t buffer_types[] = {
-            ggml_backend_get_default_buffer_type(backends[0]),
-            ggml_backend_get_default_buffer_type(backends[1]),
-        };
-        int backend_count = m.backend == GGMLBackend::cpu ? 1 : 2;
-        auto sched = ggml_backend_sched_new(
-            backends.data(), buffer_types, backend_count, ggml_graph_size(m.graph), false, false);
-
-        ggml_backend_sched_graph_compute(sched, m.graph);
-
-        for (auto& [output, output_raw] : outputs) {
-            ggml_backend_tensor_get(output, output_raw.data, 0, ggml_nbytes(output));
-        }
-    }
-
-    ModelRef m;
-    std::vector<std::tuple<Tensor, RawTensor>> outputs;
-    std::array<ggml_backend_t, 2> backends;
+struct test_case {
+    char const* name;
+    test_function func;
 };
 
-} // namespace dlimg
+struct workbench {
+    std::vector<test_case> tests;
+    std::vector<raw_tensor> outputs;
+    std::vector<byte> data; // for storing output tensor data
+    backend current_backend;
+};
+
+workbench& get_workbench() {
+    static workbench w;
+    return w;
+}
+
+backend const& workbench_backend() {
+    return get_workbench().current_backend;
+}
+
+void workbench_add_test(char const* name, test_function func) {
+    auto& w = get_workbench();
+    w.tests.push_back(test_case{name, func});
+}
+
+test_case const& workbench_find_test(std::string_view name) {
+    auto& w = get_workbench();
+    auto it = std::find_if(
+        w.tests.begin(), w.tests.end(), [name](test_case const& t) { return t.name == name; });
+    if (it != w.tests.end()) {
+        return *it;
+    }
+    throw error("Test case not found: {}", name);
+}
+
+void workbench_run(
+    std::string_view test_name,
+    span<raw_tensor const> tensors,
+    span<raw_param const> params,
+    backend_type backend_type) {
+
+    workbench& w = get_workbench();
+    w.current_backend = backend_init(backend_type);
+    model_weights weights = model_init(w.current_backend, tensors.size() + 10);
+    compute_graph graph = compute_graph_init(1024);
+    model_ref m(weights, graph);
+
+    std::vector<tensor> inputs;
+    for (raw_tensor const& raw : tensors) {
+        auto tensor = ggml_new_tensor_4d(
+            m.weights_context, raw.type(), raw.ne[0], raw.ne[1], raw.ne[2], raw.ne[3]);
+        if (raw.name && raw.name[0] != '\0' && raw.name != std::string_view("input")) {
+            ggml_set_name(tensor, raw.name);
+        } else {
+            inputs.push_back(tensor);
+        }
+    }
+
+    allocate(weights, w.current_backend);
+    for (raw_tensor const& raw : tensors) {
+        transfer_to_backend(m.weights(raw.name), span(raw.data, raw.size()));
+    }
+
+    param_dict test_params = build_dict(params);
+    test_case const& test = workbench_find_test(test_name);
+
+    std::vector<tensor> outputs = test.func(m, inputs, test_params);
+    for (tensor& out : outputs) {
+        out = mark_output(m, ggml_cont(m, out));
+    }
+
+    ASSERT(!outputs.empty(), "Test function must return at least one output tensor");
+
+    allocate(graph, w.current_backend);
+    compute(graph, w.current_backend);
+
+    size_t output_size = std::accumulate(
+        outputs.begin(), outputs.end(), size_t(0),
+        [](size_t sum, tensor t) { return sum + ggml_nbytes(t); });
+    w.data.resize(output_size);
+    size_t offset = 0;
+
+    std::vector<raw_tensor>& output_raw = w.outputs;
+    output_raw.resize(outputs.size());
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        byte* data_ptr = w.data.data() + offset;
+        offset += ggml_nbytes(outputs[i]);
+        ggml_backend_tensor_get(outputs[i], data_ptr, 0, ggml_nbytes(outputs[i]));
+
+        output_raw[i].name = ggml_get_name(outputs[i]);
+        output_raw[i].data = reinterpret_cast<float*>(data_ptr);
+        output_raw[i].type_ = int32_t(outputs[i]->type);
+        output_raw[i].ne[0] = outputs[i]->ne[0];
+        output_raw[i].ne[1] = outputs[i]->ne[1];
+        output_raw[i].ne[2] = outputs[i]->ne[2];
+        output_raw[i].ne[3] = outputs[i]->ne[3];
+    }
+}
+
+} // namespace visp
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-API int32_t dlimg_workbench(char const* testcase, int input_count, dlimg::RawTensor* inputs,
-                            dlimg::RawTensor const& output, int32_t backend) {
-    using namespace dlimg;
-    using namespace dlimg::sam;
+#ifdef _MSC_VER
+#    define API __declspec(dllexport)
+#else
+#    define API
+#endif
+
+API int32_t visp_workbench(
+    char const* testcase,
+    visp::raw_tensor const* inputs,
+    int32_t n_inputs,
+    visp::raw_param const* params,
+    int32_t n_params,
+    visp::raw_tensor const** outputs,
+    int32_t* n_outputs,
+    int32_t backend) {
 
     try {
-        auto name = std::string_view(testcase);
-        auto w = dlimg::Workbench(input_count, inputs, output, GGMLBackend(backend));
-        ModelRef m = w.m;
-        Tensor input = m.weights("input");
+        visp::workbench_run(
+            testcase, std::span(inputs, n_inputs), std::span(params, n_params),
+            visp::backend_type(backend));
 
-        if (name == "conv_2d_depthwise_nchw_stride_1_pad_0") {
-            w.output(depthwise_conv_2d_nchw(m, input), output);
-        } else if (name == "conv_2d_depthwise_nchw_stride_2_pad_1") {
-            w.output(depthwise_conv_2d_nchw(m, input, 2, 1), output);
-        } else if (name == "conv_2d_depthwise_nhwc_stride_1_pad_0") {
-            w.output(depthwise_conv_2d(m, input), output);
-        } else if (name == "conv_2d_depthwise_nhwc_stride_2_pad_1") {
-            w.output(depthwise_conv_2d(m, input, 2, 1), output);
-        } else if (name == "conv_2d_depthwise_nchw_dilation_2_pad_2") {
-            w.output(
-                ggml_conv_2d_dw_direct(m, m.weights("weight"), input, 1, 1, 2, 2, 2, 2), output);
-        } else if (name == "conv_2d_depthwise_nhwc_dilation_2_pad_2") {
-            Tensor weight = ggml_permute(m, m.weights("weight"), 3, 2, 0, 1);
-            input = ggml_permute(m, input, 2, 0, 1, 3);
-            Tensor result = ggml_conv_2d_dw_direct(m, weight, input, 1, 1, 2, 2, 2, 2);
-            result = ggml_permute(m, result, 1, 2, 0, 3);
-            w.output(result, output);
-        } else if (name == "conv_2d") {
-            w.output(conv_2d_nchw(m, input), output);
-        } else if (name.starts_with("conv_2d_channels_stride2_pad1")) {
-            w.output(conv_2d(m, input, 2, 1), output);
-        } else if (name.starts_with("conv_2d_channels")) {
-            w.output(conv_2d(m, input), output);
-        } else if (name.starts_with("conv_transpose_2d_stride2")) {
-            w.output(conv_transpose_2d(m, input, 2), output);
-        } else if (name.starts_with("conv_transpose_2d_nchw")) {
-            w.output(ggml_conv_transpose_2d_p0(m, m.weights("weight"), input, 1), output);
-        } else if (name.starts_with("conv_transpose_2d")) {
-            w.output(conv_transpose_2d(m, input, 1), output);
-        } else if (name == "conv_2d_deform") {
-            Tensor weight = m.weights("weight");
-            Tensor offset = m.weights("offset");
-            Tensor mask = m.find("mask");
-            w.output(birefnet::conv_2d_deform(m, input, weight, offset, mask, 1, 1), output);
-        } else if (name == "batch_norm_2d") {
-            w.output(batch_norm_2d(m, input), output);
-        } else if (name == "roll_(0, 2, -1, 0)") {
-            w.output(ggml_roll(m, input, 0, -1, 2, 0), output);
-        } else if (name == "roll_(0, -2, 0, 3)") {
-            w.output(ggml_roll(m, input, 3, 0, -2, 0), output);
-        } else if (name == "layer_norm") {
-            w.output(layer_norm(m, input), output);
-        } else if (name == "upscale_align_corners") {
-            int mode = GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS;
-            w.output(ggml_upscale_ext(m, input, output.ne[0], output.ne[1], output.ne[2], 1, mode),
-                     output);
-        } else if (name == "downscale_align_corners") {
-            int mode = GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS;
-            w.output(ggml_upscale_ext(m, input, output.ne[0], output.ne[1], output.ne[2], 1, mode),
-                     output);
-        } else if (name == "upscale_bilinear") {
-            int mode = GGML_SCALE_MODE_BILINEAR;
-            w.output(ggml_upscale_ext(m, input, output.ne[0], output.ne[1], output.ne[2], 1, mode),
-                     output);
-        } else if (name == "linear") {
-            w.output(linear(m, input), output);
-        } else if (name == "conv_2d_batch_norm") {
-            w.output(conv_2d_batch_norm(m, input, 2, 1), output);
-        } else if (name == "layer_norm_2d") {
-            w.output(layer_norm_2d(m, input), output);
-        } else if (name == "patch_embed") {
-            w.output(patch_embed(m, input), output);
-        } else if (name == "mb_conv") {
-            w.output(mb_conv(m, input), output);
-        } else if (name == "patch_merging") {
-            w.output(patch_merging(m, input, 32), output);
-        } else if (name == "mlp") {
-            w.output(mlp(m, input), output);
-        } else if (name == "attention_rel_bias") {
-            w.output(attention_rel_bias(m, input, 4, 2), output);
-        } else if (name == "window_partition") {
-            w.output(window_partition(m, input, 3), output);
-        } else if (name == "tiny_vit_block") {
-            w.output(tiny_vit_block(m, input, 8, /*dim*/ 4, /*num_heads*/ 2,
-                                    /*window_size*/ 5),
-                     output);
-        } else if (name == "tiny_vit") {
-            TinyViTParams p;
-            w.output(tiny_vit(m, input, p), output);
-        } else if (name == "position_embedding_random") {
-            float* input_data = reinterpret_cast<float*>(input->data);
-            for (int i = 0; i < ggml_nelements(input); ++i) {
-                input_data[i] = (input_data[i] / 64.f) * 2.f - 1.f;
-            }
-            w.output(position_embedding_random(m, input), output);
-        } else if (name == "embed_points") {
-            float* input_data = reinterpret_cast<float*>(input->data);
-            for (int i = 0; i < ggml_nelements(input) - 2; ++i) {
-                input_data[i] = transform_coord(input_data[i], 1.0f, 64);
-            }
-            w.output(embed_points(m, input), output);
-        } else if (name == "embed_box") {
-            float* input_data = reinterpret_cast<float*>(input->data);
-            for (int i = 0; i < ggml_nelements(input); ++i) {
-                input_data[i] = transform_coord(input_data[i], 1.0f, 64);
-            }
-            w.output(embed_box(m, input), output);
-        } else if (name == "attention") {
-            Tensor q = input;
-            Tensor k = m.weights("input_k");
-            Tensor v = m.weights("input_v");
-            w.output(attention(m, q, k, v, 2), output);
-        } else if (name.starts_with("two_way_attention_block")) {
-            Tensor queries = input;
-            Tensor keys = m.weights("input_keys");
-            Tensor query_pe = m.weights("input_query_pe");
-            Tensor key_pe = m.weights("input_key_pe");
-            bool skip_first_layer_pe = name.ends_with("skip_first_layer_pe");
-            auto [result_queries, result_keys] = two_way_attention_block(
-                m, queries, keys, query_pe, key_pe, 2, skip_first_layer_pe);
-            w.output(result_queries, output);
-            w.output(result_keys, inputs[input_count - 1]);
-        } else if (name == "two_way_transformer") {
-            Tensor image_embedding = input;
-            Tensor image_pe = m.weights("input_image_pe");
-            Tensor point_embedding = m.weights("input_point_embedding");
-            auto [result_queries, result_keys] = two_way_transformer(
-                m, image_embedding, image_pe, point_embedding, 2, 2);
-            w.output(result_queries, output);
-            w.output(result_keys, inputs[input_count - 1]);
-        } else if (name == "hypernetwork_mlp") {
-            w.output(hypernetwork_mlp(m, input, 2), output);
-        } else if (name == "output_upscaling") {
-            w.output(upscale_outputs(m, input), output);
-        } else if (name == "predict_masks") {
-            Tensor image_embeddings = input;
-            Tensor sparse_prompt = m.weights("input_sparse_prompt");
-            Tensor dense_prompt = m.weights("input_dense_prompt");
-            auto [masks, iou] = predict_masks(m, image_embeddings, sparse_prompt, dense_prompt);
-            w.output(masks, output);
-            w.output(iou, inputs[input_count - 1]);
-        } else if (name == "biref_patch_embed") {
-            w.output(birefnet::patch_embed(m, input), output);
-        } else if (name == "biref_relative_position_index") {
-            birefnet::compute_relative_position_index(reinterpret_cast<int32_t*>(output.data), 3);
-            return 0;
-        } else if (name == "biref_window_attention") {
-            int window_size = 3;
-            Tensor mask = m.find("mask");
-            auto rel_pos_index = birefnet::create_relative_position_index(m, window_size);
-            ggml_backend_alloc_ctx_tensors(m, w.backends[0]);
-            rel_pos_index.copy_to_backend_buffer();
-            w.output(birefnet::window_attention(m, input, mask, 2, window_size), output);
-        } else if (name == "biref_swin_block") {
-            birefnet::SwinBlockParams p;
-            p.num_heads = 2;
-            p.window_size = 3;
-            p.w = 6;
-            p.h = 6;
-            p.shift = 0;
-            Tensor mask = m.find("mask");
-            auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
-            ggml_backend_alloc_ctx_tensors(m, w.backends[0]);
-            rel_pos_index.copy_to_backend_buffer();
-            w.output(birefnet::swin_block(m, input, mask, p), output);
-        } else if (name == "biref_patch_merging") {
-            w.output(birefnet::patch_merging(m, input, 6, 4), output);
-        } else if (name == "biref_attention_mask") {
-            birefnet::compute_attention_mask(output.data, 18, 18, 6);
-            return 0;
-        } else if (name == "biref_swin_layer") {
-            birefnet::SwinLayer p;
-            p.depth = 2;
-            p.num_heads = 2;
-            p.num_features = 8;
-            p.downsample = true;
-            auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
-            auto result = birefnet::swin_layer(m, input, 6, 6, p, 3);
-            ASSERT(result.w_down == 3 && result.h_down == 3);
-            w.output(result.x_down, output);
-        } else if (name == "biref_swin_transformer") {
-            birefnet::SwinParams p = {.embed_dim = 8,
-                                      .window_size = 3,
-                                      .layers = {
-                                          birefnet::SwinLayer{2, 2, 8 * 1, true},
-                                          birefnet::SwinLayer{2, 2, 8 * 2, true},
-                                          birefnet::SwinLayer{2, 4, 8 * 4, true},
-                                          birefnet::SwinLayer{2, 2, 8 * 8, false},
-                                      }};
-            auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
-            auto attn_masks = std::array{birefnet::create_attention_mask(m, 8, 8, 3),
-                                         birefnet::create_attention_mask(m, 4, 4, 3),
-                                         birefnet::create_attention_mask(m, 2, 2, 3),
-                                         birefnet::create_attention_mask(m, 1, 1, 3)};
-            ggml_backend_alloc_ctx_tensors(m, w.backends[0]);
-            rel_pos_index.copy_to_backend_buffer();
-            for (auto&& attn_mask : attn_masks) {
-                attn_mask.copy_to_backend_buffer();
-            }
-            auto result = birefnet::swin_transformer(m, input, p);
-            w.output(result[0], output);
-            w.output(result[1], inputs[input_count - 3]);
-            w.output(result[2], inputs[input_count - 2]);
-            w.output(result[3], inputs[input_count - 1]);
-        } else if (name == "biref_encode") {
-            birefnet::SwinResult xs, xs_low;
-            for (int i = 0; i < 4; ++i) {
-                xs[i] = m.find(TensorName("input{}", i).c_str());
-                xs_low[i] = m.find(TensorName("input_low{}", i).c_str());
-            }
-            birefnet::encode_concat(m, xs, xs_low);
-            for (int i = 0; i < 4; ++i) {
-                w.output(xs[i], inputs[input_count - 4 + i]);
-            }
-        } else if (name == "biref_deformable_conv_2d") {
-            w.output(birefnet::deformable_conv_2d(m, input, 1, 1), output);
-        } else if (name == "biref_global_avg_pool") {
-            w.output(birefnet::global_avg_pool(m, input), output);
-        } else if (name == "biref_aspp_deformable") {
-            w.output(birefnet::aspp_deformable(m, input), output);
-        } else if (name == "biref_basic_dec_blk") {
-            w.output(birefnet::basic_decoder_block(m, input), output);
-        } else if (name == "biref_image_to_patches_2") {
-            w.output(birefnet::image_to_patches(m, input, 4, 4), output);
-        } else if (name == "biref_decode") {
-            birefnet::SwinResult features;
-            for (int i = 0; i < 4; ++i) {
-                features[i] = m.find(TensorName("x{}", i + 1).c_str());
-            }
-            w.output(birefnet::decode(m, input, features), output);
-        } else if (name == "blur") {
-            auto img = std::span(reinterpret_cast<float4*>(input->data), ggml_nelements(input) / 4);
-            auto out = std::span(reinterpret_cast<float4*>(output.data), output.size() / 4);
-            blur(img, out, Extent{1024, 1024}, 30);
-            return 0;
-        } else if (name == "estimate_foreground") {
-            auto mask = m.find("mask");
-            auto img = std::span(reinterpret_cast<float4*>(input->data), ggml_nelements(input) / 4);
-            auto alpha = std::span(reinterpret_cast<float*>(mask->data), ggml_nelements(mask));
-            auto result = estimate_foreground(img, alpha, Extent{256, 256}, 30);
-            ASSERT(result.size() == output.size() / 4);
-            memcpy(output.data, result.data(), output.size_bytes());
-            return 0;
-        } else if (name == "migan_lrelu_agc") {
-            w.output(migan::lrelu_agc(m, input, 0.2f, std::sqrtf(2), 1.0f), output);
-        } else if (name == "migan_downsample_2d") {
-            w.output(migan::downsample_2d(m, input), output);
-        } else if (name == "migan_upsample_2d") {
-            w.output(ggml_cont(m, migan::upsample_2d(m, input)), output);
-        } else if (name == "migan_separable_conv_2d") {
-            auto flags = migan::conv::noise | migan::conv::activation;
-            w.output(migan::separable_conv_2d(m, input, flags), output);
-        } else if (name == "migan_encoder") {
-            w.output(migan::encode(m, input, 16).first, output);
-        } else if (name == "migan_synthesis") {
-            migan::Features feats;
-            feats[0] = m.weights("feat16");
-            feats[1] = m.weights("feat8");
-            feats[2] = m.weights("feat4");
-            w.output(migan::synthesis(m, input, feats, 16), output);
-        } else if (name == "esrgan_upconv") {
-            w.output(esrgan::upsample(m[1], input), output);
-        } else if (name == "esrgan_residual_dense_block") {
-            w.output(esrgan::risidual_dense_block(m, input), output);
-        } else if (name == "esrgan_rrdb") {
-            w.output(esrgan::rrdb(m, input), output);
-        } else if (name == "esrgan_rrdbnet") {
-            esrgan::ESRGANParams p;
-            p.n_blocks = 2;
-            p.scale = 2;
-            w.output(esrgan::upscale(m, input, p), output);
-        } else {
-            throw std::runtime_error("Unknown testcase: " + std::string(testcase));
-        }
-
-        w.run();
+        *outputs = visp::get_workbench().outputs.data();
+        *n_outputs = int32_t(visp::get_workbench().outputs.size());
 
     } catch (std::exception const& e) {
         fprintf(stderr, "Error: %s\n", e.what());

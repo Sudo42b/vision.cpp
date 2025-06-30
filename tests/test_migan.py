@@ -36,8 +36,7 @@ def test_lrelu_agc():
     lrelu = lrelu_agc(alpha=0.2, gain="sqrt_2", clamp=1.0)
     expected = lrelu(x.clone())
 
-    result = torch.zeros_like(x)
-    result = workbench.invoke_test("migan_lrelu_agc", x, result, {})
+    result = workbench.invoke_test("migan_lrelu_agc", x, {})
 
     assert torch.allclose(result, expected)
 
@@ -107,8 +106,7 @@ def test_downsample2d():
     state = convert_to_channel_last(state, key="filter.")
 
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("migan_downsample_2d", x, result, state)
+    result = workbench.invoke_test("migan_downsample_2d", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -153,8 +151,7 @@ def test_upsample2d():
     state = convert_to_channel_last(state, key="filter.")
 
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("migan_upsample_2d", x, result, state)
+    result = workbench.invoke_test("migan_upsample_2d", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -245,8 +242,7 @@ def test_separable_conv2d():
     state = convert_to_channel_last(state, key="conv")
     state["noise_strength"] = torch.tensor([0.5])
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("migan_separable_conv_2d", x, result, state)
+    result = workbench.invoke_test("migan_separable_conv_2d", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -346,8 +342,7 @@ def test_encoder():
         if "noise_strength" in k:
             state[k] = torch.tensor([0.5])
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("migan_encoder", x, result, state)
+    result = workbench.invoke_test("migan_encoder", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -504,8 +499,7 @@ def test_synthesis():
             state[k] = torch.tensor([0.5])
     x = to_channel_last(x)
     state.update({f"feat{k}": to_channel_last(v) for k, v in enc_feats.items()})
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("migan_synthesis", x, result, state)
+    result = workbench.invoke_test("migan_synthesis", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)

@@ -116,7 +116,7 @@ def test_relative_position_index():
     expected = window_attention.relative_position_index
 
     result = torch.zeros_like(expected, dtype=torch.int32)
-    result = workbench.invoke_test("biref_relative_position_index", result, result, {})
+    result = workbench.invoke_test("biref_relative_position_index", result, {})
     result = result.to(expected.dtype)
 
     assert torch.allclose(result, expected)
@@ -137,8 +137,7 @@ def test_window_attention(masking: bool):
         state["mask"] = mask
     expected = window_attention(x, mask)
 
-    result = torch.zeros_like(expected)
-    result = workbench.invoke_test("biref_window_attention", x, result, state)
+    result = workbench.invoke_test("biref_window_attention", x, state)
 
     assert torch.allclose(result, expected)
 
@@ -313,8 +312,7 @@ def test_swin_block():
     swin_block.W, swin_block.H = 6, 6
     expected = swin_block(x, None)
 
-    result = torch.zeros_like(expected)
-    result = workbench.invoke_test("biref_swin_block", x, result, state)
+    result = workbench.invoke_test("biref_swin_block", x, state)
 
     assert torch.allclose(result, expected, atol=1e-2)  # fp16 GELU
 
@@ -359,8 +357,7 @@ def test_patch_merging():
     x = input_tensor(1, 4 * 6, 8)
     expected = patch_merging(x, 4, 6)
 
-    result = torch.zeros_like(expected)
-    result = workbench.invoke_test("biref_patch_merging", x, result, state)
+    result = workbench.invoke_test("biref_patch_merging", x, state)
 
     assert torch.allclose(result, expected)
 
@@ -500,7 +497,7 @@ def test_attention_mask():
     expected = swin_layer.attention_mask(h, w)
 
     result = torch.zeros_like(expected)
-    workbench.invoke_test("biref_attention_mask", expected, result, {})
+    result = workbench.invoke_test("biref_attention_mask", result, {})
 
     assert torch.allclose(result, expected)
 
@@ -526,8 +523,7 @@ def test_swin_layer():
     out, out_h, out_w, expected, down_h, down_w = swin_layer(x, 6, 6)
     assert down_h == 3 and down_w == 3
 
-    result = torch.zeros_like(expected)
-    result = workbench.invoke_test("biref_swin_layer", x, result, state)
+    result = workbench.invoke_test("biref_swin_layer", x, state)
 
     assert torch.allclose(result, expected)
 
@@ -580,8 +576,7 @@ def test_patch_embed():
 
     state = convert_to_channel_last(state, key="proj")
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("biref_patch_embed", x, result, state)
+    result = workbench.invoke_test("biref_patch_embed", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -726,12 +721,7 @@ def test_swin_transformer():
     x = to_channel_last(x)
     state = convert_to_channel_last(state, key="patch_embed.proj")
 
-    result = [to_channel_last(torch.zeros_like(e)) for e in expected]
-    state["result1"] = result[1]
-    state["result2"] = result[2]
-    state["result3"] = result[3]
-
-    workbench.invoke_test("biref_swin_transformer", x, result[0], state)
+    result = workbench.invoke_test("biref_swin_transformer", x[0], state)
 
     for i, e in enumerate(expected):
         result[i] = revert_channel_last(result[i])
@@ -789,14 +779,11 @@ def test_encode():
     state = {}
     state.update({f"input{i}": to_channel_last(xs[i]) for i in range(4)})
     state.update({f"input_low{i}": to_channel_last(xs_low[i]) for i in range(4)})
-    state.update(
-        {f"output{i}": to_channel_last(torch.zeros_like(expected[i])) for i in range(4)}
-    )
 
-    workbench.invoke_test("biref_encode", x, expected[0], state)
+    results = workbench.invoke_test("biref_encode", x, state)
 
     for i, e in enumerate(expected):
-        result = revert_channel_last(state[f"output{i}"])
+        result = revert_channel_last(results[i])
         assert torch.allclose(result, e)
 
 
@@ -827,8 +814,7 @@ def test_conv_2d_deform(scenario: str, backend: str):
         "offset": to_channel_last(offset),
         "mask": to_channel_last(mask),
     }
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("conv_2d_deform", x, result, state, backend=backend)
+    result = workbench.invoke_test("conv_2d_deform", x, state, backend=backend)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected, atol=1e-2 if backend == "vulkan" else 1e-5)
@@ -922,8 +908,7 @@ def test_deformable_conv_2d():
     state = convert_to_channel_last(state, key="conv")
     state = {shorten_weight_name(k): v for k, v in state.items()}
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("biref_deformable_conv_2d", x, result, state)
+    result = workbench.invoke_test("biref_deformable_conv_2d", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -957,9 +942,8 @@ def test_global_avg_pool(backend: str):
     state = add_variance_epsilon(state)
     state = convert_to_channel_last(state, key="1.weight")
     x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
     result = workbench.invoke_test(
-        "biref_global_avg_pool", x, result, state, backend=backend
+        "biref_global_avg_pool", x, state, backend=backend
     )
     result = revert_channel_last(result)
 
@@ -1054,8 +1038,7 @@ def test_aspp_deformable():
     state = {shorten_weight_name(k): v for k, v in state.items()}
     x = to_channel_last(x)
 
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("biref_aspp_deformable", x, result, state)
+    result = workbench.invoke_test("biref_aspp_deformable", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -1097,8 +1080,7 @@ def test_basic_dec_blk():
     state = {shorten_weight_name(k): v for k, v in state.items()}
     x = to_channel_last(x)
 
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("biref_basic_dec_blk", x, result, state)
+    result = workbench.invoke_test("biref_basic_dec_blk", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)
@@ -1125,8 +1107,7 @@ def test_image_to_patches():
     x = torch.arange(3 * 8 * 8).reshape(1, 3, 8, 8).float()
     expected = image2patches(x, 2, 2, None, transformation)
 
-    result = torch.zeros_like(expected)
-    result = workbench.invoke_test("biref_image_to_patches_2", x, result, {})
+    result = workbench.invoke_test("biref_image_to_patches_2", x, {})
 
     assert torch.allclose(result, expected)
 
@@ -1351,8 +1332,7 @@ def test_decoder():
     state["x3"] = to_channel_last(x3)
     state["x4"] = to_channel_last(x4)
 
-    result = to_channel_last(torch.zeros_like(expected))
-    result = workbench.invoke_test("biref_decode", x, result, state)
+    result = workbench.invoke_test("biref_decode", x, state)
     result = revert_channel_last(result)
 
     assert torch.allclose(result, expected)

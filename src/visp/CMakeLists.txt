@@ -5,13 +5,15 @@ target_sources(visioncpp PRIVATE
   esrgan.cpp
   image.cpp
   migan.cpp
+  ml.cpp
   mobile-sam.cpp
+  nn.cpp
 )
 target_compile_definitions(visioncpp PRIVATE VISP_EXPORTS ${VISP_ASSERT})
 target_include_directories(visioncpp PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
-  PRIVATE .
+  PRIVATE . ../util
 )
 target_link_libraries(visioncpp
   PRIVATE stb ggml

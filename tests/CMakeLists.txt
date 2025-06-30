@@ -2,9 +2,10 @@
 
 add_executable(test-unit)
 target_sources(test-unit PRIVATE
+  testing.cpp
   test-image.cpp
 )
-target_include_directories(test-unit PRIVATE ../src)
+target_include_directories(test-unit PRIVATE . ../src)
 target_link_libraries(test-unit PRIVATE
   visioncpp ggml
 )
@@ -25,8 +26,8 @@ target_link_libraries(vision-workbench PRIVATE
 
 # Benchmark application for profiling
 
-add_executable(vision-prof benchmark.cpp)
-target_include_directories(vision-prof PRIVATE ../src)
-target_link_libraries(vision-prof PRIVATE 
-  visioncpp ggml
-)
+# add_executable(vision-prof benchmark.cpp)
+# target_include_directories(vision-prof PRIVATE ../src)
+# target_link_libraries(vision-prof PRIVATE 
+#   visioncpp ggml
+# )

@@ -1,18 +1,18 @@
 #pragma once
 
-#include "image.hpp"
 #include "ml.hpp"
+#include "visp/image.hpp"
 
-namespace dlimg::birefnet {
-struct SwinParams;
+namespace visp::birefnet {
+struct swin_params;
 
-std::vector<float> preprocess_image(ImageView image, int image_size);
+image_data_t<f32x3> preprocess_image(image_view image, int image_size);
 
-Tensor run(ModelRef m, Tensor image, SwinParams const& encoder_params);
+tensor run(model_ref m, tensor image, swin_params const& encoder_params);
 
 // SWIN Transformer
 
-struct SwinBlockParams {
+struct swin_block_params {
     int num_heads = 6;
     int window_size = 7;
     int64_t w = 0;
@@ -20,89 +20,88 @@ struct SwinBlockParams {
     int shift = 0;
 };
 
-struct SwinLayer {
+struct swin_layer_t {
     int depth;
     int num_heads;
     int num_features;
     bool downsample;
 };
 
-struct SwinLayerResult {
-    Tensor x_out;
+struct swin_layer_result {
+    tensor x_out;
     int64_t w_out;
     int64_t h_out;
-    Tensor x_down;
+    tensor x_down;
     int64_t w_down;
     int64_t h_down;
 };
 
-struct SwinParams {
+struct swin_params {
     static constexpr int num_layers = 4;
 
     int embed_dim;
     int window_size;
-    std::array<SwinLayer, num_layers> layers;
+    std::array<swin_layer_t, num_layers> layers;
 
-    static SwinParams detect(ModelRef m);
+    static swin_params detect(model_ref m);
 };
 
 // clang-format off
-constexpr SwinParams swin_t_params = {
+constexpr swin_params swin_t_params = {
     .embed_dim = 96,
     .window_size = 7,
     .layers = {
-        //     depth  n_heads   n_features   downsample
-        SwinLayer{2,    3,        96 * 1,     true},
-        SwinLayer{2,    6,        96 * 2,     true},
-        SwinLayer{6,    12,       96 * 4,     true},
-        SwinLayer{2,    24,       96 * 8,     false}}};
+        //       depth  n_heads   n_features   downsample
+        swin_layer_t{2,    3,        96 * 1,     true},
+        swin_layer_t{2,    6,        96 * 2,     true},
+        swin_layer_t{6,    12,       96 * 4,     true},
+        swin_layer_t{2,    24,       96 * 8,     false}}};
 
-constexpr SwinParams swin_l_params = {
+constexpr swin_params swin_l_params = {
     .embed_dim = 192,
     .window_size = 12,
     .layers = {
-        //     depth  n_heads   n_features   downsample
-        SwinLayer{2,    6,        192 * 1,     true},
-        SwinLayer{2,    12,       192 * 2,     true},
-        SwinLayer{18,   24,       192 * 4,     true},
-        SwinLayer{2,    48,       192 * 8,     false}}};
+        //       depth  n_heads   n_features   downsample
+        swin_layer_t{2,    6,        192 * 1,     true},
+        swin_layer_t{2,    12,       192 * 2,     true},
+        swin_layer_t{18,   24,       192 * 4,     true},
+        swin_layer_t{2,    48,       192 * 8,     false}}};
 // clang-format on
 
-using SwinResult = std::array<Tensor, SwinParams::num_layers>;
+using swin_result = std::array<tensor, swin_params::num_layers>;
 
-Tensor mlp(ModelRef m, Tensor x);
-void compute_relative_position_index(int32_t* dst, int window_size);
-TensorAlloc<int32_t> create_relative_position_index(ggml_context* ctx, int window_size);
-Tensor window_partition(ModelRef m, Tensor x, int window);
-Tensor window_reverse(ModelRef m, Tensor x, int w, int h, int window);
-Tensor window_attention(ModelRef m, Tensor x, Tensor mask, int num_heads, int window);
-Tensor swin_block(ModelRef m, Tensor x, Tensor mask, SwinBlockParams const& p);
-Tensor patch_merging(ModelRef m, Tensor x, int w, int h);
-void compute_attention_mask(float* out, int64_t w, int64_t h, int window_size);
-TensorAlloc<float> create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int window_size);
-SwinLayerResult swin_layer(ModelRef m, Tensor x, int64_t w, int64_t h, SwinLayer const& p,
-                           int window_size);
-Tensor patch_embed(ModelRef m, Tensor x, int patch_size = 4);
-SwinResult swin_transformer(ModelRef m, Tensor x, SwinParams const& p);
+void compute_relative_position_index(span<int32_t> dst, int window_size);
+tensor_data create_relative_position_index(ggml_context* ctx, int window_size);
+void compute_attention_mask(std::span<float> out, int64_t w, int64_t h, int window_size);
+tensor_data create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int window_size);
+
+tensor mlp(model_ref m, tensor x);
+tensor patch_merging(model_ref m, tensor x, int64_t w, int64_t h);
+tensor patch_embed(model_ref m, tensor x, int patch_size = 4);
+tensor window_partition(model_ref m, tensor x, int window);
+tensor window_reverse(model_ref m, tensor x, int w, int h, int window);
+tensor window_attention(model_ref m, tensor x, tensor mask, int num_heads, int window);
+tensor swin_block(model_ref m, tensor x, tensor mask, swin_block_params const&);
+swin_layer_result swin_layer(
+    model_ref m, tensor x, int64_t w, int64_t h, swin_layer_t const&, int window_size);
+swin_result swin_transformer(model_ref m, tensor x, swin_params const& p);
 
 // Encoder
 
-SwinResult encode_concat(ModelRef m, SwinResult& xs, SwinResult& xs_low);
-SwinResult encode(ModelRef m, Tensor x, SwinParams const& p);
+swin_result encode_concat(model_ref m, swin_result& xs, swin_result& xs_low);
+swin_result encode(model_ref m, tensor x, swin_params const& p);
 
 // Decoder
 
-Tensor conv_2d_deform(ModelRef m, Tensor x, Tensor weight, Tensor offset, Tensor mask, int stride,
-                      int pad);
-Tensor deformable_conv_2d(ModelRef m, Tensor x, int stride = 1, int pad = 0);
-Tensor mean_2d(ModelRef m, Tensor x);
-Tensor global_avg_pool(ModelRef m, Tensor x);
-Tensor aspp_module_deformable(ModelRef m, Tensor x, int padding = 0);
-Tensor aspp_deformable(ModelRef m, Tensor x);
-Tensor basic_decoder_block(ModelRef m, Tensor x);
-Tensor simple_conv(ModelRef m, Tensor x);
-Tensor image_to_patches(ModelRef m, Tensor x, int out_w, int out_h);
-Tensor gdt_conv(ModelRef m, Tensor x);
-Tensor decode(ModelRef m, Tensor x, SwinResult const& features);
+tensor deformable_conv_2d(model_ref m, tensor x, int stride = 1, int pad = 0);
+tensor mean_2d(model_ref m, tensor x);
+tensor global_avg_pool(model_ref m, tensor x);
+tensor aspp_module_deformable(model_ref m, tensor x, int padding = 0);
+tensor aspp_deformable(model_ref m, tensor x);
+tensor basic_decoder_block(model_ref m, tensor x);
+tensor simple_conv(model_ref m, tensor x);
+tensor image_to_patches(model_ref m, tensor x, int64_t out_w, int64_t out_h);
+tensor gdt_conv(model_ref m, tensor x);
+tensor decode(model_ref m, tensor x, swin_result const& features);
 
-} // namespace dlimg::birefnet
+} // namespace visp::birefnet

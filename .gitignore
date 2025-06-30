@@ -10,6 +10,7 @@ tests/result
 *.gguf
 *.zip
 *.tar.gz
+*.egg-info
 __pycache__
 
 # Don't sync Python dependencies for now, latest versions should work

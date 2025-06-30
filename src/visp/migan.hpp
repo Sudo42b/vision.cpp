@@ -1,49 +1,27 @@
 #pragma once
 
 #include "ml.hpp"
+#include "visp/image.hpp"
+#include "visp/util.hpp"
 
 #include <array>
 #include <cmath>
 
-namespace dlimg::migan {
+namespace visp {
 
-struct MIGANParams {
+struct migan_params {
     int resolution = 256;
     bool invert_mask = false;
 
-    static MIGANParams detect(ModelRef m);
+    static migan_params detect(model_ref m);
 };
 
-Tensor generate(ModelRef m, Tensor image, MIGANParams const& p);
+image_data_t<f32x4> migan_preprocess(image_view image, image_view mask, migan_params const&);
+image_data migan_postprocess(std::span<float> data, i32x2 extent, migan_params const&);
 
-std::vector<float> preprocess(ImageView image, ImageView mask, MIGANParams const& p);
-Image postprocess(std::span<float> data, Extent extent, MIGANParams const& p);
+tensor migan_generate(model_ref, tensor image, migan_params const&);
 
-template <typename E>
-struct flags {
-    using enum_type = E;
-
-    constexpr flags() = default;
-    constexpr flags(E value) : value(uint32_t(value)) {}
-    explicit constexpr flags(uint32_t value) : value(value) {}
-
-    flags& operator|=(E other) {
-        value |= other;
-        return *this;
-    }
-
-    uint32_t value = 0;
-};
-
-template <typename E>
-constexpr bool operator&(flags<E> lhs, E rhs) {
-    return (lhs.value & uint32_t(rhs)) != 0;
-}
-
-template <typename E>
-constexpr flags<E> operator|(flags<E> lhs, E rhs) {
-    return flags<E>(lhs.value | uint32_t(rhs));
-}
+namespace migan {
 
 enum class conv {
     none = 0,
@@ -57,19 +35,26 @@ constexpr flags<conv> operator|(conv lhs, conv rhs) {
     return flags<conv>(uint32_t(lhs) | uint32_t(rhs));
 }
 
-using Features = std::array<Tensor, 9>;
+using features = std::array<tensor, 9>;
 
-Tensor lrelu_agc(ModelRef m, Tensor x, float alpha = 0.2f, float gain = 1, float clamp = 0);
-Tensor downsample_2d(ModelRef m, Tensor x);
-Tensor upsample_2d(ModelRef m, Tensor x);
-Tensor separable_conv_2d(ModelRef m, Tensor x, flags<conv> flags = {});
-Tensor from_rgb(ModelRef m, Tensor x);
+tensor lrelu_agc(model_ref m, tensor x, float alpha = 0.2f, float gain = 1, float clamp = 0);
+tensor downsample_2d(model_ref m, tensor x);
+tensor upsample_2d(model_ref m, tensor x);
+tensor separable_conv_2d(model_ref m, tensor x, flags<conv> flags = {});
+tensor from_rgb(model_ref m, tensor x);
 
-std::pair<Tensor, Tensor> encoder_block(ModelRef m, Tensor x, conv flag = conv::none);
-std::pair<Tensor, Features> encode(ModelRef m, Tensor x, int res);
+std::pair<tensor, tensor> encoder_block(model_ref m, tensor x, conv flag = conv::none);
+std::pair<tensor, features> encode(model_ref m, tensor x, int res);
 
-std::pair<Tensor, Tensor> synthesis_block(ModelRef m, Tensor x, Tensor feat, Tensor img,
-                                          conv up_flag = conv::none, conv noise_flag = conv::none);
-Tensor synthesis(ModelRef m, Tensor x_in, Features feats, int res);
+std::pair<tensor, tensor> synthesis_block(
+    model_ref m,
+    tensor x,
+    tensor feat,
+    tensor img,
+    conv up_flag = conv::none,
+    conv noise_flag = conv::none);
 
-} // namespace dlimg::migan
+tensor synthesis(model_ref m, tensor x_in, features feats, int res);
+
+} // namespace migan
+} // namespace visp

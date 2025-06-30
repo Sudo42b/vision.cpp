@@ -1,180 +1,171 @@
 #pragma once
 
-#include "assert.hpp"
-#include <dlimgedit/dlimgedit.hpp>
+#include "visp/util.hpp"
 
+#include <memory>
 #include <span>
 
-namespace dlimg {
+namespace visp {
+using std::span;
 
-struct alignas(16) float4 {
-    std::array<float, 4> v;
+//
+// Image channel formats
 
-    static constexpr size_t size() { return 4; }
-
-    constexpr float4() = default;
-    explicit constexpr float4(float x, float y, float z, float w) : v{x, y, z, w} {}
-    explicit constexpr float4(float v) : v{v, v, v, v} {}
-    explicit constexpr float4(std::array<float, 4> const& arr) : v(arr) {}
-
-    float& operator[](size_t i) { return v[i]; }
-    float operator[](size_t i) const { return v[i]; }
+enum class image_format {
+    rgba,
+    bgra,
+    argb,
+    rgb,
+    alpha // single channel mask
 };
 
-constexpr float4 operator-(float4 const& a) { return float4{-a[0], -a[1], -a[2], -a[3]}; }
-constexpr float4 operator+(float4 const& a, float4 const& b) {
-    return float4{a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]};
-}
-constexpr float4 operator-(float4 const& a, float4 const& b) {
-    return float4{a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]};
-}
-constexpr float4 operator*(float4 const& a, float4 const& b) {
-    return float4{a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]};
-}
-constexpr float4 operator/(float4 const& a, float4 const& b) {
-    return float4{a[0] / b[0], a[1] / b[1], a[2] / b[2], a[3] / b[3]};
-}
-constexpr float4 operator*(float4 const& a, float b) {
-    return float4{a[0] * b, a[1] * b, a[2] * b, a[3] * b};
-}
-constexpr float4 operator*(float b, float4 const& a) {
-    return float4{b * a[0], b * a[1], b * a[2], b * a[3]};
-}
-constexpr float4 operator/(float4 const& a, float b) {
-    return float4{a[0] / b, a[1] / b, a[2] / b, a[3] / b};
-}
-constexpr float4 operator/(float b, float4 const& a) {
-    return float4{b / a[0], b / a[1], b / a[2], b / a[3]};
-}
-constexpr float4 clamp(float4 const& a, float min, float max) {
-    return float4{std::clamp(a[0], min, max), std::clamp(a[1], min, max),
-                  std::clamp(a[2], min, max), std::clamp(a[3], min, max)};
-}
-constexpr bool operator==(float4 const& a, float4 const& b) {
-    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
-}
+int n_channels(image_format format);
 
-uint8_t* load_image(char const* filepath, Extent* out_extent, int* out_channels);
-void save_image(ImageView const& img, char const* filepath);
+//
+// Image view - read-only, non-owning reference to uint8 image data
 
-Image resize(ImageView const&, Extent target);
-void resize_mask(ImageView const&, Extent target, uint8_t* output);
+struct image_view {
+    i32x2 extent{}; // width, height
+    int stride = 0; // row stride
+    image_format format = image_format::rgba;
+    uint8_t const* data = nullptr;
 
-struct PixelAccessor {
-    int stride_x;
-    int stride_c;
-    std::array<int, 4> channel_map;
-
-    PixelAccessor(ImageView image) : PixelAccessor(image.extent, image.channels) {}
-
-    PixelAccessor(Extent extent, Channels channels) {
-        stride_c = count(channels);
-        stride_x = extent.width * stride_c;
-        switch (channels) {
-        case Channels::bgra:
-            channel_map = {2, 1, 0, 3};
-            break;
-        case Channels::argb:
-            channel_map = {1, 2, 3, 0};
-            break;
-        case Channels::mask:
-            channel_map = {0, 0, 0, 0};
-            break;
-        case Channels::rgb:
-            channel_map = {0, 1, 2, 0};
-        default: // rgba
-            channel_map = {0, 1, 2, 3};
-            break;
-        }
-    }
-
-    uint8_t get(uint8_t const* pixels, int x, int y, int c) const {
-        return pixels[y * stride_x + x * stride_c + channel_map[c]];
-    }
-
-    void set(uint8_t* pixels, int x, int y, int c, uint8_t value) {
-        pixels[y * stride_x + x * stride_c + channel_map[c]] = value;
-    }
+    image_view() = default;
+    image_view(i32x2 extent, image_format format, uint8_t const* data);
 };
 
-using i32x2 = std::array<int32_t, 2>;
-using i64x4 = std::array<int64_t, 4>;
-using rgba32_t = float4;
-using rgb32_t = std::array<float, 3>;
+int n_channels(image_view const& img);
+int n_pixels(image_view const& img);
+size_t n_bytes(image_view const& img);
 
-constexpr float4 to_float4(rgb32_t const& v) { return float4{v[0], v[1], v[2], 1.0f}; }
-constexpr float4 to_float4(rgba32_t const& v) { return v; }
-constexpr float4 to_float4(float v) { return float4{v, v, v, v}; }
+//
+// Image data - storage for uint8 image data
+// Can be used everywhere a view is expected
 
-constexpr int64_t div_ceil(int64_t a, int64_t b) { return (a + b - 1) / b; }
-constexpr int32_t div_ceil(int32_t a, int32_t b) { return (a + b - 1) / b; }
+struct image_data {
+    i32x2 extent{};
+    image_format format = image_format::rgba;
+    std::unique_ptr<uint8_t[]> data;
 
-constexpr i32x2 div_ceil(i32x2 a, i32x2 b) { return {div_ceil(a[0], b[0]), div_ceil(a[1], b[1])}; }
-constexpr i32x2 div_ceil(i32x2 a, int32_t b) { return div_ceil(a, i32x2{b, b}); }
-constexpr i32x2 operator+(i32x2 a, i32x2 b) { return {a[0] + b[0], a[1] + b[1]}; }
-constexpr i32x2 operator-(i32x2 a, i32x2 b) { return {a[0] - b[0], a[1] - b[1]}; }
-constexpr i32x2 operator*(i32x2 a, int32_t b) { return {a[0] * b, a[1] * b}; }
-constexpr i32x2 operator*(i32x2 a, i32x2 b) { return {a[0] * b[0], a[1] * b[1]}; }
-constexpr i32x2 operator/(i32x2 a, int32_t b) { return {a[0] / b, a[1] / b}; }
-constexpr i32x2 min(i32x2 a, i32x2 b) { return {std::min(a[0], b[0]), std::min(a[1], b[1])}; }
+    image_view view() const { return image_view{extent, format, data.get()}; }
+    operator image_view() const { return view(); }
+};
 
-template <typename T>
+// Allocate image data, pixel data is not initialized
+image_data image_alloc(i32x2 extent, image_format format);
+
+// Load image from file (PNG, JPEG, etc.)
+image_data image_load(char const* filepath);
+
+// Save image to file (PNG, JPEG, etc.)
+void image_save(image_view const& img, char const* filepath);
+
+// Resize image to target size
+image_data image_resize(image_view const&, i32x2 target);
+
+// Resize mask to target size (linear interpolation)
+image_data image_resize_mask(image_view const&, i32x2 target, uint8_t* output);
+
+//
+// Image span - reference to float32 image data for processing
+// Always converts to/from 4-channel float for math
+
+template <typename T> // float, f32x3, f32x4
 struct image_span {
     using value_type = std::remove_cv_t<T>;
+    using float_type = std::conditional_t<std::is_const_v<T>, float const, float>;
 
     constexpr static int n_channels = sizeof(T) / sizeof(float);
 
-    Extent extent;
-    size_t row_stride;
-    T* data;
+    i32x2 extent = {};
+    size_t row_stride = 0;
+    T* data = nullptr;
 
-    image_span(Extent extent, T* data) : extent(extent), row_stride(extent.width), data(data) {}
+    image_span() = default;
 
-    image_span(Extent extent, std::span<float> data)
+    image_span(i32x2 extent, T* data) : extent(extent), row_stride(extent[0]), data(data) {}
+
+    image_span(i32x2 extent, std::span<float> data)
         : image_span(extent, reinterpret_cast<T*>(data.data())) {
-        ASSERT(data.size() == size_t(extent.width * extent.height * n_channels));
+        ASSERT(data.size() == size_t(extent[0] * extent[1] * n_channels));
     }
+
     image_span(image_span<value_type> const& other)
         : extent(other.extent), row_stride(other.row_stride), data(other.data) {}
 
-    float4 get(int x, int y) const { return to_float4(data[y * row_stride + x]); }
+    T operator[](size_t i) const { return data[i]; }
+    T& operator[](size_t i) { return data[i]; }
 
-    void set(int x, int y, float4 value) {
-        if constexpr (std::is_same_v<value_type, rgba32_t>) {
-            data[y * row_stride + x] = value;
-        } else if constexpr (std::is_same_v<value_type, rgb32_t>) {
-            data[y * row_stride + x] = {value[0], value[1], value[2]};
-        } else {
-            static_assert(std::is_same_v<value_type, float>, "Unsupported type for image_span");
-            data[y * row_stride + x] = value[0];
-        }
-    }
+    f32x4 get(int x, int y) const;
+    void set(int x, int y, f32x4 value);
 
-    float4 get(i32x2 coord) const { return get(coord[0], coord[1]); }
-    void set(i32x2 coord, float4 value) { set(coord[0], coord[1], value); }
-    float4 operator[](size_t i) const { return to_float4(data[i]); }
+    f32x4 get(i32x2 coord) const { return get(coord[0], coord[1]); }
+    void set(i32x2 coord, f32x4 value) { set(coord[0], coord[1], value); }
 
-    int n_elements() const { return extent.width * extent.height; }
+    int n_pixels() const { return extent[0] * extent[1]; }
+    int n_bytes() const { return n_pixels() * sizeof(T); }
 
-    std::span<float> as_float() {
-        return std::span(reinterpret_cast<float*>(data), n_elements() * n_channels);
-    }
+    span<float_type> as_float() const;
+};
+
+//
+// Image data for float32 images (1, 3, or 4 channels depending on T)
+// Can be used everywhere an image_span<T> is expected
+
+template <typename T>
+struct image_data_t {
+    i32x2 extent;
+    std::unique_ptr<T[]> data;
+
+    T operator[](size_t i) const { return data[i]; }
+    T& operator[](size_t i) { return data[i]; }
+
+    image_span<T> span() { return {extent, data.get()}; }
+    image_span<const T> span() const { return {extent, data.get()}; }
+
+    operator image_span<T>() { return span(); }
+    operator image_span<const T>() const { return span(); }
 };
 
 template <typename T>
-void image_to_float(ImageView const& src, image_span<T> dst, float4 offset = float4(0),
-                    float4 scale = float4(1), i32x2 tile_offset = {0, 0});
+image_data_t<T> image_alloc(i32x2 extent) {
+    return {extent, std::unique_ptr<T[]>(new T[extent[0] * extent[1]])};
+}
 
-void image_from_float(std::span<float const> src, std::span<uint8_t> dst, float scale = 1,
-                      float offset = 0);
+//
+// Image algorithms
 
-void blur(std::span<float> src, std::span<float> dst, Extent extent, int radius);
-void blur(std::span<float4> src, std::span<float4> dst, Extent extent, int radius);
+// Convert uint8 image to float32 image
+// - can be used with any image format, output is converted to T
+// - applies computation `dst = (src + offset) * scale` to each pixel
+// - starts reading `src` at `tile_offset`
+// - always writes all of `dst`, if `src` is smaller the output is padded (clamp to edge)
+template <typename T>
+void image_to_float(
+    image_view const& src,
+    image_span<T> dst,
+    f32x4 offset = f32x4(0),
+    f32x4 scale = f32x4(1),
+    i32x2 tile_offset = {0, 0});
 
-std::vector<float4> estimate_foreground(std::span<float4> img, std::span<float> mask, Extent extent,
-                                        int radius = 30);
+// Convert float32 image to uint8 image
+// - applies computation `dst = src * scale + offset` to every channel/pixel
+void image_from_float(span<float const> src, span<uint8_t> dst, float scale = 1, float offset = 0);
 
-void alpha_composite(ImageView const& fg, ImageView const& bg, ImageView const& mask, uint8_t* dst);
+// Box blur
+void blur(image_span<float const> src, image_span<float> dst, int radius);
+void blur(image_span<f32x4 const> src, image_span<f32x4> dst, int radius);
+
+// Try to separate foreground and background contribution from pixels at the mask border
+image_data_t<f32x4> estimate_foreground(
+    image_span<f32x4 const> img, image_span<float const> mask, int radius = 30);
+
+// Composite foreground and background images using alpha mask: `dst = fg * alpha + bg * (1-alpha)`
+void alpha_composite(
+    image_view const& fg, image_view const& bg, image_view const& mask, uint8_t* dst);
+
+//
+// Image tiling - helpers for processing large images in tiles
 
 struct tile_layout {
     i32x2 image_extent;
@@ -184,49 +175,66 @@ struct tile_layout {
 
     tile_layout() = default;
 
-    tile_layout(Extent extent, int max_tile_size, int overlap, int align = 16)
-        : image_extent{extent.width, extent.height}, overlap{overlap, overlap} {
+    tile_layout(i32x2 extent, int max_tile_size, int overlap, int align = 16);
 
-        n_tiles = div_ceil(image_extent, max_tile_size);
-        i32x2 img_extent_overlap = image_extent + (n_tiles - i32x2{1, 1}) * overlap;
-        tile_size = div_ceil(img_extent_overlap, n_tiles);
-        tile_size = div_ceil(tile_size, align) * align;
-    }
+    i32x2 start(i32x2 coord, i32x2 pad = {0, 0}) const;
+    i32x2 end(i32x2 coord, i32x2 pad = {0, 0}) const;
+    i32x2 size(i32x2 coord) const;
 
-    static tile_layout scale(tile_layout const& o, int scale) {
-        tile_layout scaled;
-        scaled.image_extent = o.image_extent * scale;
-        scaled.overlap = o.overlap * scale;
-        scaled.n_tiles = o.n_tiles;
-        scaled.tile_size = o.tile_size * scale;
-        return scaled;
-    }
-
-    i32x2 start(i32x2 coord, i32x2 pad = {0, 0}) const {
-        i32x2 offset = coord * (tile_size - overlap);
-        return offset + i32x2{coord[0] == 0 ? 0 : pad[0], coord[1] == 0 ? 0 : pad[1]};
-    }
-
-    i32x2 end(i32x2 coord, i32x2 pad = {0, 0}) const {
-        i32x2 offset = start(coord) + tile_size;
-        offset = offset - i32x2{coord[0] == n_tiles[0] - 1 ? 0 : pad[0],
-                                coord[1] == n_tiles[1] - 1 ? 0 : pad[1]};
-        return min(offset, image_extent);
-    }
-
-    i32x2 size(i32x2 coord) const { return end(coord) - start(coord); }
-
-    int total() const { return n_tiles[0] * n_tiles[1]; }
-
-    i32x2 coord(int index) const {
-        ASSERT(index >= 0 && index < total());
-        return {index % n_tiles[0], index / n_tiles[0]};
-    }
-
-    Extent tile_extent() const { return {tile_size[0], tile_size[1]}; }
+    int total() const;            // flat number of tiles
+    i32x2 coord(int index) const; // flat index -> tile index
 };
 
-void merge_tile(image_span<const rgb32_t> tile, image_span<rgb32_t> dst, i32x2 tile_coord,
-                tile_layout const& layout);
+// Returns layout with same number of tiles within a larger image
+tile_layout tile_scale(tile_layout const&, int scale);
 
-} // namespace dlimg
+void tile_merge(
+    image_span<f32x3 const> const& tile,
+    image_span<f32x3>& dst,
+    i32x2 tile_coord,
+    tile_layout const& layout);
+
+//
+// Implementation
+//
+
+constexpr f32x4 load_pixel(f32x4 v) {
+    return v;
+}
+
+constexpr f32x4 load_pixel(f32x3 v) {
+    return f32x4{v[0], v[1], v[2], 1.0f};
+}
+
+constexpr f32x4 load_pixel(float v) {
+    return f32x4{v};
+}
+
+constexpr void store_pixel(f32x3& v, f32x4 value) {
+    v = {value[0], value[1], value[2]};
+}
+
+constexpr void store_pixel(f32x4& v, f32x4 value) {
+    v = value;
+}
+
+constexpr void store_pixel(float& v, f32x4 value) {
+    v = value[0];
+}
+
+template <typename T>
+f32x4 image_span<T>::get(int x, int y) const {
+    return load_pixel(data[y * row_stride + x]);
+}
+
+template <typename T>
+void image_span<T>::set(int x, int y, f32x4 value) {
+    store_pixel(data[y * row_stride + x], value);
+}
+
+template <typename T>
+auto image_span<T>::as_float() const -> span<float_type> {
+    return span(reinterpret_cast<float_type*>(data), n_pixels() * n_channels);
+}
+
+} // namespace visp
