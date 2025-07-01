@@ -7,21 +7,6 @@
 #include <filesystem>
 
 namespace visp {
-using std::filesystem::path;
-
-path const& test_dir() {
-    static path const p = []() {
-        path cur = std::filesystem::current_path();
-        while (!exists(cur / "README.md")) {
-            cur = cur.parent_path();
-            if (cur.empty()) {
-                throw std::runtime_error("root directory not found");
-            }
-        }
-        return cur / "test";
-    }();
-    return p;
-}
 
 TEST_CASE(image_formats) {
     auto formats = std::array{
@@ -37,7 +22,7 @@ TEST_CASE(image_formats) {
 }
 
 TEST_CASE(image_load) {
-    image_data img = image_load((test_dir() / "input" / "cat_and_hat.png").string().c_str());
+    image_data img = image_load((test_dir().input / "cat-and-hat.jpg").string().c_str());
     CHECK(img.extent == i32x2{512, 512});
     CHECK(img.format == image_format::rgba);
     CHECK(n_bytes(img) == 512 * 512 * 4);
@@ -51,7 +36,7 @@ TEST_CASE(image_save) {
         img.data.get()[i * 4 + 2] = 0;
         img.data.get()[i * 4 + 3] = 255;
     }
-    path filepath = (test_dir() / "result" / "test_image_save.png");
+    path filepath = (test_dir().results / "image-save.png");
     image_save(img, filepath.string().c_str());
     CHECK(exists(filepath));
 

@@ -1,20 +1,20 @@
 # Main library C++ tests
 
-add_executable(test-unit)
-target_sources(test-unit PRIVATE
+add_executable(test-vision)
+target_sources(test-vision PRIVATE
   testing.cpp
   test-image.cpp
 )
-target_include_directories(test-unit PRIVATE . ../src)
-target_link_libraries(test-unit PRIVATE
+target_include_directories(test-vision PRIVATE . ../src)
+target_link_libraries(test-vision PRIVATE
   visioncpp ggml
 )
 
 if(MSVC)
-  target_compile_options(test-unit PRIVATE /W4 /WX)  
+  target_compile_options(test-vision PRIVATE /W4 /WX)  
 endif()
 
-add_test(NAME unit COMMAND test-unit)
+add_test(NAME vision COMMAND test-vision)
 
 # Workbench library for Python tests
 

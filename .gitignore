@@ -3,7 +3,7 @@ install
 .vscode
 .vtune
 .debug
-tests/result
+tests/results
 *.pt
 *.pth
 *.bin
