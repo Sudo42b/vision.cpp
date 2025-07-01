@@ -3,7 +3,6 @@
 #include "math.hpp"
 #include "string.hpp"
 
-
 #include <stb_image.h>
 #include <stb_image_resize.h>
 #include <stb_image_write.h>
@@ -11,8 +10,8 @@
 #include <algorithm>
 #include <memory>
 #include <span>
-#include <vector>
 #include <utility>
+#include <vector>
 
 namespace visp {
 using std::clamp;
@@ -220,10 +219,10 @@ void blur_impl(image_span<const T> src, image_span<T> dst, int radius) {
     }
 }
 
-void blur(image_span<const float> src, image_span<float> dst, int radius) {
+void image_blur(image_span<const float> src, image_span<float> dst, int radius) {
     blur_impl(src, dst, radius);
 }
-void blur(image_span<const f32x4> src, image_span<f32x4> dst, int radius) {
+void image_blur(image_span<const f32x4> src, image_span<f32x4> dst, int radius) {
     blur_impl(src, dst, radius);
 }
 
@@ -247,20 +246,20 @@ auto blur_fusion_foreground_estimator(
     };
 
     auto blurred_mask = image_alloc<float>(extent);
-    blur(mask, blurred_mask, radius);
+    image_blur(mask, blurred_mask, radius);
 
     auto fg_masked = image_alloc<f32x4>(extent);
     per_pixel([&](size_t i) { fg_masked[i] = fg[i] * mask[i]; });
 
     auto blurred_fg = image_alloc<f32x4>(extent);
-    blur(fg_masked, blurred_fg, radius);
+    image_blur(fg_masked, blurred_fg, radius);
     per_pixel([&](size_t i) { blurred_fg[i] = blurred_fg[i] / (blurred_mask[i] + 1e-5f); });
 
     auto& bg_masked = fg_masked; // Reuse fg_masked for bg
     per_pixel([&](size_t i) { bg_masked[i] = bg[i] * (1.0f - mask[i]); });
 
     auto blurred_bg = image_alloc<f32x4>(extent);
-    blur(bg_masked, blurred_bg, radius);
+    image_blur(bg_masked, blurred_bg, radius);
     per_pixel([&](size_t i) {
         blurred_bg[i] = blurred_bg[i] / ((1.0f - blurred_mask[i]) + 1e-5f);
         f32x4 f = blurred_fg[i] +
@@ -270,12 +269,14 @@ auto blur_fusion_foreground_estimator(
     return std::pair{std::move(blurred_fg), std::move(blurred_bg)};
 }
 
-image_data_t<f32x4> estimate_foreground(image_span<const f32x4> img, image_span<const float> mask, int radius) {
+image_data_t<f32x4> image_estimate_foreground(
+    image_span<const f32x4> img, image_span<const float> mask, int radius) {
+
     auto&& [fg, blur_bg] = blur_fusion_foreground_estimator(img, img, img, mask, radius);
     return blur_fusion_foreground_estimator(img, fg, blur_bg, mask, 3).first;
 }
 
-void alpha_composite(
+void image_alpha_composite(
     image_view const& fg, image_view const& bg, image_view const& mask, uint8_t* dst) {
 
     ASSERT(fg.extent == bg.extent && fg.extent == mask.extent);
@@ -297,6 +298,42 @@ void alpha_composite(
             }
         }
     }
+}
+
+float image_difference_rms(image_view const& img1, image_view const& img2) {
+    ASSERT(img1.extent == img2.extent && img1.format == img2.format);
+
+    float sum_sq_diff = 0.0f;
+    size_t n = n_bytes(img1);
+    for (size_t i = 0; i < n; ++i) {
+        float p1 = float(img1.data[i]) / 255.0f;
+        float p2 = float(img2.data[i]) / 255.0f;
+        sum_sq_diff += sqr(p1 - p2);
+    }
+    return std::sqrt(sum_sq_diff / n);
+}
+
+template<typename T>
+float image_difference_rms_impl(image_span<T const> img1, image_span<T const> img2) {
+    ASSERT(img1.extent == img2.extent);
+
+    float sum_sq_diff = 0.0f;
+    size_t n = img1.n_pixels();
+    for (size_t i = 0; i < n; ++i) {
+        f32x4 diff = load_pixel(img1[i]) - load_pixel(img2[i]);
+        sum_sq_diff += dot(diff, diff);
+    }
+    return std::sqrt(sum_sq_diff / n);
+}
+
+float image_difference_rms(image_span<float const> img1, image_span<float const> img2) {
+    return image_difference_rms_impl(img1, img2);
+}
+float image_difference_rms(image_span<f32x3 const> img1, image_span<f32x3 const> img2) {
+    return image_difference_rms_impl(img1, img2);
+}
+float image_difference_rms(image_span<f32x4 const> img1, image_span<f32x4 const> img2) {
+    return image_difference_rms_impl(img1, img2);
 }
 
 //

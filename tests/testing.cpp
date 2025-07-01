@@ -41,6 +41,9 @@ int main(int argc, char** argv) {
             printf("%s \033[31mFAILED\033[0m\n", test.name);
             printf("  \033[90m%s:%d:\033[0m Assertion failed\n", e.file, e.line);
             printf("  \033[93m%s\033[0m\n", e.condition);
+            if (e.eval) {
+                printf("  \033[93m%s\033[0m\n", e.eval.c_str());
+            }
         } catch (const std::exception& e) {
             ++errors;
             printf("%s \033[31mERROR\033[0m\n", test.name);
@@ -92,13 +95,26 @@ test_directories const& test_dir() {
             .test = cur / "tests",
             .input = cur / "tests" / "input",
             .results = cur / "tests" / "results",
-            .reference = cur / "tests" / "reference"
-        };
+            .reference = cur / "tests" / "reference"};
         if (!exists(dirs.results)) {
             create_directories(dirs.results);
         }
         return dirs;
     }();
+    return result;
+}
+
+float tolerance = 1e-5f;
+float& test_tolerance_value() {
+    return tolerance;
+}
+
+test_failure test_failure_image_mismatch(
+    char const* file, int line, char const* condition, float rms) {
+    test_failure result(file, line, condition);
+    format(
+        result.eval, "-> rmse {:.5f} > {:.5f} tolerance", rms,
+        test_tolerance_value());
     return result;
 }
 

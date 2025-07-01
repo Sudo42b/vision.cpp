@@ -11,6 +11,7 @@ struct test_failure {
     char const* file;
     int line;
     char const* condition;
+    fixed_string<64> eval;
 
     test_failure(char const* file, int line, char const* condition)
         : file(file), line(line), condition(condition) {}
@@ -47,6 +48,40 @@ struct test_directories {
 
 test_directories const& test_dir();
 
+float& test_tolerance_value();
+
+struct test_with_tolerance {
+    float old_value;
+
+    test_with_tolerance(float epsilon) : old_value(test_tolerance_value()) {
+        test_tolerance_value() = epsilon;
+    }
+    ~test_with_tolerance() { test_tolerance_value() = old_value; }
+};
+
+template <typename T>
+bool test_is_equal(T const& a, T const& b) {
+    if constexpr (std::is_floating_point_v<T>) {
+        return std::abs(a - b) <= test_tolerance_value();
+    }
+    return a == b;
+}
+
+template <typename LHS, typename RHS>
+test_failure test_failure_not_equal(
+    char const* file, int line, char const* condition, LHS const& lhs, RHS const& rhs) {
+
+    test_failure result(file, line, condition);
+    if constexpr (std::is_floating_point_v<LHS> && std::is_floating_point_v<RHS>) {
+        format(result.eval, "-> {} != {} \033[90m(eps={})", lhs, rhs, test_tolerance_value());
+    } else {
+        format(result.eval, "-> {} != {}", lhs, rhs);
+    }
+    return result;
+}
+
+test_failure test_failure_image_mismatch(char const* file, int line, char const*, float rms);
+
 } // namespace visp
 
 #define TEST_CASE(name)                                                                            \
@@ -57,4 +92,14 @@ test_directories const& test_dir();
 #define CHECK(...)                                                                                 \
     if (!(__VA_ARGS__)) {                                                                          \
         throw visp::test_failure(__FILE__, __LINE__, #__VA_ARGS__);                                \
+    }
+
+#define CHECK_EQUAL(lhs, rhs)                                                                      \
+    if (!test_is_equal(lhs, rhs)) {                                                                \
+        throw visp::test_failure_not_equal(__FILE__, __LINE__, #lhs " == " #rhs, lhs, rhs);        \
+    }
+
+#define CHECK_IMAGES_EQUAL(lhs, rhs)                                                               \
+    if (float rms = visp::image_difference_rms(lhs, rhs); rms > visp::test_tolerance_value()) {    \
+        throw visp::test_failure_image_mismatch(__FILE__, __LINE__, #lhs " == " #rhs, rms);        \
     }

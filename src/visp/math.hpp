@@ -12,6 +12,9 @@ using std::clamp;
 constexpr int32_t div_ceil(int32_t a, int32_t b) { return (a + b - 1) / b; }
 constexpr int64_t div_ceil(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
+constexpr float sqr(float x) { return x * x; }
+constexpr int sqr(int x) { return x * x; }
+
 constexpr int log2(int n) {
     int log = 0;
     while (n > 1) {
@@ -35,6 +38,10 @@ constexpr f32x4 operator/(float b, f32x4 const& a) { return f32x4{b / a[0], b / 
 
 constexpr f32x4 clamp(f32x4 const& a, float min, float max) {
     return f32x4{clamp(a[0], min, max), clamp(a[1], min, max), clamp(a[2], min, max), clamp(a[3], min, max)};
+}
+
+constexpr float dot(f32x4 const& a, f32x4 const& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 }
 
 // i32x2 operations

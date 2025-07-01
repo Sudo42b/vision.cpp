@@ -41,14 +41,7 @@ TEST_CASE(image_save) {
     CHECK(exists(filepath));
 
     image_data result = image_load(filepath.string().c_str());
-    CHECK(result.extent == i32x2{16, 16});
-    CHECK(result.format == image_format::rgba);
-    for (int i = 0; i < 16 * 16; ++i) {
-        CHECK(result.data[i * 4 + 0] == 255);
-        CHECK(result.data[i * 4 + 1] == i);
-        CHECK(result.data[i * 4 + 2] == 0);
-        CHECK(result.data[i * 4 + 3] == 255);
-    }
+    CHECK_IMAGES_EQUAL(result, img);
 }
 
 TEST_CASE(image_resize) {
@@ -68,6 +61,36 @@ TEST_CASE(image_resize) {
         CHECK(int(result.data[i * 4 + 2]) == 2 + 8 * (i % 4));
         CHECK(result.data[i * 4 + 3] == 255);
     }
+}
+
+TEST_CASE(image_blur) {
+    constexpr i32x2 extent{6, 6};
+    // clang-format off
+    std::array<float, extent[0] * extent[1]> input_data = {
+         1.0f,  2.0f,  3.0f,  4.0f,  5.0f,  6.0f,
+         7.0f,  8.0f,  9.0f, 10.0f, 11.0f, 12.0f,
+        13.0f, 14.0f, 15.0f, 16.0f, 17.0f, 18.0f,
+        19.0f, 20.0f, 21.0f, 22.0f, 23.0f, 24.0f,
+        25.0f, 26.0f, 27.0f, 28.0f, 29.0f, 30.0f,
+        31.0f, 32.0f, 33.0f, 34.0f, 35.0f, 36.0f
+    };    
+    std::array<float, extent[0] * extent[1]> expected_data = {
+         3.33334f,  4.0f,  5.0f,  6.0f,  7.0f,  7.66667f,
+         7.33334f,  8.0f,  9.0f, 10.0f, 11.0f, 11.66667f,
+        13.33334f, 14.0f, 15.0f, 16.0f, 17.0f, 17.66667f,
+        19.33334f, 20.0f, 21.0f, 22.0f, 23.0f, 23.66667f,
+        25.33334f, 26.0f, 27.0f, 28.0f, 29.0f, 29.66667f,
+        29.33334f, 30.0f, 31.0f, 32.0f, 33.0f, 33.66667f
+    };
+    // clang-format on
+    std::array<float, extent[0] * extent[1]> output_data{};
+
+    auto input = image_span<float const>(extent, input_data);
+    auto output = image_span<float>(extent, output_data);
+    image_blur(input, output, 1);
+
+    auto expected = image_span<float const>(extent, expected_data);
+    CHECK_IMAGES_EQUAL(output, expected);
 }
 
 TEST_CASE(tile_merge) {
@@ -100,15 +123,12 @@ TEST_CASE(tile_merge) {
         2.f    , 2.f    , 2.f    , 7.f/3.f, 8.f/3.f, 3.f    , 3.f    , 3.f
     };
     // clang-format on
-    std::array<f32x3, 8 * 8> expected;
+    std::array<f32x3, 8 * 8> expected_rgb;
     for (int i = 0; i < 8 * 8; ++i) {
-        expected[i] = f32x3{expected_float[i], expected_float[i], expected_float[i]};
+        expected_rgb[i] = f32x3{expected_float[i], expected_float[i], expected_float[i]};
     }
-    for (int i = 0; i < int(dst.size()); ++i) {
-        CHECK(std::abs(dst[i][0] - expected[i][0]) < 0.0001f);
-        CHECK(std::abs(dst[i][1] - expected[i][1]) < 0.0001f);
-        CHECK(std::abs(dst[i][2] - expected[i][2]) < 0.0001f);
-    }
+    auto expected = image_span<f32x3 const>(i32x2{8, 8}, expected_rgb.data());
+    CHECK_IMAGES_EQUAL(dst_span, expected);
 }
 
 TEST_CASE(tile_merge_blending) {

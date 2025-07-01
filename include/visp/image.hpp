@@ -153,16 +153,22 @@ void image_to_float(
 void image_from_float(span<float const> src, span<uint8_t> dst, float scale = 1, float offset = 0);
 
 // Box blur
-void blur(image_span<float const> src, image_span<float> dst, int radius);
-void blur(image_span<f32x4 const> src, image_span<f32x4> dst, int radius);
+void image_blur(image_span<float const> src, image_span<float> dst, int radius);
+void image_blur(image_span<f32x4 const> src, image_span<f32x4> dst, int radius);
 
 // Try to separate foreground and background contribution from pixels at the mask border
-image_data_t<f32x4> estimate_foreground(
+image_data_t<f32x4> image_estimate_foreground(
     image_span<f32x4 const> img, image_span<float const> mask, int radius = 30);
 
 // Composite foreground and background images using alpha mask: `dst = fg * alpha + bg * (1-alpha)`
-void alpha_composite(
+void image_alpha_composite(
     image_view const& fg, image_view const& bg, image_view const& mask, uint8_t* dst);
+
+// Compute root-mean-square difference between two images
+float image_difference_rms(image_view const&, image_view const&);
+float image_difference_rms(image_span<float const>, image_span<float const>);
+float image_difference_rms(image_span<f32x3 const>, image_span<f32x3 const>);
+float image_difference_rms(image_span<f32x4 const>, image_span<f32x4 const>);
 
 //
 // Image tiling - helpers for processing large images in tiles
