@@ -1,7 +1,7 @@
 #include "birefnet.hpp"
 #include "math.hpp"
 #include "nn.hpp"
-#include "string.hpp"
+#include "util/string.hpp"
 
 #include <ggml.h>
 
@@ -9,7 +9,7 @@
 
 namespace visp::birefnet {
 
-image_data_t<f32x3> preprocess_image(image_view image, int image_size) {
+image_data_f32 preprocess_image(image_view image, int image_size) {
     constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
     constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
 
@@ -19,8 +19,8 @@ image_data_t<f32x3> preprocess_image(image_view image, int image_size) {
         image = image_view(*resized);
     }
 
-    image_data_t<f32x3> result = image_alloc<f32x3>(image.extent);
-    image_to_float(image, result.span(), -mean, 1.f / std);
+    image_data_f32 result = image_alloc_f32(image.extent,3);
+    image_u8_to_f32(image, result.as_span(), -mean, 1.f / std);
     return result;
 }
 

@@ -1,7 +1,7 @@
 #include "esrgan.hpp"
 #include "ml.hpp"
 #include "nn.hpp"
-#include "string.hpp"
+#include "util/string.hpp"
 
 #include <charconv>
 #include <string_view>

@@ -1,5 +1,5 @@
 #include "ml.hpp"
-#include "string.hpp"
+#include "util/string.hpp"
 
 #include <ggml-cpu.h>
 #include <ggml-vulkan.h>

@@ -45,7 +45,7 @@ struct tiny_vit_params {
 tensor tiny_vit(model_ref m, tensor x, tiny_vit_params const& p);
 
 float resize_longest_side(i32x2 extent, int target_longest_side);
-image_data_t<f32x3> preprocess_image(image_view image, sam_params const&);
+image_data_f32 preprocess_image(image_view image, sam_params const&);
 
 tensor conv_2d_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0, int groups = 1);
 tensor patch_embed(model_ref m, tensor x);

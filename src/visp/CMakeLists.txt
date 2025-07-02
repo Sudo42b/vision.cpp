@@ -13,7 +13,7 @@ target_compile_definitions(visioncpp PRIVATE VISP_EXPORTS ${VISP_ASSERT})
 target_include_directories(visioncpp PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
-  PRIVATE . ../util
+  PRIVATE ..
 )
 target_link_libraries(visioncpp
   PRIVATE stb ggml

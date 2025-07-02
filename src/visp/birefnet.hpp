@@ -6,7 +6,7 @@
 namespace visp::birefnet {
 struct swin_params;
 
-image_data_t<f32x3> preprocess_image(image_view image, int image_size);
+image_data_f32 preprocess_image(image_view image, int image_size);
 
 tensor run(model_ref m, tensor image, swin_params const& encoder_params);
 

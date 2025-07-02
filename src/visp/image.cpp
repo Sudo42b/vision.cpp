@@ -1,7 +1,7 @@
 #include "visp/image.hpp"
 #include "image-impl.hpp"
 #include "math.hpp"
-#include "string.hpp"
+#include "util/string.hpp"
 
 #include <stb_image.h>
 #include <stb_image_resize.h>
@@ -46,7 +46,7 @@ size_t n_bytes(image_view const& img) {
 }
 
 //
-// image data
+// image data (uint8)
 
 image_data image_alloc(i32x2 extent, image_format format) {
     size_t size = extent[0] * extent[1] * n_channels(format);
@@ -131,12 +131,21 @@ pixel_lookup::pixel_lookup(i32x2 extent, image_format format) {
 pixel_lookup::pixel_lookup(image_view image) : pixel_lookup(image.extent, image.format) {}
 
 //
+// image data (float32)
+
+image_data_f32 image_alloc_f32(i32x2 extent, int n_channels) {
+    size_t size = size_t(extent[0]) * extent[1] * n_channels;
+    return image_data_f32{extent, n_channels, std::unique_ptr<float[]>(new float[size])};
+}
+
+//
 // image conversion (uint8 <-> float32)
 
 template <typename T>
-void image_to_float(
-    image_view const& img, image_span<T> dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
+void convert(image_view img, image_span dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
     auto input = pixel_lookup(img);
+    auto output = image_target<T>(dst);
+
     for (int y = 0; y < dst.extent[1]; ++y) {
         for (int x = 0; x < dst.extent[0]; ++x) {
             int x0 = std::min(x + tile_offset[0], img.extent[0] - 1);
@@ -145,16 +154,23 @@ void image_to_float(
                 float(input.get(img.data, x0, y0, 0)), float(input.get(img.data, x0, y0, 1)),
                 float(input.get(img.data, x0, y0, 2)), float(input.get(img.data, x0, y0, 3))};
             v = (v / 255.f + offset) * scale;
-            dst.set(x, y, v);
+            output.store({x, y}, v);
         }
     }
 }
+void image_u8_to_f32(
+    image_view const& img, image_span const& dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
+    ASSERT(img.extent == dst.extent);
 
-template void image_to_float(image_view const&, image_span<f32x4>, f32x4, f32x4, i32x2);
-template void image_to_float(image_view const&, image_span<f32x3>, f32x4, f32x4, i32x2);
-template void image_to_float(image_view const&, image_span<float>, f32x4, f32x4, i32x2);
+    switch (dst.n_channels) {
+    case 1: convert<float>(img, dst, offset, scale, tile_offset); break;
+    case 3: convert<f32x3>(img, dst, offset, scale, tile_offset); break;
+    case 4: convert<f32x4>(img, dst, offset, scale, tile_offset); break;
+    default: ASSERT(false, "Invalid number of channels in destination image");
+    }
+}
 
-void image_from_float(
+void image_f32_to_u8(
     std::span<float const> src, std::span<uint8_t> dst, float scale, float offset) {
 
     ASSERT(src.size() == dst.size());
@@ -168,13 +184,15 @@ void image_from_float(
 // image algorithms
 
 template <typename T>
-void blur_impl(image_span<const T> src, image_span<T> dst, int radius) {
-    i32x2 extent = src.extent;
-    ASSERT(src.extent == dst.extent);
+void blur_impl(image_cspan src_img, image_span dst_img, int radius) {
+    i32x2 extent = src_img.extent;
+    ASSERT(src_img.extent == dst_img.extent);
     ASSERT(radius > 0);
     ASSERT(radius <= extent[0] / 2 && radius <= extent[1] / 2);
 
-    std::vector<T> temp(src.n_pixels());
+    T const* src = reinterpret_cast<T const*>(src_img.data);
+    T* dst = reinterpret_cast<T*>(dst_img.data);
+    std::vector<T> temp(n_pixels(src_img));
     float weight = 1.0f / (2 * radius + 1);
 
     // Horizontal pass (src -> temp)
@@ -219,58 +237,69 @@ void blur_impl(image_span<const T> src, image_span<T> dst, int radius) {
     }
 }
 
-void image_blur(image_span<const float> src, image_span<float> dst, int radius) {
-    blur_impl(src, dst, radius);
-}
-void image_blur(image_span<const f32x4> src, image_span<f32x4> dst, int radius) {
-    blur_impl(src, dst, radius);
+void image_blur(image_cspan src, image_span dst, int radius) {
+    ASSERT(src.n_channels == dst.n_channels);
+    ASSERT(src.n_channels == 1 || src.n_channels == 4);
+    ASSERT(src.extent == dst.extent);
+    ASSERT(radius > 0);
+
+    if (src.n_channels == 1) {
+        blur_impl<float>(src, dst, radius);
+    } else if (src.n_channels == 4) {
+        blur_impl<f32x4>(src, dst, radius);
+    }
 }
 
 // Approximate Fast Foreground Colour Estimation
 // https://ieeexplore.ieee.org/document/9506164
 auto blur_fusion_foreground_estimator(
-    image_span<const f32x4> img,
-    image_span<const f32x4> fg,
-    image_span<const f32x4> bg,
-    image_span<const float> mask,
-    int radius) {
+    image_cspan img_in, image_cspan fg_in, image_cspan bg_in, image_cspan mask_in, int radius) {
 
-    i32x2 extent = img.extent;
-    ASSERT(fg.extent == extent && bg.extent == extent && mask.extent == extent);
-    size_t n = img.n_pixels();
+    i32x2 extent = img_in.extent;
+    size_t n = n_pixels(img_in);
+    ASSERT(fg_in.extent == extent && bg_in.extent == extent && mask_in.extent == extent);
+    image_source<f32x4> img(img_in);
+    image_source<f32x4> fg(fg_in);
+    image_source<f32x4> bg(bg_in);
+    image_source<float> mask(mask_in);
 
-    auto per_pixel = [n](auto&& f) {
-        for (size_t i = 0; i < n; ++i) {
-            f(i);
-        }
-    };
+    auto blurred_mask_data = image_alloc_f32(extent, 1);
+    auto blurred_mask = image_target<float>(blurred_mask_data);
+    image_blur(mask_in, blurred_mask, radius);
 
-    auto blurred_mask = image_alloc<float>(extent);
-    image_blur(mask, blurred_mask, radius);
+    auto fg_masked_data = image_alloc_f32(extent, 4);
+    auto fg_masked = image_target<f32x4>(fg_masked_data);
+    for (size_t i = 0; i < n; ++i) {
+        fg_masked[i] = fg[i] * mask[i];
+    }
 
-    auto fg_masked = image_alloc<f32x4>(extent);
-    per_pixel([&](size_t i) { fg_masked[i] = fg[i] * mask[i]; });
-
-    auto blurred_fg = image_alloc<f32x4>(extent);
+    auto blurred_fg_data = image_alloc_f32(extent, 4);
+    auto blurred_fg = image_target<f32x4>(blurred_fg_data);
     image_blur(fg_masked, blurred_fg, radius);
-    per_pixel([&](size_t i) { blurred_fg[i] = blurred_fg[i] / (blurred_mask[i] + 1e-5f); });
+    for (size_t i = 0; i < n; ++i) {
+        blurred_fg[i] = blurred_fg[i] / (blurred_mask[i] + 1e-5f);
+    }
 
     auto& bg_masked = fg_masked; // Reuse fg_masked for bg
-    per_pixel([&](size_t i) { bg_masked[i] = bg[i] * (1.0f - mask[i]); });
+    for (size_t i = 0; i < n; ++i) {
+        bg_masked[i] = bg[i] * (1.0f - mask[i]);
+    }
 
-    auto blurred_bg = image_alloc<f32x4>(extent);
+    auto blurred_bg_data = image_alloc_f32(extent, 4);
+    auto blurred_bg = image_target<f32x4>(blurred_bg_data);
     image_blur(bg_masked, blurred_bg, radius);
-    per_pixel([&](size_t i) {
+    for (size_t i = 0; i < n; ++i) {
         blurred_bg[i] = blurred_bg[i] / ((1.0f - blurred_mask[i]) + 1e-5f);
         f32x4 f = blurred_fg[i] +
                   mask[i] * (img[i] - mask[i] * blurred_fg[i] - (1.0f - mask[i]) * blurred_bg[i]);
         blurred_fg[i] = clamp(f, 0.0f, 1.0f);
-    });
-    return std::pair{std::move(blurred_fg), std::move(blurred_bg)};
+    }
+    return std::pair{std::move(blurred_fg_data), std::move(blurred_bg_data)};
 }
 
-image_data_t<f32x4> image_estimate_foreground(
-    image_span<const f32x4> img, image_span<const float> mask, int radius) {
+image_data_f32 image_estimate_foreground(image_cspan img, image_cspan mask, int radius) {
+    ASSERT(img.extent == mask.extent);
+    ASSERT(img.n_channels == 3 && mask.n_channels == 1);
 
     auto&& [fg, blur_bg] = blur_fusion_foreground_estimator(img, img, img, mask, radius);
     return blur_fusion_foreground_estimator(img, fg, blur_bg, mask, 3).first;
@@ -313,27 +342,30 @@ float image_difference_rms(image_view const& img1, image_view const& img2) {
     return std::sqrt(sum_sq_diff / n);
 }
 
-template<typename T>
-float image_difference_rms_impl(image_span<T const> img1, image_span<T const> img2) {
-    ASSERT(img1.extent == img2.extent);
+template <typename T>
+float image_difference_rms_impl(image_cspan img1, image_cspan img2) {
+    image_source<T> a(img1);
+    image_source<T> b(img2);
 
     float sum_sq_diff = 0.0f;
-    size_t n = img1.n_pixels();
+    size_t n = n_pixels(img1);
     for (size_t i = 0; i < n; ++i) {
-        f32x4 diff = load_pixel(img1[i]) - load_pixel(img2[i]);
+        f32x4 diff = a.load(i) - b.load(i);
         sum_sq_diff += dot(diff, diff);
     }
     return std::sqrt(sum_sq_diff / n);
 }
 
-float image_difference_rms(image_span<float const> img1, image_span<float const> img2) {
-    return image_difference_rms_impl(img1, img2);
-}
-float image_difference_rms(image_span<f32x3 const> img1, image_span<f32x3 const> img2) {
-    return image_difference_rms_impl(img1, img2);
-}
-float image_difference_rms(image_span<f32x4 const> img1, image_span<f32x4 const> img2) {
-    return image_difference_rms_impl(img1, img2);
+float image_difference_rms(image_cspan const& img1, image_cspan const& img2) {
+    ASSERT(img1.extent == img2.extent);
+    ASSERT(img1.n_channels == img2.n_channels);
+
+    switch (img1.n_channels) {
+    case 1: return image_difference_rms_impl<float>(img1, img2);
+    case 3: return image_difference_rms_impl<f32x3>(img1, img2);
+    case 4: return image_difference_rms_impl<f32x4>(img1, img2);
+    default: ASSERT(false, "Invalid number of channels"); return 0.0f;
+    }
 }
 
 //
@@ -384,10 +416,13 @@ i32x2 tile_layout::coord(int index) const {
 }
 
 void tile_merge(
-    image_span<const f32x3> const& tile,
-    image_span<f32x3>& dst,
+    image_cspan const& tile_img,
+    image_span const& dst_img,
     i32x2 tile_coord,
     tile_layout const& layout) {
+
+    image_source<f32x3> tile(tile_img);
+    image_target<f32x3> dst(dst_img);
 
     i32x2 beg = layout.start(tile_coord);
     i32x2 end = layout.end(tile_coord);
@@ -412,7 +447,7 @@ void tile_merge(
             float norm = float((coverage[0] + 1) * (coverage[1] + 1));
             float blend = weight > 0 ? weight / norm : 1.0f;
 
-            dst.set(idx, dst.get(idx) + blend * tile.get(idx - beg));
+            dst.store(idx, dst.load(idx) + blend * tile.load(idx - beg));
         }
     }
 }

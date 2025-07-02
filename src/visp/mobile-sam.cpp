@@ -69,7 +69,7 @@ i32x2 scale_extent(i32x2 extent, float scale) {
     return i32x2{scale_coord(extent[0], scale), scale_coord(extent[1], scale)};
 }
 
-image_data_t<f32x3> preprocess_image(image_view image, sam_params const& p) {
+image_data_f32 preprocess_image(image_view image, sam_params const& p) {
     constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
     constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
 
@@ -80,8 +80,8 @@ image_data_t<f32x3> preprocess_image(image_view image, sam_params const& p) {
         image = image_view(*resized);
     }
 
-    image_data_t<f32x3> result = image_alloc<f32x3>({p.image_size, p.image_size});
-    image_to_float(image, result.span(), -mean, 1.f / std);
+    image_data_f32 result = image_alloc_f32({p.image_size, p.image_size},3);
+    image_u8_to_f32(image, result.as_span(), -mean, 1.f / std);
     return result;
 }
 

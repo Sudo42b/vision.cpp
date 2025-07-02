@@ -2,7 +2,7 @@
 #include "image-impl.hpp"
 #include "math.hpp"
 #include "nn.hpp"
-#include "string.hpp"
+#include "util/string.hpp"
 
 #include <array>
 #include <cmath>
@@ -142,7 +142,7 @@ migan_params migan_params::detect(model_ref m) {
     }
 }
 
-image_data_t<f32x4> migan_preprocess(image_view image, image_view mask, migan_params const& p) {
+image_data_f32 migan_preprocess(image_view image, image_view mask, migan_params const& p) {
     i32x2 res = {p.resolution, p.resolution};
     std::optional<image_data> resized_image;
     if (image.extent != res) {
@@ -158,14 +158,14 @@ image_data_t<f32x4> migan_preprocess(image_view image, image_view mask, migan_pa
     pixel_lookup alpha(mask);
     const float scale = 2.0f / 255.0f;
     const uint8_t no_fill = p.invert_mask ? 0 : 255;
-    image_data_t<f32x4> result_image = image_alloc<f32x4>(res);
-    image_span<f32x4> result = result_image.span();
+    image_data_f32 result_image = image_alloc_f32(res,4);
+    image_target<f32x4> result = result_image.as_span();
 
     for (int y = 0; y < res[1]; ++y) {
         for (int x = 0; x < res[0]; ++x) {
             float a = alpha.get(mask.data, x, y, 0) == no_fill ? 1.0f : 0.0f;
-            result.set(
-                x, y,
+            result.store(
+                {x, y},
                 {a - 0.5f, //
                  a * (rgb.get(image.data, x, y, 0) * scale - 1.0f),
                  a * (rgb.get(image.data, x, y, 1) * scale - 1.0f),
@@ -178,7 +178,7 @@ image_data_t<f32x4> migan_preprocess(image_view image, image_view mask, migan_pa
 image_data migan_postprocess(std::span<float> data, i32x2 extent, migan_params const& p) {
     int res = p.resolution;
     auto image = image_alloc(i32x2{res, res}, image_format::rgb);
-    image_from_float(data, std::span(image.data.get(), n_bytes(image)), 0.5f, 0.5f);
+    image_f32_to_u8(data, std::span(image.data.get(), n_bytes(image)), 0.5f, 0.5f);
     if (extent[0] != res || extent[1] != res) {
         return image_resize(image, extent);
     }

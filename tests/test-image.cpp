@@ -85,11 +85,11 @@ TEST_CASE(image_blur) {
     // clang-format on
     std::array<float, extent[0] * extent[1]> output_data{};
 
-    auto input = image_span<float const>(extent, input_data);
-    auto output = image_span<float>(extent, output_data);
+    auto input = image_cspan(extent, input_data);
+    auto output = image_span(extent, output_data);
     image_blur(input, output, 1);
 
-    auto expected = image_span<float const>(extent, expected_data);
+    auto expected = image_cspan(extent, expected_data);
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
@@ -100,12 +100,12 @@ TEST_CASE(tile_merge) {
         std::fill(tiles[t].begin(), tiles[t].end(), f32x3{v, v, v});
     }
     std::array<f32x3, 8 * 8> dst{};
-    auto dst_span = image_span<f32x3>(i32x2{8, 8}, dst.data());
+    auto dst_span = image_span({8, 8}, dst);
     auto const layout = tile_layout(i32x2{8, 8}, 6, 2, 1);
-    tile_merge({i32x2{5, 5}, tiles[0].data()}, dst_span, {0, 0}, layout);
-    tile_merge({i32x2{5, 5}, tiles[1].data()}, dst_span, {1, 0}, layout);
-    tile_merge({i32x2{5, 5}, tiles[2].data()}, dst_span, {0, 1}, layout);
-    tile_merge({i32x2{5, 5}, tiles[3].data()}, dst_span, {1, 1}, layout);
+    tile_merge(image_cspan({5, 5}, tiles[0]), dst_span, {0, 0}, layout);
+    tile_merge(image_cspan({5, 5}, tiles[1]), dst_span, {1, 0}, layout);
+    tile_merge(image_cspan({5, 5}, tiles[2]), dst_span, {0, 1}, layout);
+    tile_merge(image_cspan({5, 5}, tiles[3]), dst_span, {1, 1}, layout);
 
     float e00 = float(4 * 0 + 2 * 1 + 2 * 2 + 1 * 3) / 9.f;
     float e10 = float(2 * 0 + 4 * 1 + 1 * 2 + 2 * 3) / 9.f;
@@ -127,28 +127,26 @@ TEST_CASE(tile_merge) {
     for (int i = 0; i < 8 * 8; ++i) {
         expected_rgb[i] = f32x3{expected_float[i], expected_float[i], expected_float[i]};
     }
-    auto expected = image_span<f32x3 const>(i32x2{8, 8}, expected_rgb.data());
+    auto expected = image_cspan({8, 8}, expected_rgb);
     CHECK_IMAGES_EQUAL(dst_span, expected);
 }
 
 TEST_CASE(tile_merge_blending) {
     std::array<f32x3, 22 * 19> dst{};
-    auto dst_span = image_span<f32x3>(i32x2{22, 19}, dst.data());
+    auto dst_span = image_span({22, 19}, dst);
 
     auto layout = tile_layout(i32x2{22, 19}, 10, 3, 2);
     auto te = layout.tile_size;
     auto tile = std::vector<f32x3>(te[0] * te[1], f32x3{1.f, 1.f, 1.f});
-    auto tile_span = image_span<f32x3>(te, tile.data());
+    auto tile_span = image_cspan(te, tile);
 
     for (int y = 0; y < layout.n_tiles[1]; ++y) {
         for (int x = 0; x < layout.n_tiles[0]; ++x) {
             tile_merge(tile_span, dst_span, {x, y}, layout);
         }
     }
-    for (int y = 0; y < dst_span.extent[1]; ++y) {
-        for (int x = 0; x < dst_span.extent[0]; ++x) {
-            CHECK(dst_span.get(x, y) == f32x4{1.f, 1.f, 1.f, 1.f});
-        }
+    for (float value : dst_span.range()) {
+        CHECK_EQUAL(value, 1.0f);
     }
 }
 

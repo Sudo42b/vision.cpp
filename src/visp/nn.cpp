@@ -1,5 +1,5 @@
 #include "nn.hpp"
-#include "string.hpp"
+#include "util/string.hpp"
 
 namespace visp {
 

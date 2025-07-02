@@ -58,7 +58,7 @@ struct vec_t {
     alignas(Align) T v[Dim];
 
     constexpr T& operator[](size_t i) { return v[i]; }
-    constexpr T operator[](size_t i) const { return v[i]; }
+    constexpr T const& operator[](size_t i) const { return v[i]; }
 
     constexpr auto operator<=>(vec_t const&) const = default;
 };
