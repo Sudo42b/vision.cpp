@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ml.hpp"
+#include "visp/ml.hpp"
 #include "visp/image.hpp"
 #include "visp/vision.hpp"
 
@@ -10,29 +10,6 @@
 #include <vector>
 
 namespace visp {
-
-struct sam_params {
-    int image_size = 1024;
-    int mask_size = 256;
-};
-
-struct sam_prediction {
-    tensor masks;
-    tensor iou;
-};
-
-image_data_f32 sam_preprocess_image(image_view image, sam_params const&);
-f32x4 sam_preprocess_prompt(i32x2 point, i32x2 input_image_extent, sam_params const&);
-f32x4 sam_preprocess_prompt(region box, i32x2 input_image_extent, sam_params const&);
-
-tensor sam_encode_image(model_ref, tensor image, sam_params const&);
-tensor sam_encode_points(model_ref, tensor coords);
-tensor sam_encode_box(model_ref, tensor coords);
-
-sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed);
-
-image_data sam_postprocess_mask(
-    std::span<float const> mask_data, i32x2 target_extent, sam_params const&);
 
 namespace sam {
 

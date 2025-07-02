@@ -80,9 +80,9 @@ void compute_relative_position_index(span<int32_t> dst, int window_size) {
 
 tensor_data create_relative_position_index(ggml_context* ctx, int window_size) {
     int n = window_size;
-    auto result = tensor_data_alloc(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n * n * n * n));
+    auto result = tensor_alloc(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n * n * n * n));
     auto name = format<tensor_name>("window_attention_{}.rel_pos_index", n);
-    compute_relative_position_index(result.as<int32_t>(), n);
+    compute_relative_position_index(result.as_i32(), n);
     ggml_set_name(result.x, name.c_str());
     return result;
 }
@@ -272,10 +272,9 @@ tensor_data create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int w
     int n = window_size;
     int64_t nw_x = (w + n - 1) / n;
     int64_t nw_y = (h + n - 1) / n;
-    auto result =
-        tensor_data_alloc(ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n * n, n * n, nw_x * nw_y));
+    auto result = tensor_alloc(ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n * n, n * n, nw_x * nw_y));
     auto name = format<tensor_name>("swin_layer_{}x{}.attn_mask", w, h);
-    compute_attention_mask(result.as<float>(), w, h, window_size);
+    compute_attention_mask(result.as_f32(), w, h, window_size);
     ggml_set_name(result.x, name.c_str());
     return result;
 }

@@ -53,6 +53,16 @@ image_data image_alloc(i32x2 extent, image_format format) {
     return image_data{extent, format, std::unique_ptr<uint8_t[]>(new uint8_t[size])};
 }
 
+image_format image_format_from_channels(int n_channels) {
+    switch (n_channels) {
+    case 1: return image_format::alpha;
+    case 3: return image_format::rgb;
+    case 4: return image_format::rgba;
+    default: ASSERT(false, "Invalid number of channels");
+    }
+    return image_format::rgba;
+}
+
 image_data image_load(char const* filepath) {
     i32x2 extent = {0, 0};
     int channels = 0;
@@ -60,7 +70,8 @@ image_data image_load(char const* filepath) {
     if (!pixels) {
         throw error("Failed to load image {}: {}", filepath, stbi_failure_reason());
     }
-    return image_data(extent, image_format::rgba, std::unique_ptr<uint8_t[]>(pixels));
+    image_format format = image_format_from_channels(channels);
+    return image_data(extent, format, std::unique_ptr<uint8_t[]>(pixels));
 }
 
 void image_save(image_view const& img, char const* filepath) {
@@ -84,7 +95,7 @@ image_data image_resize(image_view const& img, i32x2 target) {
     image_data resized = image_alloc(target, img.format);
     int result = stbir_resize_uint8_generic(
         img.data, img.extent[0], img.extent[1], img.stride, resized.data.get(), target[0],
-        target[1], 0, n_channels(img), STBIR_ALPHA_CHANNEL_NONE, /*output_stride*/ 0,
+        target[1], /*output stride*/ 0, n_channels(img), STBIR_ALPHA_CHANNEL_NONE, /*flags*/ 0,
         STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT, STBIR_COLORSPACE_SRGB, nullptr);
 
     if (result == 0) {
@@ -150,11 +161,11 @@ span<float const> image_cspan::elements() const {
     return span(data, extent[0] * extent[1] * n_channels);
 }
 
- int n_pixels(image_cspan const& img) {
+int n_pixels(image_cspan const& img) {
     return img.extent[0] * img.extent[1];
 }
 
- size_t n_bytes(image_cspan const& img) {
+size_t n_bytes(image_cspan const& img) {
     return size_t(n_pixels(img)) * img.n_channels * sizeof(float);
 }
 

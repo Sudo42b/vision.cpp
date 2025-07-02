@@ -16,7 +16,8 @@ target_include_directories(visioncpp PUBLIC
   PRIVATE ..
 )
 target_link_libraries(visioncpp
-  PRIVATE stb ggml
+  PUBLIC ggml
+  PRIVATE stb
 )
 set_target_properties(visioncpp PROPERTIES
   VERSION ${PROJECT_VERSION}

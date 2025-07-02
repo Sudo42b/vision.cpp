@@ -29,7 +29,7 @@ AlignConsecutiveMacros:
   AlignCompound:   false
   PadOperators:    false
 AlignEscapedNewlines: Right
-AlignOperands:   Align
+AlignOperands:   DontAlign
 AlignTrailingComments:
   Kind:            Always
   OverEmptyLines:  0

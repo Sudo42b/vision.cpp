@@ -1,0 +1,5 @@
+add_executable(vision-cli)
+target_sources(vision-cli PRIVATE cli.cpp)
+target_include_directories(vision-cli PRIVATE ..)
+target_compile_definitions(vision-cli PRIVATE ${VISP_ASSERT})
+target_link_libraries(vision-cli PRIVATE visioncpp)

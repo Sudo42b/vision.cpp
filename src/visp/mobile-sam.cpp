@@ -1,6 +1,7 @@
 #include "mobile-sam.hpp"
 #include "math.hpp"
 #include "nn.hpp"
+#include "util/string.hpp"
 
 #include <ggml.h>
 
@@ -238,12 +239,13 @@ f32x4 preprocess_point(i32x2 point, i32x2 input_image_extent, sam_params const& 
     return f32x4{x, y, 0.f, 0.f};
 }
 
-f32x4 preprocess_box(region r, i32x2 input_image_extent, sam_params const& p) {
+f32x4 preprocess_box(
+    i32x2 top_left, i32x2 bot_right, i32x2 input_image_extent, sam_params const& p) {
     float scale = resize_longest_side(input_image_extent, p.image_size);
-    float x0 = transform_coord(r.top_left[0], scale, p.image_size);
-    float y0 = transform_coord(r.top_left[1], scale, p.image_size);
-    float x1 = transform_coord(r.bottom_right[0], scale, p.image_size);
-    float y1 = transform_coord(r.bottom_right[1], scale, p.image_size);
+    float x0 = transform_coord(top_left[0], scale, p.image_size);
+    float y0 = transform_coord(top_left[1], scale, p.image_size);
+    float x1 = transform_coord(bot_right[0], scale, p.image_size);
+    float y1 = transform_coord(bot_right[1], scale, p.image_size);
     return f32x4{x0, y0, x1, y1};
 }
 
@@ -490,7 +492,7 @@ sam_prediction predict_masks(
     // Generate mask quality predictions
     tensor iou_pred = hypernetwork_mlp(m["iou_prediction_head"], iou_token_out, 3);
 
-    return {mark_output(m, masks, "masks"), mark_output(m, iou_pred, "iou")};
+    return {masks, iou_pred};
 }
 
 template <typename Tsrc, typename Tdst, typename Fconvert>
@@ -562,16 +564,19 @@ image_data_f32 sam_preprocess_image(image_view image, sam_params const& p) {
     return result;
 }
 
-f32x4 sam_preprocess_prompt(i32x2 point, i32x2 input_image_extent, sam_params const& p) {
+f32x4 sam_preprocess_point(i32x2 point, i32x2 input_image_extent, sam_params const& p) {
     return sam::preprocess_point(point, input_image_extent, p);
 }
 
-f32x4 sam_preprocess_prompt(region r, i32x2 input_image_extent, sam_params const& p) {
-    return sam::preprocess_box(r, input_image_extent, p);
+f32x4 sam_preprocess_box(i32x2 tl, i32x2 br, i32x2 input_image_extent, sam_params const& p) {
+    return sam::preprocess_box(tl, br, input_image_extent, p);
 }
 
 image_data sam_postprocess_mask(
-    std::span<float const> mask_data, i32x2 target_extent, sam_params const& p) {
+    std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const& p) {
+
+    mask_data = mask_data.subspan(mask_index * sqr(p.mask_size));
+    ASSERT(mask_data.size() >= sqr(p.mask_size));
 
     float scale = sam::resize_longest_side(target_extent, p.image_size);
     i32x2 scaled_extent = sam::scale_extent(target_extent, scale);
@@ -596,11 +601,11 @@ image_data sam_postprocess_mask(
 }
 
 tensor sam_encode_points(model_ref m, tensor coords) {
-    return sam::embed_points(m, coords);
+    return sam::embed_points(m["prompt_encoder"], coords);
 }
 
 tensor sam_encode_box(model_ref m, tensor coords) {
-    return sam::embed_box(m, coords);
+    return sam::embed_box(m["prompt_encoder"], coords);
 }
 
 tensor sam_encode_image(model_ref m, tensor image, sam_params const&) {
@@ -608,7 +613,10 @@ tensor sam_encode_image(model_ref m, tensor image, sam_params const&) {
 }
 
 sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed) {
-    return sam::predict_masks(m["dec"], image_embed, prompt_embed, sam::no_mask_embed(m));
+    tensor dense_prompt = sam::no_mask_embed(m["prompt_encoder"]);
+    auto [masks, iou] = sam::predict_masks(m["dec"], image_embed, prompt_embed, dense_prompt);
+
+    return {mark_output(m, masks, "masks"), mark_output(m, iou, "iou")};
 }
 
 } // namespace visp

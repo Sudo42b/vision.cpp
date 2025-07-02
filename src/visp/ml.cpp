@@ -1,4 +1,4 @@
-#include "ml.hpp"
+#include "visp/ml.hpp"
 #include "util/string.hpp"
 
 #include <ggml-cpu.h>
@@ -260,7 +260,7 @@ tensor named(model_ref& m, tensor tensor) {
 //
 // tensor creation and data handling
 
-tensor create_input(model_ref& m, tensor_name name, ggml_type type, i64x4 shape) {
+tensor create_input(model_ref& m, ggml_type type, i64x4 shape, tensor_name name) {
     tensor x = ggml_new_tensor_4d(m, type, shape[0], shape[1], shape[2], shape[3]);
     ggml_set_name(x, name.c_str());
     ggml_set_input(x);
@@ -274,11 +274,11 @@ tensor mark_output(model_ref& m, tensor x, tensor_name name) {
     return x;
 }
 
-tensor_data tensor_data_alloc(tensor x) {
+tensor_data tensor_alloc(tensor x) {
     return {x, std::unique_ptr<byte[]>(new byte[ggml_nbytes(x)])};
 }
 
-tensor_data tensor_data_load(tensor x, char const* filepath) {
+tensor_data tensor_load(tensor x, char const* filepath) {
     FILE* file = fopen(filepath, "rb");
     if (!file) {
         throw std::runtime_error(std::format("Failed to open file: {}", filepath));
@@ -292,6 +292,16 @@ tensor_data tensor_data_load(tensor x, char const* filepath) {
     return result;
 }
 
+std::span<float> tensor_data::as_f32() {
+    ASSERT(x->type == GGML_TYPE_F32);
+    return span<float>(reinterpret_cast<float*>(data.get()), ggml_nelements(x));
+}
+
+std::span<int32_t> tensor_data::as_i32() {
+    ASSERT(x->type == GGML_TYPE_I32);
+    return span<int32_t>(reinterpret_cast<int32_t*>(data.get()), ggml_nelements(x));
+}
+
 void transfer_to_backend(tensor_data const& d) {
     ggml_backend_tensor_set(d.x, d.data.get(), 0, ggml_nbytes(d.x));
 }
@@ -301,10 +311,20 @@ void transfer_to_backend(tensor x, std::span<const float> data) {
     ggml_backend_tensor_set(x, data.data(), 0, ggml_nbytes(x));
 }
 
-tensor_data get_tensor_data(tensor x) {
-    tensor_data result{x};
+void transfer_to_backend(tensor x, image_cspan const& img) {
+    ASSERT(ggml_nbytes(x) == n_bytes(img));
+    ggml_backend_tensor_set(x, img.data, 0, ggml_nbytes(x));
+}
+
+tensor_data transfer_from_backend(tensor x) {
+    tensor_data result = tensor_alloc(x);
     ggml_backend_tensor_get(x, result.data.get(), 0, ggml_nbytes(x));
     return result;
+}
+
+void transfer_from_backend(tensor x, span<float> dst, size_t offset) {
+    size_t size = std::min(dst.size_bytes(), ggml_nbytes(x) - offset);
+    ggml_backend_tensor_get(x, dst.data(), offset, size);
 }
 
 //

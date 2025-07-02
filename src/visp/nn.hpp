@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ml.hpp"
+#include "visp/ml.hpp"
 #include "visp/util.hpp"
 
 // Common neural network building blocks

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "visp/image.hpp"
 #include "visp/util.hpp"
 
 #include <ggml-alloc.h>
@@ -132,25 +133,24 @@ struct tensor_data {
     tensor x;
     std::unique_ptr<byte[]> data;
 
-    template <typename T>
-    std::span<T> as() {
-        return span<T>(reinterpret_cast<T*>(data.get()), ggml_nelements(x));
-    }
+    std::span<float> as_f32();
+    std::span<int32_t> as_i32();
 };
 
 // Allocates data for a tensor in main memory, outside of context and backend buffers.
-tensor_data tensor_data_alloc(tensor x);
+tensor_data tensor_alloc(tensor x);
 
 // Loads tensor data from a file storing raw numbers as binary.
-tensor_data tensor_data_load(tensor x, char const* filepath);
+tensor_data tensor_load(tensor x, char const* filepath);
 
 // Copies data to the tensor's backend buffer (which should already be allocated).
 void transfer_to_backend(tensor_data const&);
 void transfer_to_backend(tensor x, std::span<const float> data);
+void transfer_to_backend(tensor x, image_cspan const& data);
 
 // Copies tensor data from the backend buffer to main memory.
 tensor_data transfer_from_backend(tensor x);
-void transfer_from_backend(tensor x, std::span<float> data);
+void transfer_from_backend(tensor x, std::span<float> dst, size_t offset = 0);
 
 //
 // Tensor operations
@@ -187,5 +187,31 @@ tensor concat(model_ref&, std::array<tensor, GGML_MAX_SRC> src, int dim);
 
 // Up- or downsample a 2D tensor (WHCN) to target width x height.
 tensor interpolate(model_ref&, tensor x, i64x2 target, int32_t mode);
+
+//
+// Mobile SAM
+
+struct sam_params {
+    int image_size = 1024;
+    int mask_size = 256;
+};
+
+struct sam_prediction {
+    tensor masks;
+    tensor iou;
+};
+
+image_data_f32 sam_preprocess_image(image_view image, sam_params const&);
+f32x4 sam_preprocess_point(i32x2 point, i32x2 image_extent, sam_params const&);
+f32x4 sam_preprocess_box(i32x2 top_left, i32x2 bottom_right, i32x2 image_extent, sam_params const&);
+
+tensor sam_encode_image(model_ref, tensor image, sam_params const&);
+tensor sam_encode_points(model_ref, tensor coords);
+tensor sam_encode_box(model_ref, tensor coords);
+
+sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed);
+
+image_data sam_postprocess_mask(
+    std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const&);
 
 } // namespace visp

@@ -48,6 +48,7 @@ set(GGML_LLAMAFILE ON)
 add_subdirectory(depend/ggml)
 
 add_subdirectory(src/visp)
+add_subdirectory(src/cli)
 
 if(VISP_TESTS)
   enable_testing()

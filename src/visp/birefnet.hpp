@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ml.hpp"
+#include "visp/ml.hpp"
 #include "visp/image.hpp"
 
 #include <array>
