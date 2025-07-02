@@ -74,7 +74,7 @@ tensor esrgan_upscale(model_ref m, tensor x, esrgan_params const& p) {
     return mark_output(m, x, "result");
 }
 
-esrgan_params esrgan_params::detect(model_ref m) {
+esrgan_params esrgan_detect_params(model_ref m) {
     esrgan_params p;
     p.n_blocks = 0;
     int model_len = 0;

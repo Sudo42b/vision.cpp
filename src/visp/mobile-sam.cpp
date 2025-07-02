@@ -7,7 +7,8 @@
 #include <cmath>
 #include <optional>
 
-namespace visp::sam {
+namespace visp {
+namespace sam {
 
 tensor window_partition(model_ref m, tensor x, int window) {
     int64_t c = x->ne[0];
@@ -55,35 +56,6 @@ tensor window_reverse(model_ref m, tensor x, int w, int h, int window) {
 //
 // Image encoder
 //
-
-float resize_longest_side(i32x2 extent, int target_longest_side) {
-    int longest_side = std::max(extent[0], extent[1]);
-    return float(target_longest_side) / float(longest_side);
-}
-
-int scale_coord(int coord, float scale) {
-    return int(coord * scale + 0.5f);
-}
-
-i32x2 scale_extent(i32x2 extent, float scale) {
-    return i32x2{scale_coord(extent[0], scale), scale_coord(extent[1], scale)};
-}
-
-image_data_f32 preprocess_image(image_view image, sam_params const& p) {
-    constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
-    constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
-
-    std::optional<image_data> resized;
-    float scale = resize_longest_side(image.extent, p.image_size);
-    if (scale != 1) {
-        resized = image_resize(image, scale_extent(image.extent, scale));
-        image = image_view(*resized);
-    }
-
-    image_data_f32 result = image_alloc_f32({p.image_size, p.image_size},3);
-    image_u8_to_f32(image, result.as_span(), -mean, 1.f / std);
-    return result;
-}
 
 tensor conv_2d_batch_norm(model_ref m, tensor x, int stride, int pad, int groups) {
     if (groups == 1) {
@@ -259,20 +231,20 @@ float transform_coord(int p, float scale, int image_size) {
 
 // Transforms a point from coordinates in the original input image (any resolution)
 // to input in [-1, 1] expected by the prompt encoder.
-std::array<float, 4> preprocess_prompt(i32x2 point, i32x2 input_image_extent, sam_params const& p) {
+f32x4 preprocess_point(i32x2 point, i32x2 input_image_extent, sam_params const& p) {
     float scale = resize_longest_side(input_image_extent, p.image_size);
     float x = transform_coord(point[0], scale, p.image_size);
     float y = transform_coord(point[1], scale, p.image_size);
-    return std::array{x, y, 0.f, 0.f};
+    return f32x4{x, y, 0.f, 0.f};
 }
 
-std::array<float, 4> preprocess_prompt(region r, i32x2 input_image_extent, sam_params const& p) {
+f32x4 preprocess_box(region r, i32x2 input_image_extent, sam_params const& p) {
     float scale = resize_longest_side(input_image_extent, p.image_size);
     float x0 = transform_coord(r.top_left[0], scale, p.image_size);
     float y0 = transform_coord(r.top_left[1], scale, p.image_size);
     float x1 = transform_coord(r.bottom_right[0], scale, p.image_size);
     float y1 = transform_coord(r.bottom_right[1], scale, p.image_size);
-    return std::array{x0, y0, x1, y1};
+    return f32x4{x0, y0, x1, y1};
 }
 
 tensor position_embedding_random(model_ref m, tensor coords) {
@@ -461,7 +433,7 @@ tensor hypernetwork_mlp(model_ref m, tensor x, int num_layers) {
     return x;
 }
 
-MaskPrediction predict_masks(
+sam_prediction predict_masks(
     model_ref m, tensor image_embeddings, tensor sparse_prompt, tensor dense_prompt) {
     const int num_heads = 8;
     const int transformer_depth = 2;
@@ -559,29 +531,84 @@ void interpolate_bilinear(
     }
 }
 
-image_data postprocess_mask(
+float resize_longest_side(i32x2 extent, int target_longest_side) {
+    int longest_side = std::max(extent[0], extent[1]);
+    return float(target_longest_side) / float(longest_side);
+}
+
+int scale_coord(int coord, float scale) {
+    return int(coord * scale + 0.5f);
+}
+
+i32x2 scale_extent(i32x2 extent, float scale) {
+    return i32x2{scale_coord(extent[0], scale), scale_coord(extent[1], scale)};
+}
+
+} // namespace sam
+
+image_data_f32 sam_preprocess_image(image_view image, sam_params const& p) {
+    constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
+    constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
+
+    std::optional<image_data> resized;
+    float scale = sam::resize_longest_side(image.extent, p.image_size);
+    if (scale != 1) {
+        resized = image_resize(image, sam::scale_extent(image.extent, scale));
+        image = image_view(*resized);
+    }
+
+    image_data_f32 result = image_alloc_f32({p.image_size, p.image_size}, 3);
+    image_u8_to_f32(image, result.as_span(), -mean, 1.f / std);
+    return result;
+}
+
+f32x4 sam_preprocess_prompt(i32x2 point, i32x2 input_image_extent, sam_params const& p) {
+    return sam::preprocess_point(point, input_image_extent, p);
+}
+
+f32x4 sam_preprocess_prompt(region r, i32x2 input_image_extent, sam_params const& p) {
+    return sam::preprocess_box(r, input_image_extent, p);
+}
+
+image_data sam_postprocess_mask(
     std::span<float const> mask_data, i32x2 target_extent, sam_params const& p) {
-        
-    float scale = resize_longest_side(target_extent, p.image_size);
-    i32x2 scaled_extent = scale_extent(target_extent, scale);
+
+    float scale = sam::resize_longest_side(target_extent, p.image_size);
+    i32x2 scaled_extent = sam::scale_extent(target_extent, scale);
     image_data mask = image_alloc(target_extent, image_format::alpha);
 
     auto scaled = std::vector<float>(p.image_size * p.image_size);
     auto id = [](float x) {
         return x;
     };
-    interpolate_bilinear(
-        mask_data.data(), {p.mask_size(), p.mask_size()}, p.mask_size(), scaled.data(),
+    sam::interpolate_bilinear(
+        mask_data.data(), {p.mask_size, p.mask_size}, p.mask_size, scaled.data(),
         {p.image_size, p.image_size}, p.image_size, id);
 
     auto threshold = [](float x) {
         return uint8_t(x > 0.0f ? 255 : 0);
     };
-    interpolate_bilinear(
+    sam::interpolate_bilinear(
         scaled.data(), scaled_extent, p.image_size, mask.data.get(), target_extent,
         target_extent[0], threshold);
 
     return mask;
 }
 
-} // namespace visp::sam
+tensor sam_encode_points(model_ref m, tensor coords) {
+    return sam::embed_points(m, coords);
+}
+
+tensor sam_encode_box(model_ref m, tensor coords) {
+    return sam::embed_box(m, coords);
+}
+
+tensor sam_encode_image(model_ref m, tensor image, sam_params const&) {
+    return sam::tiny_vit(m["enc"], image, sam::tiny_vit_params{});
+}
+
+sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed) {
+    return sam::predict_masks(m["dec"], image_embed, prompt_embed, sam::no_mask_embed(m));
+}
+
+} // namespace visp

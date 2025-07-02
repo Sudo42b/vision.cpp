@@ -145,7 +145,7 @@ TEST_CASE(tile_merge_blending) {
             tile_merge(tile_span, dst_span, {x, y}, layout);
         }
     }
-    for (float value : dst_span.range()) {
+    for (float value : dst_span.elements()) {
         CHECK_EQUAL(value, 1.0f);
     }
 }

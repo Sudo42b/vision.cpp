@@ -51,7 +51,7 @@ struct image_data {
     operator image_view() const { return view(); }
 };
 
-// Allocate image data, pixel data is not initialized
+// Allocate image data. Pixels are not initialized.
 image_data image_alloc(i32x2 extent, image_format format);
 
 // Load image from file (PNG, JPEG, etc.)
@@ -67,7 +67,7 @@ image_data image_resize(image_view const&, i32x2 target);
 image_data image_resize_mask(image_view const&, i32x2 target, uint8_t* output);
 
 //
-// Image span - reference to float32 image data for processing
+// Image span - reference to float32 image data
 
 struct image_span {
     i32x2 extent = {};
@@ -76,14 +76,13 @@ struct image_span {
 
     image_span() = default;
 
-    image_span(i32x2 extent, int n_channels, float* data)
-        : extent(extent), n_channels(n_channels), data(data) {}
+    image_span(i32x2 extent, int n_channels, float* data);
 
-    image_span(i32x2 extent, std::span<float> data) : image_span(extent, 1, data.data()) {}
-    image_span(i32x2 extent, std::span<f32x3> data) : image_span(extent, 3, &data[0][0]) {}
-    image_span(i32x2 extent, std::span<f32x4> data) : image_span(extent, 4, &data[0][0]) {}
+    image_span(i32x2 extent, span<float> data) : image_span(extent, 1, data.data()) {}
+    image_span(i32x2 extent, span<f32x3> data) : image_span(extent, 3, &data[0][0]) {}
+    image_span(i32x2 extent, span<f32x4> data) : image_span(extent, 4, &data[0][0]) {}
 
-    span<float> range() const { return span(data, extent[0] * extent[1] * n_channels); }
+    span<float> elements() const;
 };
 
 struct image_cspan {
@@ -93,33 +92,27 @@ struct image_cspan {
 
     image_cspan() = default;
 
-    image_cspan(i32x2 extent, int n_channels, float const* data)
-        : extent(extent), n_channels(n_channels), data(data) {}
+    image_cspan(i32x2 extent, int n_channels, float const* data);
 
-    image_cspan(i32x2 extent, std::span<float const> data) : image_cspan(extent, 1, data.data()) {}
-    image_cspan(i32x2 extent, std::span<f32x3 const> data) : image_cspan(extent, 3, &data[0][0]) {}
-    image_cspan(i32x2 extent, std::span<f32x4 const> data) : image_cspan(extent, 4, &data[0][0]) {}
+    image_cspan(i32x2 extent, span<float const> data) : image_cspan(extent, 1, data.data()) {}
+    image_cspan(i32x2 extent, span<f32x3 const> data) : image_cspan(extent, 3, &data[0][0]) {}
+    image_cspan(i32x2 extent, span<f32x4 const> data) : image_cspan(extent, 4, &data[0][0]) {}
 
-    image_cspan(image_span const& other)
-        : image_cspan(other.extent, other.n_channels, other.data) {}
+    image_cspan(image_span const& other);
 
-    span<float const> range() const { return span(data, extent[0] * extent[1] * n_channels); }
+    span<float const> elements() const;
 };
 
-constexpr int n_pixels(image_cspan const& img) {
-    return img.extent[0] * img.extent[1];
-}
-constexpr size_t n_bytes(image_cspan const& img) {
-    return size_t(n_pixels(img)) * img.n_channels * sizeof(float);
-}
+int n_pixels(image_cspan const& img);
+size_t n_bytes(image_cspan const& img);
 
 //
 // Image data for float32 images
 // Can be used everywhere an image_span is expected
 
 struct image_data_f32 {
-    i32x2 extent ;
-    int n_channels ;
+    i32x2 extent = {};
+    int n_channels = 0;
     std::unique_ptr<float[]> data;
 
     image_span as_span() { return {extent, n_channels, data.get()}; }
@@ -129,16 +122,17 @@ struct image_data_f32 {
     operator image_cspan() const { return as_span(); }
 };
 
+// Allocate image data for float32 image. Memory is not initialized.
 image_data_f32 image_alloc_f32(i32x2 extent, int n_channels);
 
 //
 // Image algorithms
 
 // Convert uint8 image to float32 image
-// - can be used with any image format, output is converted to T
-// - applies computation `dst = (src + offset) * scale` to each pixel
-// - starts reading `src` at `tile_offset`
-// - always writes all of `dst`, if `src` is smaller the output is padded (clamp to edge)
+// * `src` can have any image format, output is converted to format of `dst`
+// * applies computation `dst = (src + offset) * scale` to each pixel
+// * starts reading `src` at `tile_offset`
+// * always writes all of `dst` -- if `src` is smaller the output is padded (clamp to edge)
 void image_u8_to_f32(
     image_view const& src,
     image_span const& dst,
@@ -147,10 +141,10 @@ void image_u8_to_f32(
     i32x2 tile_offset = {0, 0});
 
 // Convert float32 image to uint8 image
-// - applies computation `dst = src * scale + offset` to every channel/pixel
+// * applies computation `dst = src * scale + offset` to every channel/pixel
 void image_f32_to_u8(span<float const> src, span<uint8_t> dst, float scale = 1, float offset = 0);
 
-// Box blur
+// Box filter with kernel size `2*radius + 1`
 void image_blur(image_cspan src, image_span dst, int radius);
 
 // Try to separate foreground and background contribution from pixels at the mask border

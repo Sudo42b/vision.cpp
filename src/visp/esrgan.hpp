@@ -7,9 +7,9 @@ namespace visp {
 struct esrgan_params {
     int scale = 4;
     int n_blocks = 23;
-
-    static esrgan_params detect(model_ref);
 };
+
+esrgan_params esrgan_detect_params(model_ref);
 
 tensor esrgan_upscale(model_ref, tensor image, esrgan_params const&);
 

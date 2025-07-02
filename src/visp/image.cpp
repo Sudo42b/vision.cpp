@@ -131,6 +131,34 @@ pixel_lookup::pixel_lookup(i32x2 extent, image_format format) {
 pixel_lookup::pixel_lookup(image_view image) : pixel_lookup(image.extent, image.format) {}
 
 //
+// image span
+
+image_span::image_span(i32x2 extent, int n_channels, float* data)
+    : extent(extent), n_channels(n_channels), data(data) {}
+
+span<float> image_span::elements() const {
+    return span(data, extent[0] * extent[1] * n_channels);
+}
+
+image_cspan::image_cspan(i32x2 extent, int n_channels, float const* data)
+    : extent(extent), n_channels(n_channels), data(data) {}
+
+image_cspan::image_cspan(image_span const& other)
+    : image_cspan(other.extent, other.n_channels, other.data) {}
+
+span<float const> image_cspan::elements() const {
+    return span(data, extent[0] * extent[1] * n_channels);
+}
+
+ int n_pixels(image_cspan const& img) {
+    return img.extent[0] * img.extent[1];
+}
+
+ size_t n_bytes(image_cspan const& img) {
+    return size_t(n_pixels(img)) * img.n_channels * sizeof(float);
+}
+
+//
 // image data (float32)
 
 image_data_f32 image_alloc_f32(i32x2 extent, int n_channels) {

@@ -270,7 +270,7 @@ DEF(biref_attention_mask)(model_ref m, span<tensor> input, param_dict const& p) 
 }
 
 DEF(biref_swin_layer)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_layer_t layer;
+    swin_layer_t layer;
     layer.depth = 2;
     layer.num_heads = 2;
     layer.num_features = 8;
@@ -284,14 +284,14 @@ DEF(biref_swin_layer)(model_ref m, span<tensor> input, param_dict const& p) {
 }
 
 DEF(biref_swin_transformer)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_params swinp = {
+    swin_params swinp = {
         .embed_dim = 8,
         .window_size = 3,
         .layers = {
-            birefnet::swin_layer_t{2, 2, 8 * 1, true},
-            birefnet::swin_layer_t{2, 2, 8 * 2, true},
-            birefnet::swin_layer_t{2, 4, 8 * 4, true},
-            birefnet::swin_layer_t{2, 2, 8 * 8, false},
+            swin_layer_t{2, 2, 8 * 1, true},
+            swin_layer_t{2, 2, 8 * 2, true},
+            swin_layer_t{2, 4, 8 * 4, true},
+            swin_layer_t{2, 2, 8 * 8, false},
         }};
     auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
     auto attn_masks = std::array{

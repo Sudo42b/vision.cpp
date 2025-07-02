@@ -3,22 +3,11 @@
 #include "ml.hpp"
 #include "visp/image.hpp"
 
-namespace visp::birefnet {
-struct swin_params;
+#include <array>
 
-image_data_f32 preprocess_image(image_view image, int image_size);
-
-tensor run(model_ref m, tensor image, swin_params const& encoder_params);
+namespace visp {
 
 // SWIN Transformer
-
-struct swin_block_params {
-    int num_heads = 6;
-    int window_size = 7;
-    int64_t w = 0;
-    int64_t h = 0;
-    int shift = 0;
-};
 
 struct swin_layer_t {
     int depth;
@@ -27,24 +16,15 @@ struct swin_layer_t {
     bool downsample;
 };
 
-struct swin_layer_result {
-    tensor x_out;
-    int64_t w_out;
-    int64_t h_out;
-    tensor x_down;
-    int64_t w_down;
-    int64_t h_down;
-};
-
 struct swin_params {
     static constexpr int num_layers = 4;
 
     int embed_dim;
     int window_size;
     std::array<swin_layer_t, num_layers> layers;
-
-    static swin_params detect(model_ref m);
 };
+
+swin_params swin_detect_params(model_ref);
 
 // clang-format off
 constexpr swin_params swin_t_params = {
@@ -67,6 +47,40 @@ constexpr swin_params swin_l_params = {
         swin_layer_t{18,   24,       192 * 4,     true},
         swin_layer_t{2,    48,       192 * 8,     false}}};
 // clang-format on
+
+// BiRefNet
+
+struct birefnet_params {
+    int image_size = 1024;
+    swin_params encoder;
+};
+
+birefnet_params birefnet_detect_params(model_ref);
+
+image_data_f32 birefnet_preprocess(image_view, birefnet_params const&);
+
+tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
+
+namespace birefnet {
+
+// SWIN Transformer
+
+struct swin_block_params {
+    int num_heads = 6;
+    int window_size = 7;
+    int64_t w = 0;
+    int64_t h = 0;
+    int shift = 0;
+};
+
+struct swin_layer_result {
+    tensor x_out;
+    int64_t w_out;
+    int64_t h_out;
+    tensor x_down;
+    int64_t w_down;
+    int64_t h_down;
+};
 
 using swin_result = std::array<tensor, swin_params::num_layers>;
 
@@ -104,4 +118,5 @@ tensor image_to_patches(model_ref m, tensor x, int64_t out_w, int64_t out_h);
 tensor gdt_conv(model_ref m, tensor x);
 tensor decode(model_ref m, tensor x, swin_result const& features);
 
-} // namespace visp::birefnet
+} // namespace birefnet
+} // namespace visp
