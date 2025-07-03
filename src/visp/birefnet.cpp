@@ -9,7 +9,7 @@
 
 namespace visp {
 
-image_data_f32 birefnet_preprocess(image_view image, birefnet_params const& p) {
+image_data_f32 birefnet_process_input(image_view image, birefnet_params const& p) {
     constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
     constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
 
@@ -34,6 +34,40 @@ tensor birefnet_predict(model_ref m, tensor image, birefnet_params const& p) {
 
     return mark_output(m, scaled_preds);
 }
+
+birefnet_buffers birefnet_precompute(model_ref m, birefnet_params const& params) {
+    int w = params.encoder.window_size;
+    int res = params.image_size / 4;
+
+    birefnet_buffers b;
+    b[0] = birefnet::create_relative_position_index(m, w);
+    for (int i = 0; i < swin_params::n_layers + 1; ++i) {
+        b[i + 1] = birefnet::create_attention_mask(m, res >> i, res >> i, w);
+    }
+    return b;
+}
+
+// clang-format off
+const swin_params swin_t_params = {
+    .embed_dim = 96,
+    .window_size = 7,
+    .layers = {
+        //       depth  n_heads   n_features   downsample
+        swin_layer_t{2,    3,        96 * 1,     true},
+        swin_layer_t{2,    6,        96 * 2,     true},
+        swin_layer_t{6,    12,       96 * 4,     true},
+        swin_layer_t{2,    24,       96 * 8,     false}}};
+
+const swin_params swin_l_params = {
+    .embed_dim = 192,
+    .window_size = 12,
+    .layers = {
+        //       depth  n_heads   n_features   downsample
+        swin_layer_t{2,    6,        192 * 1,     true},
+        swin_layer_t{2,    12,       192 * 2,     true},
+        swin_layer_t{18,   24,       192 * 4,     true},
+        swin_layer_t{2,    48,       192 * 8,     false}}};
+// clang-format on
 
 swin_params swin_detect_params(model_ref m) {
     tensor t = m.find("bb.layers.0.blocks.0.attn.proj.bias");
@@ -322,7 +356,7 @@ swin_result swin_transformer(model_ref m, tensor x, swin_params const& p) {
     swin_layer_result r{x, w, h, x, w, h};
     swin_result outs = {};
 
-    for (int i = 0; i < swin_params::num_layers; ++i) {
+    for (int i = 0; i < swin_params::n_layers; ++i) {
         model_ref layer = m["layers"][i];
         r = swin_layer(layer, r.x_down, r.w_down, r.h_down, p.layers[i], p.window_size);
 

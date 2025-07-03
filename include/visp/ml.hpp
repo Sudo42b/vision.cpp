@@ -215,4 +215,43 @@ sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed)
 image_data sam_postprocess_mask(
     std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const&);
 
+//
+// SWIN Transformer
+
+struct swin_layer_t {
+    int depth;
+    int num_heads;
+    int num_features;
+    bool downsample;
+};
+
+struct swin_params {
+    static constexpr int n_layers = 4;
+
+    int embed_dim;
+    int window_size;
+    std::array<swin_layer_t, n_layers> layers;
+};
+
+extern swin_params const swin_t_params;
+extern swin_params const swin_l_params;
+swin_params swin_detect_params(model_ref);
+
+//
+// BiRefNet
+
+struct birefnet_params {
+    int image_size = 1024;
+    swin_params encoder;
+};
+
+using birefnet_buffers  = std::array<tensor_data, swin_params::n_layers + 2> ;
+
+birefnet_params birefnet_detect_params(model_ref);
+birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
+
+image_data_f32 birefnet_process_input(image_view, birefnet_params const&);
+
+tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
+
 } // namespace visp

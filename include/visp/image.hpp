@@ -148,6 +148,9 @@ void image_f32_to_u8(span<float const> src, span<uint8_t> dst, float scale = 1, 
 void image_blur(image_cspan src, image_span dst, int radius);
 
 // Try to separate foreground and background contribution from pixels at the mask border
+// * `img` must be a 4-channel image (RGBA), the alpha channel is not used
+// * `mask` must be a single-channel image (alpha mask)
+// * result is a 4-channel image with extracted foreground as RGB and alpha set to `mask`
 image_data_f32 image_estimate_foreground(image_cspan img, image_cspan mask, int radius = 30);
 
 // Composite foreground and background images using alpha mask: `dst = fg * alpha + bg * (1-alpha)`

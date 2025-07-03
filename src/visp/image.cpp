@@ -331,6 +331,7 @@ auto blur_fusion_foreground_estimator(
         blurred_bg[i] = blurred_bg[i] / ((1.0f - blurred_mask[i]) + 1e-5f);
         f32x4 f = blurred_fg[i] +
                   mask[i] * (img[i] - mask[i] * blurred_fg[i] - (1.0f - mask[i]) * blurred_bg[i]);
+        f[3] = mask[i];
         blurred_fg[i] = clamp(f, 0.0f, 1.0f);
     }
     return std::pair{std::move(blurred_fg_data), std::move(blurred_bg_data)};
@@ -338,7 +339,7 @@ auto blur_fusion_foreground_estimator(
 
 image_data_f32 image_estimate_foreground(image_cspan img, image_cspan mask, int radius) {
     ASSERT(img.extent == mask.extent);
-    ASSERT(img.n_channels == 3 && mask.n_channels == 1);
+    ASSERT(img.n_channels == 4 && mask.n_channels == 1);
 
     auto&& [fg, blur_bg] = blur_fusion_foreground_estimator(img, img, img, mask, radius);
     return blur_fusion_foreground_estimator(img, fg, blur_bg, mask, 3).first;

@@ -7,60 +7,6 @@
 
 namespace visp {
 
-// SWIN Transformer
-
-struct swin_layer_t {
-    int depth;
-    int num_heads;
-    int num_features;
-    bool downsample;
-};
-
-struct swin_params {
-    static constexpr int num_layers = 4;
-
-    int embed_dim;
-    int window_size;
-    std::array<swin_layer_t, num_layers> layers;
-};
-
-swin_params swin_detect_params(model_ref);
-
-// clang-format off
-constexpr swin_params swin_t_params = {
-    .embed_dim = 96,
-    .window_size = 7,
-    .layers = {
-        //       depth  n_heads   n_features   downsample
-        swin_layer_t{2,    3,        96 * 1,     true},
-        swin_layer_t{2,    6,        96 * 2,     true},
-        swin_layer_t{6,    12,       96 * 4,     true},
-        swin_layer_t{2,    24,       96 * 8,     false}}};
-
-constexpr swin_params swin_l_params = {
-    .embed_dim = 192,
-    .window_size = 12,
-    .layers = {
-        //       depth  n_heads   n_features   downsample
-        swin_layer_t{2,    6,        192 * 1,     true},
-        swin_layer_t{2,    12,       192 * 2,     true},
-        swin_layer_t{18,   24,       192 * 4,     true},
-        swin_layer_t{2,    48,       192 * 8,     false}}};
-// clang-format on
-
-// BiRefNet
-
-struct birefnet_params {
-    int image_size = 1024;
-    swin_params encoder;
-};
-
-birefnet_params birefnet_detect_params(model_ref);
-
-image_data_f32 birefnet_preprocess(image_view, birefnet_params const&);
-
-tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
-
 namespace birefnet {
 
 // SWIN Transformer
@@ -82,7 +28,7 @@ struct swin_layer_result {
     int64_t h_down;
 };
 
-using swin_result = std::array<tensor, swin_params::num_layers>;
+using swin_result = std::array<tensor, swin_params::n_layers>;
 
 void compute_relative_position_index(span<int32_t> dst, int window_size);
 tensor_data create_relative_position_index(ggml_context* ctx, int window_size);

@@ -38,9 +38,9 @@ backend backend_init(backend_type type) {
 backend_type backend::type() const {
     ggml_backend_dev_t dev = ggml_backend_get_device(handle.get());
     switch (ggml_backend_dev_type(dev)) {
-    case GGML_BACKEND_DEVICE_TYPE_CPU: return backend_type::cpu;
-    case GGML_BACKEND_DEVICE_TYPE_GPU: return backend_type::gpu;
-    default: ASSERT(false, "Unsupported backend device type"); return backend_type::cpu;
+        case GGML_BACKEND_DEVICE_TYPE_CPU: return backend_type::cpu;
+        case GGML_BACKEND_DEVICE_TYPE_GPU: return backend_type::gpu;
+        default: ASSERT(false, "Unsupported backend device type"); return backend_type::cpu;
     }
 }
 

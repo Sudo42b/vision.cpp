@@ -15,20 +15,20 @@ enum class cli_command { sam, birefnet, migan, esrgan };
 
 struct cli_args {
     cli_command command;
-    std::vector<std::string_view> inputs;   // -i --input
-    std::string_view output = "output.png"; // -o --output
-    std::string_view model;                 // -m --model
-    std::vector<std::string_view> prompt;
+    std::vector<char const*> inputs;   // -i --input
+    char const* output = "output.png"; // -o --output
+    char const* model = nullptr;       // -m --model
+    std::vector<char const*> prompt;   // -p --prompt
     // int threads = -1; // -t --threads
     // bool verbose = false; // -v --verbose
     std::optional<backend_type> backend_type; // -b --backend
     // std::string_view device = 0; // -d --device
     // ggml_type float_type = GGML_TYPE_COUNT; // -f32 -f16
 
-    // path composite; // --composite
+    char const* composite = nullptr; // --composite
 };
 
-std::string_view next_arg(int argc, char** argv, int& i) {
+char const* next_arg(int argc, char** argv, int& i) {
     if (++i < argc) {
         return argv[i];
     } else {
@@ -36,8 +36,8 @@ std::string_view next_arg(int argc, char** argv, int& i) {
     }
 }
 
-std::vector<std::string_view> collect_args(int argc, char** argv, int& i, char delim = '-') {
-    std::vector<std::string_view> r;
+std::vector<char const*> collect_args(int argc, char** argv, int& i, char delim = '-') {
+    std::vector<char const*> r;
     do {
         r.push_back(next_arg(argc, argv, i));
     } while (i + 1 < argc && argv[i + 1][0] != delim);
@@ -56,7 +56,7 @@ int parse_int(std::string_view arg) {
     return value;
 }
 
-std::string_view validate_path(std::string_view arg) {
+char const* validate_path(char const* arg) {
     if (!exists(path(arg))) {
         throw error("File not found: {}", arg);
     }
@@ -102,12 +102,41 @@ cli_args cli_parse(int argc, char** argv) {
             } else {
                 throw error("Unknown backend type '{}', must be one of: cpu, gpu", backend_arg);
             }
+        } else if (arg == "--composite") {
+            r.composite = next_arg(argc, argv, i);
         } else if (arg.starts_with("-")) {
             throw error("Unknown argument: {}", arg);
         }
     }
     return r;
 }
+
+void run_sam(cli_args const&);
+void run_birefnet(cli_args const&);
+
+} // namespace visp
+
+int main(int argc, char** argv) {
+    using namespace visp;
+    try {
+        ggml_time_init();
+
+        cli_args args = cli_parse(argc, argv);
+        switch (args.command) {
+            case cli_command::sam: run_sam(args); break;
+            case cli_command::birefnet: run_birefnet(args); break;
+        }
+
+    } catch (std::exception const& e) {
+        printf("Error: %s\n", e.what());
+        return 1;
+    } catch (...) {
+        return -1;
+    }
+    return 0;
+}
+
+namespace visp {
 
 struct timer {
     int64_t start;
@@ -124,6 +153,9 @@ struct timer {
     }
 };
 
+//
+// Common helpers
+
 backend backend_init(cli_args const& args) {
     timer t;
     printf("Initializing backend... ");
@@ -139,8 +171,26 @@ backend backend_init(cli_args const& args) {
     ggml_backend_dev_t dev = ggml_backend_get_device(b);
     char const* dev_name = ggml_backend_dev_name(dev);
     char const* dev_desc = ggml_backend_dev_description(dev);
-    printf("- selected device %s - %s\n", dev_name, dev_desc);
+    printf("- device: %s - %s\n", dev_name, dev_desc);
     return b;
+}
+
+model_weights load_model_weights(
+    cli_args const& args, backend const& b, char const* default_model, int n_tensors = 0) {
+
+    timer t;
+    char const* model_path = args.model ? args.model : default_model;
+    printf("Loading model weights from '%s'... ", model_path);
+
+    model_load_params load_params = {
+        .float_type = b.preferred_float_type(),
+        .n_extra_tensors = n_tensors,
+    };
+    model_weights weights = model_load(model_path, b, load_params);
+
+    printf("done (%s)\n", t.elapsed_str());
+    printf("- float type: %s\n", ggml_type_name(weights.float_type()));
+    return weights;
 }
 
 void compute_timed(compute_graph const& g, backend const& b) {
@@ -150,6 +200,27 @@ void compute_timed(compute_graph const& g, backend const& b) {
     printf("complete (%s)\n", t.elapsed_str());
 }
 
+void composite_image_with_mask(image_view image, image_view mask, char const* output_path) {
+    if (!output_path) {
+        return;
+    }
+
+    image_data_f32 image_f32 = image_alloc_f32(image.extent, 4);
+    image_u8_to_f32(image, image_f32);
+
+    image_data_f32 mask_f32 = image_alloc_f32(mask.extent, 1);
+    image_u8_to_f32(mask, mask_f32);
+
+    image_data_f32 foreground = image_estimate_foreground(image_f32, mask_f32);
+    image_data output = image_alloc(image.extent, image_format::rgba);
+    image_f32_to_u8(foreground.as_span().elements(), span(output.data.get(), n_bytes(output)));
+    image_save(output, output_path);
+    printf("-> image composited and saved to %s\n", output_path);
+}
+
+//
+// SAM
+
 struct sam_prompt {
     i32x2 point1 = {-1, -1};
     i32x2 point2 = {-1, -1};
@@ -158,7 +229,7 @@ struct sam_prompt {
     bool is_box() const { return !is_point(); }
 };
 
-sam_prompt sam_prompt_parse(std::span<std::string_view const> args, i32x2 extent) {
+sam_prompt sam_parse_prompt(std::span<char const* const> args, i32x2 extent) {
     if (args.empty()) {
         throw error(
             "SAM requires a prompt with coordinates for a point or box"
@@ -192,19 +263,13 @@ sam_prompt sam_prompt_parse(std::span<std::string_view const> args, i32x2 extent
 
 void run_sam(cli_args const& args) {
     backend backend = backend_init(args);
-
-    char const* model_path = args.model.empty() ? "models/mobile-sam.gguf" : args.model.data();
-    model_load_params load_params = {
-        .float_type = backend.preferred_float_type(),
-    };
-    model_weights weights = model_load(model_path, backend, load_params);
-
+    model_weights weights = load_model_weights(args, backend, "models/mobile-sam.gguf");
     sam_params params{};
 
-    image_data image = image_load(args.inputs[0].data());
+    image_data image = image_load(args.inputs[0]);
     image_data_f32 image_data_ = sam_preprocess_image(image, params);
 
-    sam_prompt prompt = sam_prompt_parse(args.prompt, image.extent);
+    sam_prompt prompt = sam_parse_prompt(args.prompt, image.extent);
     f32x4 prompt_data = prompt.is_point()
         ? sam_preprocess_point(prompt.point1, image.extent, params)
         : sam_preprocess_box(prompt.point1, prompt.point2, image.extent, params);
@@ -236,27 +301,52 @@ void run_sam(cli_args const& args) {
     image_data mask = sam_postprocess_mask(mask_data.as_f32(), 2, image.extent, params);
     printf("complete (%s)\n", t_post.elapsed_str());
 
-    image_save(mask, args.output.data());
+    image_save(mask, args.output);
 
-    printf("-> estimated accuracy (IoU): %f, %f, %f\n", iou.as_f32()[0], iou.as_f32()[1], iou.as_f32()[2]);
-    printf("-> mask saved to %s\n", args.output.data());
+    auto ious = iou.as_f32();
+    printf("-> estimated accuracy (IoU): %f, %f, %f\n", ious[0], ious[1], ious[2]);
+    printf("-> mask saved to %s\n", args.output);
+
+    composite_image_with_mask(image, mask, args.composite);
+}
+
+//
+// BirefNet
+
+void run_birefnet(cli_args const& args) {
+    backend backend = backend_init(args);
+    model_weights weights = load_model_weights(args, backend, "models/birefnet.gguf", 6);
+    birefnet_params params = birefnet_detect_params(weights);
+    int img_size = params.image_size;
+
+    image_data image = image_load(args.inputs[0]);
+    image_data_f32 image_data_ = birefnet_process_input(image, params);
+
+    birefnet_buffers buffers = birefnet_precompute(model_ref(weights), params);
+    allocate(weights, backend);
+    for (tensor_data const& buf : buffers) {
+        transfer_to_backend(buf);
+    }
+
+    compute_graph graph = compute_graph_init(6 * 1024);
+    model_ref m(weights, graph);
+
+    tensor input = create_input(m, GGML_TYPE_F32, {3, img_size, img_size, 1});
+    tensor output = birefnet_predict(m, input, params);
+
+    allocate(graph, backend);
+    transfer_to_backend(input, image_data_);
+
+    compute_timed(graph, backend);
+
+    tensor_data mask_data = transfer_from_backend(output);
+    image_data mask = image_alloc({img_size, img_size}, image_format::alpha);
+    image_f32_to_u8(mask_data.as_f32(), span(mask.data.get(), n_bytes(mask)));
+    image_data mask_resized = image_resize(mask, image.extent);
+    image_save(mask_resized, args.output);
+    printf("-> mask saved to %s\n", args.output);
+
+    composite_image_with_mask(image, mask_resized, args.composite);
 }
 
 } // namespace visp
-
-int main(int argc, char** argv) {
-    using namespace visp;
-    try {
-        ggml_time_init();
-
-        cli_args args = cli_parse(argc, argv);
-        run_sam(args);
-
-    } catch (std::exception const& e) {
-        printf("Error: %s\n", e.what());
-        return 1;
-    } catch (...) {
-        return -1;
-    }
-    return 0;
-}
