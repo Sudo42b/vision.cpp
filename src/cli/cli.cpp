@@ -1,3 +1,4 @@
+#include "util/math.hpp"
 #include "util/string.hpp"
 #include "visp/vision.hpp"
 
@@ -26,6 +27,7 @@ struct cli_args {
     // ggml_type float_type = GGML_TYPE_COUNT; // -f32 -f16
 
     char const* composite = nullptr; // --composite
+    int tile_size = -1;              // --tile
 };
 
 char const* next_arg(int argc, char** argv, int& i) {
@@ -112,6 +114,8 @@ cli_args cli_parse(int argc, char** argv) {
             }
         } else if (arg == "--composite") {
             r.composite = next_arg(argc, argv, i);
+        } else if (arg == "--tile") {
+            r.tile_size = parse_int(next_arg(argc, argv, i));
         } else if (arg.starts_with("-")) {
             throw error("Unknown argument: {}", arg);
         }
@@ -122,6 +126,7 @@ cli_args cli_parse(int argc, char** argv) {
 void run_sam(cli_args const&);
 void run_birefnet(cli_args const&);
 void run_migan(cli_args const&);
+void run_esrgan(cli_args const&);
 
 } // namespace visp
 
@@ -138,6 +143,7 @@ int main(int argc, char** argv) {
             case cli_command::sam: run_sam(args); break;
             case cli_command::birefnet: run_birefnet(args); break;
             case cli_command::migan: run_migan(args); break;
+            case cli_command::esrgan: run_esrgan(args); break;
         }
 
     } catch (std::exception const& e) {
@@ -279,7 +285,7 @@ void run_sam(cli_args const& args) {
     model_weights weights = load_model_weights(args, backend, "models/mobile-sam.gguf");
     sam_params params{};
 
-    require_inputs(args.inputs, 1, "image.png");
+    require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
     image_data_f32 image_data_ = sam_process_input(image, params);
 
@@ -333,7 +339,7 @@ void run_birefnet(cli_args const& args) {
     birefnet_params params = birefnet_detect_params(weights);
     int img_size = params.image_size;
 
-    require_inputs(args.inputs, 1, "image.png");
+    require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
     image_data_f32 input_data = birefnet_process_input(image, params);
 
@@ -395,6 +401,59 @@ void run_migan(cli_args const& args) {
     image_data composited = image_alloc(image.extent, image_format::rgb);
     image_alpha_composite(output_image, image, mask_resized, composited.data.get());
     image_save(composited, args.output);
+    printf("-> output image saved to %s\n", args.output);
+}
+
+//
+// ESRGAN
+
+void run_esrgan(cli_args const& args) {
+    backend backend = backend_init(args);
+    model_weights weights = load_model_weights(args, backend, "models/RealESRGAN_x4.gguf");
+    esrgan_params params = esrgan_detect_params(weights);
+
+    require_inputs(args.inputs, 1, "<image>");
+    image_data image = image_load(args.inputs[0]);
+    int tile_size = args.tile_size > 0 ? args.tile_size : 224;
+
+    tile_layout tiles = tile_layout(image.extent, tile_size, 16);
+    tile_layout tiles_out = tile_scale(tiles, params.scale);
+    image_data_f32 input_tile = image_alloc_f32(tiles.tile_size, 3);
+    image_data_f32 output_tile = image_alloc_f32(tiles_out.tile_size, 3);
+    image_data_f32 output_image = image_alloc_f32(image.extent * params.scale, 3);
+
+    compute_graph graph = compute_graph_init();
+    model_ref m(weights, graph);
+
+    tensor input = create_input(m, GGML_TYPE_F32, {3, tiles.tile_size[0], tiles.tile_size[1], 1});
+    tensor output = esrgan_generate(m, input, params);
+
+    allocate(graph, backend);
+
+    timer total;
+    printf(
+        "Using tile size %d with %d overlap -> %dx%d tiles\n", //
+        tile_size, tiles.overlap[0], tiles.n_tiles[0], tiles.n_tiles[1]);
+
+    for (int t = 0; t < tiles.total(); ++t) {
+        printf("\rRunning inference... tile %d of %d", t + 1, tiles.total());
+        i32x2 tile_coord = tiles.coord(t);
+        i32x2 tile_offset = tiles.start(tile_coord);
+        
+        image_u8_to_f32(image, input_tile, f32x4{0, 0, 0, 0}, f32x4{1, 1, 1, 1}, tile_offset);
+        transfer_to_backend(input, input_tile);
+
+        compute(graph, backend);
+
+        transfer_from_backend(output, output_tile.as_span().elements());
+        tile_merge(output_tile, output_image, tile_coord, tiles_out);
+    }
+    printf("\rRunning inference... complete (%s)\n", total.elapsed_str());
+
+    image_data output_u8 = image_alloc(image.extent * params.scale, image_format::rgb);
+    image_f32_to_u8(
+        output_image.as_span().elements(), span(output_u8.data.get(), n_bytes(output_u8)));
+    image_save(output_u8, args.output);
     printf("-> output image saved to %s\n", args.output);
 }
 

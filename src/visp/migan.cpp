@@ -1,7 +1,7 @@
 #include "migan.hpp"
 #include "image-impl.hpp"
-#include "math.hpp"
 #include "nn.hpp"
+#include "util/math.hpp"
 #include "util/string.hpp"
 
 #include <array>

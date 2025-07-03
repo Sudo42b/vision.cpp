@@ -1,7 +1,7 @@
 #pragma once
 
-#include "visp/ml.hpp"
 #include "visp/image.hpp"
+#include "visp/ml.hpp"
 #include "visp/vision.hpp"
 
 #include <array>
@@ -9,9 +9,7 @@
 #include <tuple>
 #include <vector>
 
-namespace visp {
-
-namespace sam {
+namespace visp::sam {
 
 // Image encoder
 
@@ -39,8 +37,6 @@ struct tiny_vit_params {
     // clang-format on
 };
 
-tensor tiny_vit(model_ref m, tensor x, tiny_vit_params const& p);
-
 float resize_longest_side(i32x2 extent, int target_longest_side);
 
 tensor conv_2d_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0, int groups = 1);
@@ -55,6 +51,8 @@ tensor tiny_vit_block(
     model_ref m, tensor x, int input_resolution, int dim, int num_heads, int window_size);
 tensor conv_layer(model_ref m, tensor x, tiny_vit_params::layer p);
 tensor basic_layer(model_ref m, tensor x, tiny_vit_params::layer const& p);
+
+tensor tiny_vit(model_ref m, tensor x, tiny_vit_params const& p);
 
 // Prompt encoder
 
@@ -91,5 +89,4 @@ tensor hypernetwork_mlp(model_ref m, tensor x, int num_layers);
 sam_prediction predict_masks(
     model_ref, tensor image_embed, tensor sparse_prompt, tensor dense_prompt);
 
-} // namespace sam
-} // namespace visp
+} // namespace visp::sam

@@ -1,7 +1,7 @@
 #include "esrgan.hpp"
-#include "visp/ml.hpp"
 #include "nn.hpp"
 #include "util/string.hpp"
+#include "visp/ml.hpp"
 
 #include <charconv>
 #include <string_view>
@@ -50,7 +50,7 @@ tensor rrdb(model_ref m, tensor x) {
 
 } // namespace esrgan
 
-tensor esrgan_upscale(model_ref m, tensor x, esrgan_params const& p) {
+tensor esrgan_generate(model_ref m, tensor x, esrgan_params const& p) {
     m = m["model"];
     x = conv_2d(m[0], x, 1, 1);
 

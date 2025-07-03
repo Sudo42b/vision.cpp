@@ -1,6 +1,6 @@
 #include "mobile-sam.hpp"
-#include "math.hpp"
 #include "nn.hpp"
+#include "util/math.hpp"
 #include "util/string.hpp"
 
 #include <ggml.h>

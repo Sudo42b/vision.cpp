@@ -124,7 +124,7 @@ struct model_ref {
 // Sets the name of a tensor to the current model prefix.
 tensor named(model_ref&, tensor);
 
-// Creates a new input tensor as part of the model graph, where input data is stored.
+// Creates a new tensor as part of the model graph where input data can be stored.
 tensor create_input(model_ref&, ggml_type type, i64x4 shape, tensor_name = "input");
 
 // Marks a tensor as an output of the compute graph.
@@ -146,7 +146,7 @@ tensor_data tensor_load(tensor x, char const* filepath);
 
 // Copies data to the tensor's backend buffer (which should already be allocated).
 void transfer_to_backend(tensor_data const&);
-void transfer_to_backend(tensor x, std::span<const float> data);
+void transfer_to_backend(tensor x, std::span<float const> data);
 void transfer_to_backend(tensor x, image_cspan const& data);
 
 // Copies tensor data from the backend buffer to main memory.
@@ -268,5 +268,17 @@ image_data_f32 migan_process_input(image_view image, image_view mask, migan_para
 image_data migan_process_output(std::span<float> data, i32x2 extent, migan_params const&);
 
 tensor migan_generate(model_ref, tensor image, migan_params const&);
+
+//
+// ESRGAN
+
+struct esrgan_params {
+    int scale = 4;
+    int n_blocks = 23;
+};
+
+esrgan_params esrgan_detect_params(model_ref);
+
+tensor esrgan_generate(model_ref, tensor image, esrgan_params const&);
 
 } // namespace visp

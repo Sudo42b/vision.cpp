@@ -1,6 +1,6 @@
 #include "visp/image.hpp"
 #include "image-impl.hpp"
-#include "math.hpp"
+#include "util/math.hpp"
 #include "util/string.hpp"
 
 #include <stb_image.h>
@@ -199,7 +199,6 @@ void convert(image_view img, image_span dst, f32x4 offset, f32x4 scale, i32x2 ti
 }
 void image_u8_to_f32(
     image_view const& img, image_span const& dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
-    ASSERT(img.extent == dst.extent);
 
     switch (dst.n_channels) {
     case 1: convert<float>(img, dst, offset, scale, tile_offset); break;

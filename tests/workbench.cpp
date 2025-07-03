@@ -395,7 +395,7 @@ DEF(esrgan_rrdbnet)(model_ref m, span<tensor> input, param_dict const& p) {
     esrgan_params params;
     params.n_blocks = 2;
     params.scale = 2;
-    return {esrgan_upscale(m, input[0], params)};
+    return {esrgan_generate(m, input[0], params)};
 }
 
 //

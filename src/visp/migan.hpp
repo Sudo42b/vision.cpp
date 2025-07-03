@@ -1,16 +1,13 @@
 #pragma once
 
-#include "visp/ml.hpp"
 #include "visp/image.hpp"
+#include "visp/ml.hpp"
 #include "visp/util.hpp"
 
 #include <array>
 #include <cmath>
 
-namespace visp {
-
-
-namespace migan {
+namespace visp::migan {
 
 enum class conv {
     none = 0,
@@ -45,5 +42,4 @@ std::pair<tensor, tensor> synthesis_block(
 
 tensor synthesis(model_ref m, tensor x_in, features feats, int res);
 
-} // namespace migan
-} // namespace visp
+} // namespace visp::migan
