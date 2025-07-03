@@ -11,17 +11,22 @@
 
 namespace visp {
 
+//
 // backend
 
-bool is_gpu(backend_type backend) {
-    return backend != backend_type::cpu;
+backend backend_init() {
+    backend b{ggml_backend_ptr(ggml_backend_init_best())};
+    ASSERT(b.handle, "Failed to initialize backend");
+    return b;
 }
 
 backend backend_init(backend_type type) {
     backend b;
-    b.type = type;
-    if (type == backend_type::vulkan) {
-        b.handle.reset(ggml_backend_vk_init(0));
+    if (type == backend_type::gpu) {
+        b.handle.reset(ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr));
+        if (!b.handle) {
+            throw error("Failed to initialize GPU backend, not available");
+        }
     } else {
         b.handle.reset(ggml_backend_cpu_init());
         uint32_t nthreads = std::max(1u, std::thread::hardware_concurrency() - 2);
@@ -30,8 +35,17 @@ backend backend_init(backend_type type) {
     return b;
 }
 
+backend_type backend::type() const {
+    ggml_backend_dev_t dev = ggml_backend_get_device(handle.get());
+    switch (ggml_backend_dev_type(dev)) {
+    case GGML_BACKEND_DEVICE_TYPE_CPU: return backend_type::cpu;
+    case GGML_BACKEND_DEVICE_TYPE_GPU: return backend_type::gpu;
+    default: ASSERT(false, "Unsupported backend device type"); return backend_type::cpu;
+    }
+}
+
 ggml_type backend::preferred_float_type() const {
-    if (type == backend_type::cpu) {
+    if (type() == backend_type::cpu) {
         return GGML_TYPE_F32;
     }
     return GGML_TYPE_COUNT; // use model's float type
@@ -96,7 +110,7 @@ model_weights model_init(backend const& be, size_t size) {
     params.no_alloc = true;
     ggml_context_ptr ctx(ggml_init(params));
 
-    return model_weights{std::move(ctx), be.type, {}, {}};
+    return model_weights{std::move(ctx), be.type(), {}, {}};
 }
 
 model_weights model_load(char const* filepath, backend const& backend, model_load_params p) {
@@ -135,11 +149,11 @@ model_weights model_load(char const* filepath, backend const& backend, model_loa
         void const* data = convert(data_tensor, t);
         ggml_backend_tensor_set(t, data, 0, ggml_nbytes(t));
     }
-    return model_weights{std::move(model_ctx), backend.type, std::move(buffer), {}};
+    return model_weights{std::move(model_ctx), backend.type(), std::move(buffer), {}};
 }
 
 bool allocate(model_weights& m, backend const& b) {
-    ASSERT(m.backend_type == b.type, "Model weights must all be on the same backend");
+    ASSERT(m.backend_type == b.type(), "Model weights must all be on the same backend");
 
     ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(m.context.get(), b.handle.get()));
     if (!buffer) {

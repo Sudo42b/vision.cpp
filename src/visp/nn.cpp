@@ -30,7 +30,7 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
         x = ggml_reshape_2d(m, x, x->ne[0], w * h * b);
         x = ggml_mul_mat(m, weight, x);
         x = ggml_reshape_4d(m, x, weight->ne[1], w, h, b);
-    } else if (is_gpu(m.backend)) {
+    } else if (m.backend == backend_type::gpu) {
         x = ggml_permute(m, x, 2, 0, 1, 3);
         tensor permuted_weight = ggml_permute(m, weight, 2, 0, 1, 3);
         tensor cols = ggml_im2col(

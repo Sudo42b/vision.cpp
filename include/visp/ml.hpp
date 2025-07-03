@@ -22,19 +22,18 @@ using tensor = ggml_tensor*;
 //
 // Backend
 
-enum class backend_type { cpu = 1, vulkan = 2 };
-
-bool is_gpu(backend_type);
+enum class backend_type { cpu = 1, gpu = 2 };
 
 struct backend {
-    backend_type type = backend_type::cpu;
     ggml_backend_ptr handle;
 
+    backend_type type() const;
     ggml_type preferred_float_type() const;
 
     operator ggml_backend_t() const { return handle.get(); }
 };
 
+backend backend_init();
 backend backend_init(backend_type);
 
 //
@@ -108,11 +107,13 @@ struct model_ref {
         tensor_name prefix = {},
         backend_type backend = backend_type::cpu);
 
+    // Find weights tensor by name, prepends the current prefix.
     tensor find(char const* name) const;    // returns null if not found
     tensor weights(char const* name) const; // asserts if not found
 
     model_ref with_prefix(tensor_name new_prefix) const;
 
+    // Returns a model_ref with prefix set to <current prefix>.<sub_module>
     model_ref operator[](char const* sub_module) const;
     model_ref operator[](tensor_name sub_module) const;
     model_ref operator[](int sub_module) const;

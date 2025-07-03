@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -14,14 +15,14 @@ enum class cli_command { sam, birefnet, migan, esrgan };
 
 struct cli_args {
     cli_command command;
-    std::vector<std::string_view> inputs; // -i --input
-    std::string_view output = "output.png";              // -o --output
-    std::string_view model;               // -m --model
+    std::vector<std::string_view> inputs;   // -i --input
+    std::string_view output = "output.png"; // -o --output
+    std::string_view model;                 // -m --model
     std::vector<std::string_view> prompt;
     // int threads = -1; // -t --threads
     // bool verbose = false; // -v --verbose
-    // backend_type backend = backend_type::cpu; // -b --backend
-    // int device = 0; // -d --device
+    std::optional<backend_type> backend_type; // -b --backend
+    // std::string_view device = 0; // -d --device
     // ggml_type float_type = GGML_TYPE_COUNT; // -f32 -f16
 
     // path composite; // --composite
@@ -92,11 +93,61 @@ cli_args cli_parse(int argc, char** argv) {
             r.model = validate_path(next_arg(argc, argv, i));
         } else if (arg == "-p" || arg == "--prompt") {
             r.prompt = collect_args(argc, argv, i, '-');
+        } else if (arg == "-b" || arg == "--backend") {
+            std::string_view backend_arg = next_arg(argc, argv, i);
+            if (backend_arg == "cpu") {
+                r.backend_type = backend_type::cpu;
+            } else if (backend_arg == "gpu") {
+                r.backend_type = backend_type::gpu;
+            } else {
+                throw error("Unknown backend type '{}', must be one of: cpu, gpu", backend_arg);
+            }
         } else if (arg.starts_with("-")) {
             throw error("Unknown argument: {}", arg);
         }
     }
     return r;
+}
+
+struct timer {
+    int64_t start;
+    fixed_string<16> string;
+
+    timer() : start(ggml_time_us()) {}
+
+    int64_t elapsed() const { return ggml_time_us() - start; }
+    float elapsed_ms() const { return float(elapsed()) / 1000.0f; }
+
+    char const* elapsed_str() {
+        format(string, "{:.1f} ms", elapsed_ms());
+        return string.c_str();
+    }
+};
+
+backend backend_init(cli_args const& args) {
+    timer t;
+    printf("Initializing backend... ");
+
+    backend b;
+    if (args.backend_type) {
+        b = backend_init(*args.backend_type);
+    } else {
+        b = backend_init();
+    }
+    printf("done (%s)\n", t.elapsed_str());
+
+    ggml_backend_dev_t dev = ggml_backend_get_device(b);
+    char const* dev_name = ggml_backend_dev_name(dev);
+    char const* dev_desc = ggml_backend_dev_description(dev);
+    printf("- selected device %s - %s\n", dev_name, dev_desc);
+    return b;
+}
+
+void compute_timed(compute_graph const& g, backend const& b) {
+    timer t;
+    printf("Running inference... ");
+    compute(g, b);
+    printf("complete (%s)\n", t.elapsed_str());
 }
 
 struct sam_prompt {
@@ -108,6 +159,11 @@ struct sam_prompt {
 };
 
 sam_prompt sam_prompt_parse(std::span<std::string_view const> args, i32x2 extent) {
+    if (args.empty()) {
+        throw error(
+            "SAM requires a prompt with coordinates for a point or box"
+            "eg. '--prompt 100 200' to pick the point at pixel (x=100, y=200)");
+    }
     if (args.size() < 2 || args.size() > 4) {
         throw error(
             "Invalid number of arguments for SAM prompt. Expected 2 (point) or 4 (box) numbers, "
@@ -135,7 +191,7 @@ sam_prompt sam_prompt_parse(std::span<std::string_view const> args, i32x2 extent
 };
 
 void run_sam(cli_args const& args) {
-    backend backend = backend_init(backend_type::cpu);
+    backend backend = backend_init(args);
 
     char const* model_path = args.model.empty() ? "models/mobile-sam.gguf" : args.model.data();
     model_load_params load_params = {
@@ -169,17 +225,21 @@ void run_sam(cli_args const& args) {
     transfer_to_backend(image_tensor, image_data_);
     transfer_to_backend(point_tensor, span(prompt_data.v, 4));
 
-    compute(graph, backend);
+    compute_timed(graph, backend);
+
+    timer t_post;
+    printf("Postprocessing output... ");
 
     tensor_data iou = transfer_from_backend(output.iou);
     tensor_data mask_data = transfer_from_backend(output.masks);
 
-    printf("IOU: %f, %f, %f\n", iou.as_f32()[0], iou.as_f32()[1], iou.as_f32()[2]);
-
     image_data mask = sam_postprocess_mask(mask_data.as_f32(), 2, image.extent, params);
+    printf("complete (%s)\n", t_post.elapsed_str());
+
     image_save(mask, args.output.data());
 
-    printf("Mask saved to %s\n", args.output.data());
+    printf("-> estimated accuracy (IoU): %f, %f, %f\n", iou.as_f32()[0], iou.as_f32()[1], iou.as_f32()[2]);
+    printf("-> mask saved to %s\n", args.output.data());
 }
 
 } // namespace visp
@@ -187,6 +247,8 @@ void run_sam(cli_args const& args) {
 int main(int argc, char** argv) {
     using namespace visp;
     try {
+        ggml_time_init();
+
         cli_args args = cli_parse(argc, argv);
         run_sam(args);
 
