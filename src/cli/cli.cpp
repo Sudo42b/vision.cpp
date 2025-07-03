@@ -63,6 +63,14 @@ char const* validate_path(char const* arg) {
     return arg;
 }
 
+void require_inputs(std::span<char const* const> inputs, int n_required, char const* names) {
+    if (inputs.size() != size_t(n_required)) {
+        throw error(
+            "Expected -i to be followed by {} inputs: {} - but found {}.", n_required, names,
+            inputs.size());
+    }
+}
+
 cli_args cli_parse(int argc, char** argv) {
     cli_args r;
     if (argc < 2) {
@@ -113,8 +121,12 @@ cli_args cli_parse(int argc, char** argv) {
 
 void run_sam(cli_args const&);
 void run_birefnet(cli_args const&);
+void run_migan(cli_args const&);
 
 } // namespace visp
+
+//
+// main
 
 int main(int argc, char** argv) {
     using namespace visp;
@@ -125,6 +137,7 @@ int main(int argc, char** argv) {
         switch (args.command) {
             case cli_command::sam: run_sam(args); break;
             case cli_command::birefnet: run_birefnet(args); break;
+            case cli_command::migan: run_migan(args); break;
         }
 
     } catch (std::exception const& e) {
@@ -266,13 +279,14 @@ void run_sam(cli_args const& args) {
     model_weights weights = load_model_weights(args, backend, "models/mobile-sam.gguf");
     sam_params params{};
 
+    require_inputs(args.inputs, 1, "image.png");
     image_data image = image_load(args.inputs[0]);
-    image_data_f32 image_data_ = sam_preprocess_image(image, params);
+    image_data_f32 image_data_ = sam_process_input(image, params);
 
     sam_prompt prompt = sam_parse_prompt(args.prompt, image.extent);
     f32x4 prompt_data = prompt.is_point()
-        ? sam_preprocess_point(prompt.point1, image.extent, params)
-        : sam_preprocess_box(prompt.point1, prompt.point2, image.extent, params);
+        ? sam_process_point(prompt.point1, image.extent, params)
+        : sam_process_box(prompt.point1, prompt.point2, image.extent, params);
 
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
@@ -298,7 +312,7 @@ void run_sam(cli_args const& args) {
     tensor_data iou = transfer_from_backend(output.iou);
     tensor_data mask_data = transfer_from_backend(output.masks);
 
-    image_data mask = sam_postprocess_mask(mask_data.as_f32(), 2, image.extent, params);
+    image_data mask = sam_process_mask(mask_data.as_f32(), 2, image.extent, params);
     printf("complete (%s)\n", t_post.elapsed_str());
 
     image_save(mask, args.output);
@@ -319,8 +333,9 @@ void run_birefnet(cli_args const& args) {
     birefnet_params params = birefnet_detect_params(weights);
     int img_size = params.image_size;
 
+    require_inputs(args.inputs, 1, "image.png");
     image_data image = image_load(args.inputs[0]);
-    image_data_f32 image_data_ = birefnet_process_input(image, params);
+    image_data_f32 input_data = birefnet_process_input(image, params);
 
     birefnet_buffers buffers = birefnet_precompute(model_ref(weights), params);
     allocate(weights, backend);
@@ -335,7 +350,7 @@ void run_birefnet(cli_args const& args) {
     tensor output = birefnet_predict(m, input, params);
 
     allocate(graph, backend);
-    transfer_to_backend(input, image_data_);
+    transfer_to_backend(input, input_data);
 
     compute_timed(graph, backend);
 
@@ -347,6 +362,40 @@ void run_birefnet(cli_args const& args) {
     printf("-> mask saved to %s\n", args.output);
 
     composite_image_with_mask(image, mask_resized, args.composite);
+}
+
+//
+// MI-GAN
+
+void run_migan(cli_args const& args) {
+    backend backend = backend_init(args);
+    model_weights weights = load_model_weights(args, backend, "models/migan_512_places2-f16.gguf");
+    migan_params params = migan_detect_params(weights);
+    params.invert_mask = true; // -> inpaint opaque areas
+
+    require_inputs(args.inputs, 2, "<image> <mask>");
+    image_data image = image_load(args.inputs[0]);
+    image_data mask = image_load(args.inputs[1]);
+    image_data_f32 input_data = migan_process_input(image, mask, params);
+
+    compute_graph graph = compute_graph_init();
+    model_ref m(weights, graph);
+
+    tensor input = create_input(m, GGML_TYPE_F32, {4, params.resolution, params.resolution, 1});
+    tensor output = migan_generate(m, input, params);
+
+    allocate(graph, backend);
+    transfer_to_backend(input, input_data);
+
+    compute_timed(graph, backend);
+
+    tensor_data output_data = transfer_from_backend(output);
+    image_data output_image = migan_process_output(output_data.as_f32(), image.extent, params);
+    image_data mask_resized = image_resize(mask, image.extent);
+    image_data composited = image_alloc(image.extent, image_format::rgb);
+    image_alpha_composite(output_image, image, mask_resized, composited.data.get());
+    image_save(composited, args.output);
+    printf("-> output image saved to %s\n", args.output);
 }
 
 } // namespace visp

@@ -202,9 +202,9 @@ struct sam_prediction {
     tensor iou;
 };
 
-image_data_f32 sam_preprocess_image(image_view image, sam_params const&);
-f32x4 sam_preprocess_point(i32x2 point, i32x2 image_extent, sam_params const&);
-f32x4 sam_preprocess_box(i32x2 top_left, i32x2 bottom_right, i32x2 image_extent, sam_params const&);
+image_data_f32 sam_process_input(image_view image, sam_params const&);
+f32x4 sam_process_point(i32x2 point, i32x2 image_extent, sam_params const&);
+f32x4 sam_process_box(i32x2 top_left, i32x2 bottom_right, i32x2 image_extent, sam_params const&);
 
 tensor sam_encode_image(model_ref, tensor image, sam_params const&);
 tensor sam_encode_points(model_ref, tensor coords);
@@ -212,7 +212,7 @@ tensor sam_encode_box(model_ref, tensor coords);
 
 sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed);
 
-image_data sam_postprocess_mask(
+image_data sam_process_mask(
     std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const&);
 
 //
@@ -245,7 +245,7 @@ struct birefnet_params {
     swin_params encoder;
 };
 
-using birefnet_buffers  = std::array<tensor_data, swin_params::n_layers + 2> ;
+using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
 
 birefnet_params birefnet_detect_params(model_ref);
 birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
@@ -253,5 +253,20 @@ birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
 image_data_f32 birefnet_process_input(image_view, birefnet_params const&);
 
 tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
+
+//
+// MI-GAN
+
+struct migan_params {
+    int resolution = 256;
+    bool invert_mask = false;
+};
+
+migan_params migan_detect_params(model_ref m);
+
+image_data_f32 migan_process_input(image_view image, image_view mask, migan_params const&);
+image_data migan_process_output(std::span<float> data, i32x2 extent, migan_params const&);
+
+tensor migan_generate(model_ref, tensor image, migan_params const&);
 
 } // namespace visp

@@ -9,17 +9,6 @@
 
 namespace visp {
 
-struct migan_params {
-    int resolution = 256;
-    bool invert_mask = false;
-
-    static migan_params detect(model_ref m);
-};
-
-image_data_f32 migan_preprocess(image_view image, image_view mask, migan_params const&);
-image_data migan_postprocess(std::span<float> data, i32x2 extent, migan_params const&);
-
-tensor migan_generate(model_ref, tensor image, migan_params const&);
 
 namespace migan {
 

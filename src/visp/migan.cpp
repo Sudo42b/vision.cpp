@@ -126,13 +126,13 @@ tensor synthesis(model_ref m, tensor x_in, Features feats, int res) {
 
 } // namespace migan
 
-tensor generate(model_ref m, tensor image, migan_params const& p) {
+tensor migan_generate(model_ref m, tensor image, migan_params const& p) {
     auto [x, feats] = migan::encode(m["encoder"], image, p.resolution);
     tensor result = migan::synthesis(m["synthesis"], x, feats, p.resolution);
     return mark_output(m, result, "output");
 }
 
-migan_params migan_params::detect(model_ref m) {
+migan_params migan_detect_params(model_ref m) {
     if (m.find("encoder.b512.fromrgb.weight") != nullptr) {
         return migan_params{512};
     } else if (m.find("encoder.b256.fromrgb.weight") != nullptr) {
@@ -142,7 +142,7 @@ migan_params migan_params::detect(model_ref m) {
     }
 }
 
-image_data_f32 migan_preprocess(image_view image, image_view mask, migan_params const& p) {
+image_data_f32 migan_process_input(image_view image, image_view mask, migan_params const& p) {
     i32x2 res = {p.resolution, p.resolution};
     std::optional<image_data> resized_image;
     if (image.extent != res) {
@@ -175,7 +175,7 @@ image_data_f32 migan_preprocess(image_view image, image_view mask, migan_params 
     return result_image;
 }
 
-image_data migan_postprocess(std::span<float> data, i32x2 extent, migan_params const& p) {
+image_data migan_process_output(std::span<float> data, i32x2 extent, migan_params const& p) {
     int res = p.resolution;
     auto image = image_alloc(i32x2{res, res}, image_format::rgb);
     image_f32_to_u8(data, std::span(image.data.get(), n_bytes(image)), 0.5f, 0.5f);

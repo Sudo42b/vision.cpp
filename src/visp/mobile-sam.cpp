@@ -548,7 +548,7 @@ i32x2 scale_extent(i32x2 extent, float scale) {
 
 } // namespace sam
 
-image_data_f32 sam_preprocess_image(image_view image, sam_params const& p) {
+image_data_f32 sam_process_input(image_view image, sam_params const& p) {
     constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
     constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
 
@@ -564,15 +564,15 @@ image_data_f32 sam_preprocess_image(image_view image, sam_params const& p) {
     return result;
 }
 
-f32x4 sam_preprocess_point(i32x2 point, i32x2 input_image_extent, sam_params const& p) {
+f32x4 sam_process_point(i32x2 point, i32x2 input_image_extent, sam_params const& p) {
     return sam::preprocess_point(point, input_image_extent, p);
 }
 
-f32x4 sam_preprocess_box(i32x2 tl, i32x2 br, i32x2 input_image_extent, sam_params const& p) {
+f32x4 sam_process_box(i32x2 tl, i32x2 br, i32x2 input_image_extent, sam_params const& p) {
     return sam::preprocess_box(tl, br, input_image_extent, p);
 }
 
-image_data sam_postprocess_mask(
+image_data sam_process_mask(
     std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const& p) {
 
     mask_data = mask_data.subspan(mask_index * sqr(p.mask_size));
