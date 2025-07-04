@@ -124,6 +124,23 @@ tensor synthesis(model_ref m, tensor x_in, Features feats, int res) {
     return img;
 }
 
+template <typename T>
+void preprocess(
+    image_source<T> img, image_source<uint8_t> mask, image_target<f32x4> dst, bool invert_mask) {
+
+    for (int y = 0; y < img.extent[1]; ++y) {
+        for (int x = 0; x < img.extent[0]; ++x) {
+            i32x2 c = {x, y};
+            float alpha = mask.load(c)[0];
+            if (invert_mask) {
+                alpha = 1.0f - alpha;
+            }
+            f32x4 color = alpha * (img.load(c) * 2.0f - f32x4{1.0f, 1.0f, 1.0f, 1.0f});
+            dst.store(c, {alpha - 0.5f, color[0], color[1], color[2]});
+        }
+    }
+}
+
 } // namespace migan
 
 tensor migan_generate(model_ref m, tensor image, migan_params const& p) {
@@ -154,25 +171,13 @@ image_data_f32 migan_process_input(image_view image, image_view mask, migan_para
         resized_mask = image_resize(mask, res);
         mask = image_view(*resized_mask);
     }
-    pixel_lookup rgb(image);
-    pixel_lookup alpha(mask);
-    const float scale = 2.0f / 255.0f;
-    const uint8_t no_fill = p.invert_mask ? 0 : 255;
-    image_data_f32 result_image = image_alloc_f32(res,4);
-    image_target<f32x4> result = result_image.as_span();
-
-    for (int y = 0; y < res[1]; ++y) {
-        for (int x = 0; x < res[0]; ++x) {
-            float a = alpha.get(mask.data, x, y, 0) == no_fill ? 1.0f : 0.0f;
-            result.store(
-                {x, y},
-                {a - 0.5f, //
-                 a * (rgb.get(image.data, x, y, 0) * scale - 1.0f),
-                 a * (rgb.get(image.data, x, y, 1) * scale - 1.0f),
-                 a * (rgb.get(image.data, x, y, 2) * scale - 1.0f)});
-        }
+    image_data_f32 result = image_alloc_f32(res, 4);
+    switch (n_channels(image)) {
+        case 3: migan::preprocess<u8x3>(image, mask, result.as_span(), p.invert_mask); break;
+        case 4: migan::preprocess<u8x4>(image, mask, result.as_span(), p.invert_mask); break;
+        default: ASSERT(false, "Unsupported image format for migan image input");
     }
-    return result_image;
+    return result;
 }
 
 image_data migan_process_output(std::span<float> data, i32x2 extent, migan_params const& p) {

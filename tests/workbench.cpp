@@ -583,12 +583,9 @@ extern "C" {
 #endif
 
 #ifdef _MSC_VER
-#    define API __declspec(dllexport)
-#else
-#    define API
+__declspec(dllexport)
 #endif
-
-API int32_t visp_workbench(
+int32_t visp_workbench(
     char const* testcase,
     visp::raw_tensor const* inputs,
     int32_t n_inputs,

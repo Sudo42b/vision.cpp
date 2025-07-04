@@ -21,12 +21,22 @@ using std::clamp;
 
 int n_channels(image_format format) {
     switch (format) {
-    case image_format::rgba:
-    case image_format::bgra:
-    case image_format::argb: return 4;
-    case image_format::rgb: return 3;
-    case image_format::alpha: return 1;
-    default: ASSERT(false, "unknown image format"); return 0;
+        case image_format::rgba:
+        case image_format::bgra:
+        case image_format::argb: return 4;
+        case image_format::rgb: return 3;
+        case image_format::alpha: return 1;
+        default: ASSERT(false, "unknown image format"); return 0;
+    }
+}
+
+i32x4 get_channel_map(image_format format) {
+    switch (format) {
+        case image_format::bgra: return {2, 1, 0, 3};
+        case image_format::argb: return {1, 2, 3, 0};
+        case image_format::alpha: return {0, 0, 0, 0};
+        case image_format::rgb: return {0, 1, 2, 0};
+        default: return {0, 1, 2, 3}; // rgba
     }
 }
 
@@ -55,10 +65,10 @@ image_data image_alloc(i32x2 extent, image_format format) {
 
 image_format image_format_from_channels(int n_channels) {
     switch (n_channels) {
-    case 1: return image_format::alpha;
-    case 3: return image_format::rgb;
-    case 4: return image_format::rgba;
-    default: ASSERT(false, "Invalid number of channels");
+        case 1: return image_format::alpha;
+        case 3: return image_format::rgb;
+        case 4: return image_format::rgba;
+        default: ASSERT(false, "Invalid number of channels");
     }
     return image_format::rgba;
 }
@@ -124,24 +134,6 @@ image_data image_resize_mask(image_view const& img, i32x2 target) {
 }
 
 //
-// pixel_lookup implementation
-
-pixel_lookup::pixel_lookup(i32x2 extent, image_format format) {
-    stride_c = n_channels(format);
-    stride_x = extent[0] * stride_c;
-
-    switch (format) {
-    case image_format::bgra: channel_map = {2, 1, 0, 3}; break;
-    case image_format::argb: channel_map = {1, 2, 3, 0}; break;
-    case image_format::alpha: channel_map = {0, 0, 0, 0}; break;
-    case image_format::rgb: channel_map = {0, 1, 2, 0}; break;
-    default: channel_map = {0, 1, 2, 3}; break; // rgba
-    }
-}
-
-pixel_lookup::pixel_lookup(image_view image) : pixel_lookup(image.extent, image.format) {}
-
-//
 // image span
 
 image_span::image_span(i32x2 extent, int n_channels, float* data)
@@ -174,37 +166,44 @@ size_t n_bytes(image_cspan const& img) {
 
 image_data_f32 image_alloc_f32(i32x2 extent, int n_channels) {
     size_t size = size_t(extent[0]) * extent[1] * n_channels;
-    return image_data_f32{extent, n_channels, std::unique_ptr<float[]>(new float[size])};
+    float* ptr = new float[size]; // TODO should be 16-byte aligned
+    return image_data_f32{extent, n_channels, std::unique_ptr<float[]>(ptr)};
 }
 
 //
 // image conversion (uint8 <-> float32)
 
-template <typename T>
-void convert(image_view img, image_span dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
-    auto input = pixel_lookup(img);
-    auto output = image_target<T>(dst);
+template <typename Src, typename Dst>
+void convert(
+    image_source<Src> src, image_target<Dst> dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
 
     for (int y = 0; y < dst.extent[1]; ++y) {
         for (int x = 0; x < dst.extent[0]; ++x) {
-            int x0 = std::min(x + tile_offset[0], img.extent[0] - 1);
-            int y0 = std::min(y + tile_offset[1], img.extent[1] - 1);
-            f32x4 v{
-                float(input.get(img.data, x0, y0, 0)), float(input.get(img.data, x0, y0, 1)),
-                float(input.get(img.data, x0, y0, 2)), float(input.get(img.data, x0, y0, 3))};
-            v = (v / 255.f + offset) * scale;
-            output.store({x, y}, v);
+            i32x2 c = {x, y};
+            c = min(c + tile_offset, dst.extent - i32x2{1, 1});
+            dst.store(c, (src.load(c) + offset) * scale);
         }
     }
 }
+
 void image_u8_to_f32(
-    image_view const& img, image_span const& dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
+    image_view const& src, image_span const& dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
 
     switch (dst.n_channels) {
-    case 1: convert<float>(img, dst, offset, scale, tile_offset); break;
-    case 3: convert<f32x3>(img, dst, offset, scale, tile_offset); break;
-    case 4: convert<f32x4>(img, dst, offset, scale, tile_offset); break;
-    default: ASSERT(false, "Invalid number of channels in destination image");
+        case 1: convert<uint8_t, float>(src, dst, offset, scale, tile_offset); break;
+        case 3:
+            switch (n_channels(src)) {
+                case 3: convert<u8x3, f32x3>(src, dst, offset, scale, tile_offset); break;
+                case 4: convert<u8x4, f32x3>(src, dst, offset, scale, tile_offset); break;
+            }
+            break;
+        case 4:
+            switch (n_channels(src)) {
+                case 3: convert<u8x3, f32x4>(src, dst, offset, scale, tile_offset); break;
+                case 4: convert<u8x4, f32x4>(src, dst, offset, scale, tile_offset); break;
+            }
+            break;
+        default: ASSERT(false, "Number of channels in source and destination or not compatible");
     }
 }
 
@@ -303,7 +302,7 @@ auto blur_fusion_foreground_estimator(
 
     auto blurred_mask_data = image_alloc_f32(extent, 1);
     auto blurred_mask = image_target<float>(blurred_mask_data);
-    image_blur(mask_in, blurred_mask, radius);
+    image_blur(mask_in, blurred_mask_data, radius);
 
     auto fg_masked_data = image_alloc_f32(extent, 4);
     auto fg_masked = image_target<f32x4>(fg_masked_data);
@@ -313,23 +312,24 @@ auto blur_fusion_foreground_estimator(
 
     auto blurred_fg_data = image_alloc_f32(extent, 4);
     auto blurred_fg = image_target<f32x4>(blurred_fg_data);
-    image_blur(fg_masked, blurred_fg, radius);
+    image_blur(fg_masked_data, blurred_fg_data, radius);
     for (size_t i = 0; i < n; ++i) {
         blurred_fg[i] = blurred_fg[i] / (blurred_mask[i] + 1e-5f);
     }
 
-    auto& bg_masked = fg_masked; // Reuse fg_masked for bg
+    auto& bg_masked_data = fg_masked_data; // Reuse fg_masked memory for bg
+    auto& bg_masked = fg_masked;
     for (size_t i = 0; i < n; ++i) {
         bg_masked[i] = bg[i] * (1.0f - mask[i]);
     }
 
     auto blurred_bg_data = image_alloc_f32(extent, 4);
     auto blurred_bg = image_target<f32x4>(blurred_bg_data);
-    image_blur(bg_masked, blurred_bg, radius);
+    image_blur(bg_masked_data, blurred_bg_data, radius);
     for (size_t i = 0; i < n; ++i) {
         blurred_bg[i] = blurred_bg[i] / ((1.0f - blurred_mask[i]) + 1e-5f);
         f32x4 f = blurred_fg[i] +
-                  mask[i] * (img[i] - mask[i] * blurred_fg[i] - (1.0f - mask[i]) * blurred_bg[i]);
+            mask[i] * (img[i] - mask[i] * blurred_fg[i] - (1.0f - mask[i]) * blurred_bg[i]);
         f[3] = mask[i];
         blurred_fg[i] = clamp(f, 0.0f, 1.0f);
     }
@@ -344,27 +344,31 @@ image_data_f32 image_estimate_foreground(image_cspan img, image_cspan mask, int 
     return blur_fusion_foreground_estimator(img, fg, blur_bg, mask, 3).first;
 }
 
+template <typename FG, typename BG>
+void alpha_composite(
+    image_source<FG> fg, image_source<BG> bg, image_source<uint8_t> alpha, image_target<u8x4> out) {
+
+    for (int y = 0; y < fg.extent[1]; ++y) {
+        for (int x = 0; x < fg.extent[0]; ++x) {
+            i32x2 c = {x, y};
+            float w = alpha.load(c)[0];
+            f32x4 v = w * fg.load(c) + (1.0f - w) * bg.load(c);
+            v[3] = 1.0f;
+            out.store(c, v);
+        }
+    }
+}
+
 void image_alpha_composite(
     image_view const& fg, image_view const& bg, image_view const& mask, uint8_t* dst) {
 
     ASSERT(fg.extent == bg.extent && fg.extent == mask.extent);
-    pixel_lookup a(fg);
-    pixel_lookup b(bg);
-    pixel_lookup alpha(mask);
+    image_target<u8x4> out(fg.extent, (u8x4*)dst, fg.extent[0]);
 
-    auto comp = [&](int x, int y, int c, float w0, float w1) {
-        return uint8_t(a.get(fg.data, x, y, c) * w0 + b.get(bg.data, x, y, c) * w1);
-    };
-
-    for (int y = 0; y < fg.extent[1]; ++y) {
-        for (int x = 0; x < fg.extent[0]; ++x) {
-            int i = y * fg.extent[0] * 3 + x * 3;
-            float w0 = alpha.get(mask.data, x, y, 0) / 255.0f;
-            float w1 = 1.0f - w0;
-            for (int c = 0; c < 3; ++c) {
-                dst[i + c] = comp(x, y, c, w0, w1);
-            }
-        }
+    switch (n_channels(bg.format)) {
+        case 3: alpha_composite<u8x4, u8x3>(fg, bg, mask, out); break;
+        case 4: alpha_composite<u8x4, u8x4>(fg, bg, mask, out); break;
+        default: ASSERT(false, "Unsupported number of channels in background image"); return;
     }
 }
 
@@ -400,10 +404,10 @@ float image_difference_rms(image_cspan const& img1, image_cspan const& img2) {
     ASSERT(img1.n_channels == img2.n_channels);
 
     switch (img1.n_channels) {
-    case 1: return image_difference_rms_impl<float>(img1, img2);
-    case 3: return image_difference_rms_impl<f32x3>(img1, img2);
-    case 4: return image_difference_rms_impl<f32x4>(img1, img2);
-    default: ASSERT(false, "Invalid number of channels"); return 0.0f;
+        case 1: return image_difference_rms_impl<float>(img1, img2);
+        case 3: return image_difference_rms_impl<f32x3>(img1, img2);
+        case 4: return image_difference_rms_impl<f32x4>(img1, img2);
+        default: ASSERT(false, "Invalid number of channels"); return 0.0f;
     }
 }
 
@@ -436,8 +440,7 @@ i32x2 tile_layout::start(i32x2 coord, i32x2 pad) const {
 i32x2 tile_layout::end(i32x2 coord, i32x2 pad) const {
     i32x2 offset = start(coord) + tile_size;
     offset = offset -
-             i32x2{
-                 coord[0] == n_tiles[0] - 1 ? 0 : pad[0], coord[1] == n_tiles[1] - 1 ? 0 : pad[1]};
+        i32x2{coord[0] == n_tiles[0] - 1 ? 0 : pad[0], coord[1] == n_tiles[1] - 1 ? 0 : pad[1]};
     return min(offset, image_extent);
 }
 

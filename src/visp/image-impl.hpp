@@ -1,94 +1,133 @@
 #pragma once
 
+#include "util/math.hpp"
 #include "util/string.hpp"
 #include "visp/image.hpp"
 
+#include <algorithm>
 #include <array>
 
 namespace visp {
 
-struct pixel_lookup {
-    int stride_x;
-    int stride_c;
-    std::array<int, 4> channel_map;
+// uint8 <-> float32 pixel conversions
+// - no sRGB gamma correction for now, ML pipelines usually have some form of normalization
 
-    pixel_lookup(image_view image);
+i32x4 get_channel_map(image_format);
 
-    pixel_lookup(i32x2 extent, image_format format);
+inline f32x4 image_load(uint8_t const* img, size_t i, i32x4) {
+    float v = float(img[i]) / 255.0f;
+    return f32x4{v, v, v, v};
+}
 
-    uint8_t get(uint8_t const* pixels, int x, int y, int c) const {
-        return pixels[y * stride_x + x * stride_c + channel_map[c]];
-    }
+inline f32x4 image_load(u8x3 const* img, size_t i, i32x4) {
+    u8x3 u = img[i];
+    f32x4 v = f32x4{float(u[0]), float(u[1]), float(u[2]), 1.0f};
+    return v / 255.0f;
+}
 
-    void set(uint8_t* pixels, int x, int y, int c, uint8_t value) {
-        pixels[y * stride_x + x * stride_c + channel_map[c]] = value;
-    }
-};
+inline f32x4 image_load(u8x4 const* img, size_t i, i32x4 map) {
+    u8x4 u = img[i];
+    f32x4 v = f32x4{float(u[map[0]]), float(u[map[1]]), float(u[map[2]]), float(u[map[3]])};
+    return v / 255.0f;
+}
 
-inline f32x4 image_load(float const* img, size_t i) {
+inline void image_store(uint8_t* img, size_t i, f32x4 value) {
+    img[i] = uint8_t(clamp(value[0], 0.0f, 1.0f) * 255.0f);
+}
+
+inline void image_store(u8x4* img, size_t i, f32x4 value) {
+    value = clamp(value, 0.0f, 1.0f) * 255.0f;
+    img[i] = u8x4{uint8_t(value[0]), uint8_t(value[1]), uint8_t(value[2]), uint8_t(value[3])};
+}
+
+// float32 pixel load/store
+
+inline f32x4 image_load(float const* img, size_t i, i32x4) {
     return f32x4{img[i]};
 }
-inline f32x4 image_load(f32x3 const* img, size_t i) {
+
+inline f32x4 image_load(f32x3 const* img, size_t i, i32x4) {
     return f32x4{img[i][0], img[i][1], img[i][2], 1.0f};
 }
-inline f32x4 image_load(f32x4 const* img, size_t i) {
+
+inline f32x4 image_load(f32x4 const* img, size_t i, i32x4) {
     return img[i];
 }
 
 inline void image_store(float* img, size_t i, f32x4 value) {
     img[i] = value[0];
 }
+
 inline void image_store(f32x3* img, size_t i, f32x4 value) {
     img[i] = f32x3{value[0], value[1], value[2]};
 }
+
 inline void image_store(f32x4* img, size_t i, f32x4 value) {
     img[i] = value;
 }
 
-template <typename T>
+// clang-format off
+template <typename T> struct scalar_type_impl { using type = typename T::value_type; };
+template <>           struct scalar_type_impl<float> { using type = float; };
+template <>           struct scalar_type_impl<uint8_t> { using type = uint8_t; };
+template <typename T> using scalar_type = typename scalar_type_impl<T>::type;
+// clang-format on
+
+//
+// Image source - supports reading u8/f32 images with any format
+
+template <typename T> // uint8_t, u8x3, u8x4, float, f32x3, f32x4
 struct image_source {
-    i32x2 extent;
+    i32x2 extent{};
     T const* data;
+    size_t stride; // row stride in elements
+    i32x4 channel_map{0, 1, 2, 3};
 
-    static constexpr int n_channels = sizeof(T) / sizeof(float);
+    using scalar = scalar_type<T>;
+    static constexpr int n_channels = sizeof(T) / sizeof(scalar);
 
-    image_source(image_cspan img) : extent(img.extent), data(reinterpret_cast<T const*>(img.data)) {
-        ASSERT(img.n_channels == sizeof(T) / sizeof(float));
+    image_source(i32x2 extent, T const* ptr, size_t stride)
+        : extent(extent), data(ptr), stride(stride) {}
+
+    template <class = void>
+    image_source(image_view img)
+        : image_source(img.extent, reinterpret_cast<T const*>(img.data), img.stride / n_channels) {
+        static_assert(std::is_same_v<scalar, uint8_t>);
+        ASSERT(visp::n_channels(img) == n_channels);
+        channel_map = get_channel_map(img.format);
+    }
+
+    template <class = void>
+    image_source(image_cspan img)
+        : image_source(img.extent, reinterpret_cast<T const*>(img.data), img.extent[0]) {
+        static_assert(std::is_same_v<scalar, float>);
+        ASSERT(img.n_channels == n_channels);
     }
 
     T const& operator[](size_t i) const { return data[i]; }
 
-    f32x4 load(size_t i) const { return image_load(data, i); }
-    f32x4 load(i32x2 c) const { return image_load(data, c[1] * extent[0] + c[0]); }
-
-    operator image_cspan() const {
-        return {extent, span(data, extent[0] * extent[1] * n_channels)};
-    }
+    f32x4 load(size_t i) const { return image_load(data, i, channel_map); }
+    f32x4 load(i32x2 c) const { return load(c[1] * stride + c[0]); }
 };
 
-template <typename T>
-struct image_target {
-    i32x2 extent;
-    T* data;
+//
+// Image target - supports writing u8/f32 images with alpha or rgba format
 
-    static constexpr int n_channels = sizeof(T) / sizeof(float);
+template <typename T> // uint8_t, u8x4, float, f32x3, f32x4
+struct image_target : image_source<T> {
 
-    image_target(image_span img) : extent(img.extent), data(reinterpret_cast<T*>(img.data)) {
-        ASSERT(img.n_channels == sizeof(T) / sizeof(float));
+    image_target(i32x2 extent, T* ptr, size_t stride) : image_source<T>(extent, ptr, stride) {}
+
+    image_target(image_data& img) : image_source<T>(img) {
+        ASSERT(img.format == image_format::rgba || img.format == image_format::alpha);
     }
 
-    T& operator[](size_t i) const { return data[i]; }
+    image_target(image_span img) : image_source<T>(img) {}
 
-    f32x4 load(size_t i) const { return image_load(data, i); }
-    f32x4 load(i32x2 c) const { return image_load(data, c[1] * extent[0] + c[0]); }
+    T& operator[](size_t i) const { return ((T*)this->data)[i]; }
 
-    void store(size_t i, f32x4 value) const { image_store(data, i, value); }
-    void store(i32x2 c, f32x4 value) const { image_store(data, c[1] * extent[0] + c[0], value); }
-
-    operator image_span() const { return {extent, span(data, extent[0] * extent[1] * n_channels)}; }
-    operator image_cspan() const {
-        return {extent, span(data, extent[0] * extent[1] * n_channels)};
-    }
+    void store(size_t i, f32x4 value) const { image_store((T*)this->data, i, value); }
+    void store(i32x2 c, f32x4 value) const { store(c[1] * this->stride + c[0], value); }
 };
 
 } // namespace visp

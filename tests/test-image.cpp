@@ -24,8 +24,8 @@ TEST_CASE(image_formats) {
 TEST_CASE(image_load) {
     image_data img = image_load((test_dir().input / "cat-and-hat.jpg").string().c_str());
     CHECK(img.extent == i32x2{512, 512});
-    CHECK(img.format == image_format::rgba);
-    CHECK(n_bytes(img) == 512 * 512 * 4);
+    CHECK(img.format == image_format::rgb);
+    CHECK(n_bytes(img) == 512 * 512 * 3);
 }
 
 TEST_CASE(image_save) {
@@ -60,6 +60,28 @@ TEST_CASE(image_resize) {
         CHECK(int(result.data[i * 4 + 1]) == 2 + 8 * (i / 4));
         CHECK(int(result.data[i * 4 + 2]) == 2 + 8 * (i % 4));
         CHECK(result.data[i * 4 + 3] == 255);
+    }
+}
+
+TEST_CASE(image_alpha_composite) {
+    std::array<uint8_t, 2 * 2 * 4> fg_data = {255, 0, 0,   255, 0,   255, 0, 255, //
+                                              0,   0, 255, 255, 255, 255, 0, 255};
+    image_view fg = {i32x2{2, 2}, image_format::rgba, fg_data.data()};
+
+    std::array<uint8_t, 2 * 2 * 3> bg_data = {0,   0,   0,   128, 128, 128, //
+                                              255, 255, 255, 64,  64,  64};
+    image_view bg = {i32x2{2, 2}, image_format::rgb, bg_data.data()};
+
+    std::array<uint8_t, 2 * 2> mask_data = {255, 128, 64, 0};
+    image_view mask = {i32x2{2, 2}, image_format::alpha, mask_data.data()};
+
+    std::array<uint8_t, 2 * 2 * 4> output_data{};
+    image_alpha_composite(fg, bg, mask, output_data.data());
+
+    std::array<uint8_t, 2 * 2 * 4> expected_output = {255, 0,   0,   255, 63, 191, 63, 255, //
+                                                      191, 191, 255, 255, 64, 64,  64, 255};
+    for (size_t i = 0; i < output_data.size(); ++i) {
+        CHECK_EQUAL(output_data[i], expected_output[i]);
     }
 }
 

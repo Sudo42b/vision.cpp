@@ -63,7 +63,11 @@ struct vec_t {
     constexpr auto operator<=>(vec_t const&) const = default;
 };
 
+using u8x3 = vec_t<uint8_t, 3>;
+using u8x4 = vec_t<uint8_t, 4>;
+
 using i32x2 = vec_t<int32_t, 2>;
+using i32x4 = vec_t<int32_t, 4>;
 
 using i64x2 = vec_t<int64_t, 2>;
 using i64x4 = vec_t<int64_t, 4>;
