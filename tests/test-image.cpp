@@ -9,27 +9,42 @@
 namespace visp {
 
 TEST_CASE(image_formats) {
-    auto formats = std::array{
-        image_format::rgba, image_format::bgra, image_format::argb, image_format::rgb,
-        image_format::alpha};
+    auto formats = std::array{image_format::rgba_u8, image_format::bgra_u8,  image_format::argb_u8,
+                              image_format::rgb_u8,  image_format::alpha_u8, image_format::rgba_f32,
+                              image_format::rgb_f32, image_format::alpha_f32};
 
     for (image_format format : formats) {
+        int tsize = is_float(format) ? 4 : 1;
+        CHECK_EQUAL(n_channels(format) * tsize, n_bytes(format));
+
         image_data img = image_alloc(i32x2{8, 6}, format);
-        CHECK(n_bytes(img) == size_t(8 * 6 * n_channels(format)));
-        CHECK(n_bytes(img) <= size_t(8 * 6 * 4));
-        CHECK(n_bytes(img) >= size_t(8 * 6 * 1));
+        CHECK(n_bytes(img) == size_t(8 * 6 * n_bytes(format)));
+
+        image_view view(img);
+        if (is_float(format)) {
+            CHECK(view.as_floats().size() == n_bytes(img) / sizeof(float));
+        } else {
+            CHECK(view.as_bytes().size() == n_bytes(img));
+        }
+
+        image_span img_span(img);
+        if (is_float(format)) {
+            CHECK(img_span.as_floats().size() == n_bytes(img) / sizeof(float));
+        } else {
+            CHECK(img_span.as_bytes().size() == n_bytes(img));
+        }
     }
 }
 
 TEST_CASE(image_load) {
     image_data img = image_load((test_dir().input / "cat-and-hat.jpg").string().c_str());
     CHECK(img.extent == i32x2{512, 512});
-    CHECK(img.format == image_format::rgb);
+    CHECK(img.format == image_format::rgb_u8);
     CHECK(n_bytes(img) == 512 * 512 * 3);
 }
 
 TEST_CASE(image_save) {
-    image_data img = image_alloc(i32x2{16, 16}, image_format::rgba);
+    image_data img = image_alloc(i32x2{16, 16}, image_format::rgba_u8);
     for (int i = 0; i < 16 * 16; ++i) {
         img.data.get()[i * 4 + 0] = 255;
         img.data.get()[i * 4 + 1] = uint8_t(i);
@@ -44,8 +59,132 @@ TEST_CASE(image_save) {
     CHECK_IMAGES_EQUAL(result, img);
 }
 
+void test_image_u8_to_f32(
+    image_format in_format,
+    image_format out_format,
+    span<uint8_t const> input_data,
+    span<float const> expected_data) {
+
+    image_view input(i32x2{2, 2}, in_format, input_data);
+    image_view expected(i32x2{2, 2}, out_format, expected_data.data());
+    f32x4 offset = f32x4{0.1f, 0.2f, 0.3f, 0.4f};
+    f32x4 scale = f32x4{0.5f, 1.0f, -1.f, 1.0f};
+    image_data output = image_u8_to_f32(input, out_format, offset, scale);
+    test_with_tolerance tol{0.01f};
+    CHECK_IMAGES_EQUAL(output, expected);
+}
+
+TEST_CASE(image_alpha_u8_to_alpha_f32) {
+    test_image_u8_to_f32(
+        image_format::alpha_u8, image_format::alpha_f32, //
+        std::array<uint8_t, 4>{0, 128, 190, 255},        //
+        std::array<float, 4>{0.05f, 0.3f, 0.4225f, 0.55f});
+}
+TEST_CASE(image_rgb_u8_to_rgb_f32) {
+    test_image_u8_to_f32(
+        image_format::rgb_u8, image_format::rgb_f32,                                  //
+        std::array<uint8_t, 12>{0, 128, 192, 255, 0, 128, 128, 255, 0, 128, 64, 255}, //
+        std::array<float, 12>{
+            0.05f, 0.7f, -1.05f, 0.55f, 0.2f, -0.8f, 0.3f, 1.2f, -0.3f, 0.3f, 0.45f, -1.3f});
+}
+TEST_CASE(image_rgba_u8_to_rgb_f32) {
+    test_image_u8_to_f32(
+        image_format::rgba_u8, image_format::rgb_f32, //
+        std::array<uint8_t, 16>{
+            0, 128, 192, 42, //
+            255, 0, 128, 42, //
+            128, 255, 0, 42, //
+            128, 64, 255, 42},
+        std::array<float, 12>{
+            0.05f, 0.7f, -1.05f, //
+            0.55f, 0.2f, -0.8f,  //
+            0.3f, 1.2f, -0.3f,   //
+            0.3f, 0.45f, -1.3f});
+}
+TEST_CASE(image_rgba_u8_to_rgba_f32) {
+    test_image_u8_to_f32(
+        image_format::rgba_u8, image_format::rgba_f32, //
+        std::array<uint8_t, 16>{
+            0, 128, 192, 0,   //
+            255, 0, 128, 64,  //
+            128, 255, 0, 128, //
+            128, 64, 255, 255},
+        std::array<float, 16>{
+            0.05f, 0.7f, -1.05f, 0.4f,     //
+            0.55f, 0.2f, -0.8f, 0.65f,     //
+            0.3f, 1.2f, -0.3f, 0.9f, 0.3f, //
+            0.45f, -1.3f, 1.4f});
+}
+TEST_CASE(image_bgra_u8_to_rgb_f32) {
+    test_image_u8_to_f32(
+        image_format::bgra_u8, image_format::rgb_f32, //
+        std::array<uint8_t, 16>{
+            192, 128, 0, 42, //
+            128, 0, 255, 42, //
+            0, 255, 128, 42, //
+            255, 64, 128, 42},
+        std::array<float, 12>{
+            0.05f, 0.7f, -1.05f, //
+            0.55f, 0.2f, -0.8f,  //
+            0.3f, 1.2f, -0.3f,   //
+            0.3f, 0.45f, -1.3f});
+}
+TEST_CASE(image_argb_u8_to_rgb_f32) {
+    test_image_u8_to_f32(
+        image_format::argb_u8, image_format::rgb_f32, //
+        std::array<uint8_t, 16>{
+            42, 0, 128, 192, //
+            42, 255, 0, 128, //
+            42, 128, 255, 0, //
+            42, 128, 64, 255},
+        std::array<float, 12>{
+            0.05f, 0.7f, -1.05f, //
+            0.55f, 0.2f, -0.8f,  //
+            0.3f, 1.2f, -0.3f,   //
+            0.3f, 0.45f, -1.3f});
+}
+
+TEST_CASE(image_u8_to_f32_tiled_pad) {
+    std::array<uint8_t, 9> input_data = {0, 0, 102, 0, 0, 255, 0, 0, 102};
+    std::array<float, 4> expected_data = {1.0f, 1.0f, 0.4f, 0.4f};
+    image_view input(i32x2{3, 3}, image_format::alpha_u8, input_data);
+    image_view expected(i32x2{2, 2}, image_format::alpha_f32, expected_data.data());
+    f32x4 offset = f32x4{0.0f, 0.0f, 0.0f, 0.0f};
+    f32x4 scale = f32x4{1.0f, 1.0f, 1.0f, 1.0f};
+    i32x2 tile_offset = {2, 1};
+
+    std::array<float, 4> output_data;
+    image_span output(i32x2{2, 2}, image_format::alpha_f32, output_data.data());
+    image_u8_to_f32(input, output, offset, scale, tile_offset);
+    CHECK_IMAGES_EQUAL(output, expected);
+}
+
+TEST_CASE(image_alpha_f32_to_alpha_u8) {
+    std::array<float, 4> input_data{0.0f, 0.3f, 0.4225f, 1.1f};
+    std::array<uint8_t, 4> expected_data = {0, 76, 107, 255};
+    image_view input(i32x2{2, 2}, image_format::alpha_f32, input_data.data());
+    image_view expected(i32x2{2, 2}, image_format::alpha_u8, expected_data);
+
+    image_data output = image_f32_to_u8(input, image_format::alpha_u8);
+    CHECK(output.extent == i32x2{2, 2});
+    CHECK(output.format == image_format::alpha_u8);
+    CHECK_IMAGES_EQUAL(output, expected);
+}
+
+TEST_CASE(image_rgb_f32_to_rgba_u8) {
+    std::array<float, 6> input_data{0.0f, 0.31f, -0.51f, 1.0f, 0.2f, 1.8f};
+    std::array<uint8_t, 8> expected_data = {0, 79, 0, 255, 255, 51, 255, 255};
+    image_view input(i32x2{2, 1}, image_format::rgb_f32, input_data.data());
+    image_view expected(i32x2{2, 1}, image_format::rgba_u8, expected_data);
+
+    image_data output = image_f32_to_u8(input, image_format::rgba_u8);
+    CHECK(output.extent == i32x2{2, 1});
+    CHECK(output.format == image_format::rgba_u8);
+    CHECK_IMAGES_EQUAL(output, expected);
+}
+
 TEST_CASE(image_resize) {
-    image_data img = image_alloc(i32x2{8, 8}, image_format::rgba);
+    image_data img = image_alloc(i32x2{8, 8}, image_format::rgba_u8);
     for (int i = 0; i < 8 * 8; ++i) {
         img.data[i * 4 + 0] = uint8_t(255);
         img.data[i * 4 + 1] = uint8_t(4 * (i / 8));
@@ -54,7 +193,7 @@ TEST_CASE(image_resize) {
     }
     image_data result = image_resize(img, i32x2{4, 4});
     CHECK(result.extent == i32x2{4, 4});
-    CHECK(result.format == image_format::rgba);
+    CHECK(result.format == image_format::rgba_u8);
     for (int i = 0; i < 16; ++i) {
         CHECK(result.data[i * 4 + 0] == 255);
         CHECK(int(result.data[i * 4 + 1]) == 2 + 8 * (i / 4));
@@ -66,23 +205,21 @@ TEST_CASE(image_resize) {
 TEST_CASE(image_alpha_composite) {
     std::array<uint8_t, 2 * 2 * 4> fg_data = {255, 0, 0,   255, 0,   255, 0, 255, //
                                               0,   0, 255, 255, 255, 255, 0, 255};
-    image_view fg = {i32x2{2, 2}, image_format::rgba, fg_data.data()};
+    image_view fg{i32x2{2, 2}, image_format::rgba_u8, fg_data};
 
     std::array<uint8_t, 2 * 2 * 3> bg_data = {0,   0,   0,   128, 128, 128, //
                                               255, 255, 255, 64,  64,  64};
-    image_view bg = {i32x2{2, 2}, image_format::rgb, bg_data.data()};
+    image_view bg{i32x2{2, 2}, image_format::rgb_u8, bg_data};
 
     std::array<uint8_t, 2 * 2> mask_data = {255, 128, 64, 0};
-    image_view mask = {i32x2{2, 2}, image_format::alpha, mask_data.data()};
-
-    std::array<uint8_t, 2 * 2 * 4> output_data{};
-    image_alpha_composite(fg, bg, mask, output_data.data());
+    image_view mask{i32x2{2, 2}, image_format::alpha_u8, mask_data};
 
     std::array<uint8_t, 2 * 2 * 4> expected_output = {255, 0,   0,   255, 63, 191, 63, 255, //
                                                       191, 191, 255, 255, 64, 64,  64, 255};
-    for (size_t i = 0; i < output_data.size(); ++i) {
-        CHECK_EQUAL(output_data[i], expected_output[i]);
-    }
+    image_view expected{i32x2{2, 2}, image_format::rgba_u8, expected_output};
+
+    image_data output = image_alpha_composite(fg, bg, mask);
+    CHECK_IMAGES_EQUAL(output, expected);
 }
 
 TEST_CASE(image_blur) {
@@ -107,11 +244,11 @@ TEST_CASE(image_blur) {
     // clang-format on
     std::array<float, extent[0] * extent[1]> output_data{};
 
-    auto input = image_cspan(extent, input_data);
+    auto input = image_view(extent, input_data);
     auto output = image_span(extent, output_data);
     image_blur(input, output, 1);
 
-    auto expected = image_cspan(extent, expected_data);
+    auto expected = image_view(extent, expected_data);
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
@@ -124,10 +261,10 @@ TEST_CASE(tile_merge) {
     std::array<f32x3, 8 * 8> dst{};
     auto dst_span = image_span({8, 8}, dst);
     auto const layout = tile_layout(i32x2{8, 8}, 6, 2, 1);
-    tile_merge(image_cspan({5, 5}, tiles[0]), dst_span, {0, 0}, layout);
-    tile_merge(image_cspan({5, 5}, tiles[1]), dst_span, {1, 0}, layout);
-    tile_merge(image_cspan({5, 5}, tiles[2]), dst_span, {0, 1}, layout);
-    tile_merge(image_cspan({5, 5}, tiles[3]), dst_span, {1, 1}, layout);
+    tile_merge(image_view({5, 5}, tiles[0]), dst_span, {0, 0}, layout);
+    tile_merge(image_view({5, 5}, tiles[1]), dst_span, {1, 0}, layout);
+    tile_merge(image_view({5, 5}, tiles[2]), dst_span, {0, 1}, layout);
+    tile_merge(image_view({5, 5}, tiles[3]), dst_span, {1, 1}, layout);
 
     float e00 = float(4 * 0 + 2 * 1 + 2 * 2 + 1 * 3) / 9.f;
     float e10 = float(2 * 0 + 4 * 1 + 1 * 2 + 2 * 3) / 9.f;
@@ -149,7 +286,7 @@ TEST_CASE(tile_merge) {
     for (int i = 0; i < 8 * 8; ++i) {
         expected_rgb[i] = f32x3{expected_float[i], expected_float[i], expected_float[i]};
     }
-    auto expected = image_cspan({8, 8}, expected_rgb);
+    auto expected = image_view({8, 8}, expected_rgb);
     CHECK_IMAGES_EQUAL(dst_span, expected);
 }
 
@@ -160,14 +297,14 @@ TEST_CASE(tile_merge_blending) {
     auto layout = tile_layout(i32x2{22, 19}, 10, 3, 2);
     auto te = layout.tile_size;
     auto tile = std::vector<f32x3>(te[0] * te[1], f32x3{1.f, 1.f, 1.f});
-    auto tile_span = image_cspan(te, tile);
+    auto tile_span = image_view(te, tile);
 
     for (int y = 0; y < layout.n_tiles[1]; ++y) {
         for (int x = 0; x < layout.n_tiles[0]; ++x) {
             tile_merge(tile_span, dst_span, {x, y}, layout);
         }
     }
-    for (float value : dst_span.elements()) {
+    for (float value : dst_span.as_floats()) {
         CHECK_EQUAL(value, 1.0f);
     }
 }

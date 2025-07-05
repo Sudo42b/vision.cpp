@@ -159,7 +159,7 @@ migan_params migan_detect_params(model_ref m) {
     }
 }
 
-image_data_f32 migan_process_input(image_view image, image_view mask, migan_params const& p) {
+image_data migan_process_input(image_view image, image_view mask, migan_params const& p) {
     i32x2 res = {p.resolution, p.resolution};
     std::optional<image_data> resized_image;
     if (image.extent != res) {
@@ -171,23 +171,24 @@ image_data_f32 migan_process_input(image_view image, image_view mask, migan_para
         resized_mask = image_resize(mask, res);
         mask = image_view(*resized_mask);
     }
-    image_data_f32 result = image_alloc_f32(res, 4);
+    image_data result = image_alloc(res, image_format::rgba_f32);
     switch (n_channels(image)) {
-        case 3: migan::preprocess<u8x3>(image, mask, result.as_span(), p.invert_mask); break;
-        case 4: migan::preprocess<u8x4>(image, mask, result.as_span(), p.invert_mask); break;
+        case 3: migan::preprocess<u8x3>(image, mask, result, p.invert_mask); break;
+        case 4: migan::preprocess<u8x4>(image, mask, result, p.invert_mask); break;
         default: ASSERT(false, "Unsupported image format for migan image input");
     }
     return result;
 }
 
-image_data migan_process_output(std::span<float> data, i32x2 extent, migan_params const& p) {
-    int res = p.resolution;
-    auto image = image_alloc(i32x2{res, res}, image_format::rgb);
-    image_f32_to_u8(data, std::span(image.data.get(), n_bytes(image)), 0.5f, 0.5f);
-    if (extent[0] != res || extent[1] != res) {
-        return image_resize(image, extent);
+image_data migan_process_output(std::span<float const> data, i32x2 extent, migan_params const& p) {
+    i32x2 model_extent = {p.resolution,p.resolution};
+    image_view image(model_extent, image_format::rgb_f32, data.data());
+    image_data resized;
+    if (model_extent != extent) {
+        resized = image_resize(image, extent);
+        image = image_view(resized);
     }
-    return image;
+    return image_f32_to_u8(image, image_format::rgba_u8, 0.5f, 0.5f);
 }
 
 } // namespace visp

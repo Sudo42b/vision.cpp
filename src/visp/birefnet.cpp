@@ -8,88 +8,6 @@
 #include <optional>
 
 namespace visp {
-
-image_data_f32 birefnet_process_input(image_view image, birefnet_params const& p) {
-    constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
-    constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
-
-    std::optional<image_data> resized;
-    if (image.extent[0] != p.image_size || image.extent[1] != p.image_size) {
-        resized = image_resize(image, i32x2{p.image_size, p.image_size});
-        image = image_view(*resized);
-    }
-
-    image_data_f32 result = image_alloc_f32(image.extent, 3);
-    image_u8_to_f32(image, result.as_span(), -mean, 1.f / std);
-    return result;
-}
-
-tensor birefnet_predict(model_ref m, tensor image, birefnet_params const& p) {
-    // Encoder
-    birefnet::swin_result features = birefnet::encode(m, image, p.encoder);
-    // Squeeze block
-    features[3] = birefnet::basic_decoder_block(m["squeeze_module.0"], features[3]);
-    // Decoder
-    tensor scaled_preds = birefnet::decode(m["decoder"], image, features);
-
-    return mark_output(m, scaled_preds);
-}
-
-birefnet_buffers birefnet_precompute(model_ref m, birefnet_params const& params) {
-    int w = params.encoder.window_size;
-    int res = params.image_size / 4;
-
-    birefnet_buffers b;
-    b[0] = birefnet::create_relative_position_index(m, w);
-    for (int i = 0; i < swin_params::n_layers + 1; ++i) {
-        b[i + 1] = birefnet::create_attention_mask(m, res >> i, res >> i, w);
-    }
-    return b;
-}
-
-// clang-format off
-const swin_params swin_t_params = {
-    .embed_dim = 96,
-    .window_size = 7,
-    .layers = {
-        //       depth  n_heads   n_features   downsample
-        swin_layer_t{2,    3,        96 * 1,     true},
-        swin_layer_t{2,    6,        96 * 2,     true},
-        swin_layer_t{6,    12,       96 * 4,     true},
-        swin_layer_t{2,    24,       96 * 8,     false}}};
-
-const swin_params swin_l_params = {
-    .embed_dim = 192,
-    .window_size = 12,
-    .layers = {
-        //       depth  n_heads   n_features   downsample
-        swin_layer_t{2,    6,        192 * 1,     true},
-        swin_layer_t{2,    12,       192 * 2,     true},
-        swin_layer_t{18,   24,       192 * 4,     true},
-        swin_layer_t{2,    48,       192 * 8,     false}}};
-// clang-format on
-
-swin_params swin_detect_params(model_ref m) {
-    tensor t = m.find("bb.layers.0.blocks.0.attn.proj.bias");
-    if (t == nullptr) {
-        throw error("Failed to detect model parameters");
-    }
-    if (t->ne[0] == 96) {
-        return swin_t_params;
-    } else if (t->ne[0] == 192) {
-        return swin_l_params;
-    } else {
-        throw error("Unsupported Swin Transformer embed dim: {}", t->ne[0]);
-    }
-}
-
-birefnet_params birefnet_detect_params(model_ref m) {
-    birefnet_params p;
-    p.image_size = 1024; // TODO: support 2K models
-    p.encoder = swin_detect_params(m);
-    return p;
-}
-
 namespace birefnet {
 
 tensor mlp(model_ref m, tensor x) {
@@ -594,4 +512,84 @@ tensor decode(model_ref m, tensor x, swin_result const& features) {
 }
 
 } // namespace birefnet
+
+tensor birefnet_predict(model_ref m, tensor image, birefnet_params const& p) {
+    // Encoder
+    birefnet::swin_result features = birefnet::encode(m, image, p.encoder);
+    // Squeeze block
+    features[3] = birefnet::basic_decoder_block(m["squeeze_module.0"], features[3]);
+    // Decoder
+    tensor scaled_preds = birefnet::decode(m["decoder"], image, features);
+
+    return mark_output(m, scaled_preds);
+}
+
+image_data birefnet_process_input(image_view image, birefnet_params const& p) {
+    constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
+    constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
+
+    std::optional<image_data> resized;
+    if (image.extent[0] != p.image_size || image.extent[1] != p.image_size) {
+        resized = image_resize(image, i32x2{p.image_size, p.image_size});
+        image = image_view(*resized);
+    }
+
+    return image_u8_to_f32(image, image_format::rgb_f32, -mean, 1.f / std);
+}
+
+birefnet_buffers birefnet_precompute(model_ref m, birefnet_params const& params) {
+    int w = params.encoder.window_size;
+    int res = params.image_size / 4;
+
+    birefnet_buffers b;
+    b[0] = birefnet::create_relative_position_index(m, w);
+    for (int i = 0; i < swin_params::n_layers + 1; ++i) {
+        b[i + 1] = birefnet::create_attention_mask(m, res >> i, res >> i, w);
+    }
+    return b;
+}
+
+// clang-format off
+const swin_params swin_t_params = {
+    .embed_dim = 96,
+    .window_size = 7,
+    .layers = {
+        //       depth  n_heads   n_features   downsample
+        swin_layer_t{2,    3,        96 * 1,     true},
+        swin_layer_t{2,    6,        96 * 2,     true},
+        swin_layer_t{6,    12,       96 * 4,     true},
+        swin_layer_t{2,    24,       96 * 8,     false}}};
+
+const swin_params swin_l_params = {
+    .embed_dim = 192,
+    .window_size = 12,
+    .layers = {
+        //       depth  n_heads   n_features   downsample
+        swin_layer_t{2,    6,        192 * 1,     true},
+        swin_layer_t{2,    12,       192 * 2,     true},
+        swin_layer_t{18,   24,       192 * 4,     true},
+        swin_layer_t{2,    48,       192 * 8,     false}}};
+// clang-format on
+
+swin_params swin_detect_params(model_ref m) {
+    tensor t = m.find("bb.layers.0.blocks.0.attn.proj.bias");
+    if (t == nullptr) {
+        throw error("Failed to detect model parameters");
+    }
+    if (t->ne[0] == 96) {
+        return swin_t_params;
+    } else if (t->ne[0] == 192) {
+        return swin_l_params;
+    } else {
+        throw error("Unsupported Swin Transformer embed dim: {}", t->ne[0]);
+    }
+}
+
+birefnet_params birefnet_detect_params(model_ref m) {
+    birefnet_params p;
+    p.image_size = 1024; // TODO: support 2K models
+    p.encoder = swin_detect_params(m);
+    return p;
+}
+
 } // namespace visp

@@ -17,31 +17,97 @@ namespace visp {
 using std::clamp;
 
 //
-// image view
+// image format
 
 int n_channels(image_format format) {
     switch (format) {
-        case image_format::rgba:
-        case image_format::bgra:
-        case image_format::argb: return 4;
-        case image_format::rgb: return 3;
-        case image_format::alpha: return 1;
+        case image_format::rgba_u8:
+        case image_format::bgra_u8:
+        case image_format::argb_u8:
+        case image_format::rgba_f32: return 4;
+        case image_format::rgb_u8:
+        case image_format::rgb_f32: return 3;
+        case image_format::alpha_u8:
+        case image_format::alpha_f32: return 1;
         default: ASSERT(false, "unknown image format"); return 0;
     }
 }
 
+int n_bytes(image_format format) {
+    return n_channels(format) * (is_float(format) ? 4 : 1);
+}
+
+bool is_float(image_format format) {
+    return int(format) >= int(image_format::rgba_f32);
+}
+
 i32x4 get_channel_map(image_format format) {
     switch (format) {
-        case image_format::bgra: return {2, 1, 0, 3};
-        case image_format::argb: return {1, 2, 3, 0};
-        case image_format::alpha: return {0, 0, 0, 0};
-        case image_format::rgb: return {0, 1, 2, 0};
+        case image_format::bgra_u8: return {2, 1, 0, 3};
+        case image_format::argb_u8: return {1, 2, 3, 0};
+        case image_format::alpha_u8:
+        case image_format::alpha_f32: return {0, 0, 0, 0};
+        case image_format::rgb_u8:
+        case image_format::rgb_f32: return {0, 1, 2, 0};
         default: return {0, 1, 2, 3}; // rgba
     }
 }
 
+int alpha_channel(image_format format) {
+    switch (format) {
+        case image_format::bgra_u8: return 3;
+        case image_format::argb_u8: return 0;
+        case image_format::alpha_u8:
+        case image_format::alpha_f32: return 0;
+        case image_format::rgb_u8:
+        case image_format::rgb_f32: return -1; // no alpha channel
+        default: return 3;                     // rgba
+    }
+}
+
+//
+// image view
+
 image_view::image_view(i32x2 extent, image_format format, uint8_t const* data)
-    : extent(extent), stride(extent[0] * n_channels(format)), format(format), data(data) {}
+    : extent(extent), stride(extent[0] * n_bytes(format)), format(format), data(data) {}
+
+image_view::image_view(i32x2 extent, image_format format, span<uint8_t const> data)
+    : image_view(extent, format, data.data()) {
+    ASSERT(data.size() >= n_bytes(*this));
+}
+
+image_view::image_view(i32x2 extent, image_format format, float const* data)
+    : extent(extent), stride(extent[0] * n_bytes(format)), format(format), data(data) {}
+
+image_view::image_view(i32x2 extent, span<float const> data)
+    : image_view(extent, image_format::alpha_f32, data.data()) {
+    ASSERT(data.size() >= n_pixels(*this));
+}
+
+image_view::image_view(i32x2 extent, span<f32x3 const> data)
+    : image_view(extent, image_format::rgb_f32, &data[0][0]) {
+    ASSERT(data.size() >= n_pixels(*this));
+}
+
+image_view::image_view(i32x2 extent, span<f32x4 const> data)
+    : image_view(extent, image_format::rgba_f32, &data[0][0]) {
+    ASSERT(data.size() >= n_pixels(*this));
+}
+
+image_view::image_view(image_data const& img)
+    : image_view(img.extent, img.format, img.data.get()) {}
+
+image_view::image_view(image_span const& o)
+    : extent(o.extent), stride(o.stride), format(o.format), data(o.data) {}
+
+span<uint8_t const> image_view::as_bytes() const {
+    return {reinterpret_cast<uint8_t const*>(data), n_bytes(*this)};
+}
+
+span<float const> image_view::as_floats() const {
+    ASSERT(is_float(format));
+    return {reinterpret_cast<float const*>(data), n_bytes(*this) / sizeof(float)};
+}
 
 int n_channels(image_view const& img) {
     return n_channels(img.format);
@@ -52,25 +118,65 @@ int n_pixels(image_view const& img) {
 }
 
 size_t n_bytes(image_view const& img) {
-    return size_t(n_pixels(img)) * n_channels(img.format);
+    return size_t(n_pixels(img)) * n_bytes(img.format);
 }
 
 //
-// image data (uint8)
+// image span
+
+image_span::image_span(image_data& img) : image_span(img.extent, img.format, img.data.get()) {}
+
+image_span::image_span(i32x2 extent, image_format format, uint8_t* data)
+    : extent(extent), stride(extent[0] * n_bytes(format)), format(format), data(data) {}
+
+image_span::image_span(i32x2 extent, image_format format, span<uint8_t> data)
+    : image_span(extent, format, data.data()) {
+    ASSERT(data.size() >= n_bytes(*this));
+}
+image_span::image_span(i32x2 extent, image_format format, float* data)
+    : extent(extent), stride(extent[0] * n_bytes(format)), format(format), data(data) {}
+
+image_span::image_span(i32x2 extent, span<float> data)
+    : image_span(extent, image_format::alpha_f32, data.data()) {
+    ASSERT(data.size() >= n_pixels(*this));
+}
+
+image_span::image_span(i32x2 extent, span<f32x3> data)
+    : image_span(extent, image_format::rgb_f32, &data[0][0]) {
+    ASSERT(data.size() >= n_pixels(*this));
+}
+
+image_span::image_span(i32x2 extent, span<f32x4> data)
+    : image_span(extent, image_format::rgba_f32, &data[0][0]) {
+    ASSERT(data.size() >= n_pixels(*this));
+}
+
+span<uint8_t> image_span::as_bytes() const {
+    return {reinterpret_cast<uint8_t*>(data), n_bytes(*this)};
+}
+
+span<float> image_span::as_floats() const {
+    ASSERT(is_float(format));
+    return {reinterpret_cast<float*>(data), n_bytes(*this) / sizeof(float)};
+}
+
+//
+// image data
 
 image_data image_alloc(i32x2 extent, image_format format) {
-    size_t size = extent[0] * extent[1] * n_channels(format);
+    size_t size = extent[0] * extent[1] * n_bytes(format);
+    // TODO rgba_f32 allocation should be 16-byte aligned
     return image_data{extent, format, std::unique_ptr<uint8_t[]>(new uint8_t[size])};
 }
 
 image_format image_format_from_channels(int n_channels) {
     switch (n_channels) {
-        case 1: return image_format::alpha;
-        case 3: return image_format::rgb;
-        case 4: return image_format::rgba;
+        case 1: return image_format::alpha_u8;
+        case 3: return image_format::rgb_u8;
+        case 4: return image_format::rgba_u8;
         default: ASSERT(false, "Invalid number of channels");
     }
-    return image_format::rgba;
+    return image_format::rgba_u8;
 }
 
 image_data image_load(char const* filepath) {
@@ -85,8 +191,8 @@ image_data image_load(char const* filepath) {
 }
 
 void image_save(image_view const& img, char const* filepath) {
-    if (!(img.format == image_format::alpha || img.format == image_format::rgb ||
-          img.format == image_format::rgba)) {
+    if (!(img.format == image_format::alpha_u8 || img.format == image_format::rgb_u8 ||
+          img.format == image_format::rgba_u8)) {
         throw error("Unsupported image format [{}]", int(img.format));
     }
     int comp = n_channels(img.format);
@@ -94,80 +200,6 @@ void image_save(image_view const& img, char const* filepath) {
             filepath, img.extent[0], img.extent[1], comp, img.data, img.extent[0] * comp)) {
         throw error("Failed to save image {}", filepath);
     }
-}
-
-//
-// operations on uint8 images
-
-image_data image_resize(image_view const& img, i32x2 target) {
-    ASSERT(img.stride >= img.extent[0] * n_channels(img));
-
-    image_data resized = image_alloc(target, img.format);
-    int result = stbir_resize_uint8_generic(
-        img.data, img.extent[0], img.extent[1], img.stride, resized.data.get(), target[0],
-        target[1], /*output stride*/ 0, n_channels(img), STBIR_ALPHA_CHANNEL_NONE, /*flags*/ 0,
-        STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT, STBIR_COLORSPACE_SRGB, nullptr);
-
-    if (result == 0) {
-        throw error(
-            "Failed to resize image {}x{} to {}x{}", img.extent[0], img.extent[1], target[0],
-            target[1]);
-    }
-    return resized;
-}
-
-image_data image_resize_mask(image_view const& img, i32x2 target) {
-    ASSERT(img.format == image_format::alpha);
-
-    image_data resized = image_alloc(target, img.format);
-    int result = stbir_resize_uint8_generic(
-        img.data, img.extent[0], img.extent[1], img.stride, resized.data.get(), target[0],
-        target[1], /*output_stride*/ 0, /*num_channels*/ 1, STBIR_ALPHA_CHANNEL_NONE, 0,
-        STBIR_EDGE_CLAMP, STBIR_FILTER_BOX, STBIR_COLORSPACE_LINEAR, nullptr);
-
-    if (result == 0) {
-        throw error(
-            "Failed to resize image {}x{} to {}x{}", img.extent[0], img.extent[1], target[0],
-            target[1]);
-    }
-    return resized;
-}
-
-//
-// image span
-
-image_span::image_span(i32x2 extent, int n_channels, float* data)
-    : extent(extent), n_channels(n_channels), data(data) {}
-
-span<float> image_span::elements() const {
-    return span(data, extent[0] * extent[1] * n_channels);
-}
-
-image_cspan::image_cspan(i32x2 extent, int n_channels, float const* data)
-    : extent(extent), n_channels(n_channels), data(data) {}
-
-image_cspan::image_cspan(image_span const& other)
-    : image_cspan(other.extent, other.n_channels, other.data) {}
-
-span<float const> image_cspan::elements() const {
-    return span(data, extent[0] * extent[1] * n_channels);
-}
-
-int n_pixels(image_cspan const& img) {
-    return img.extent[0] * img.extent[1];
-}
-
-size_t n_bytes(image_cspan const& img) {
-    return size_t(n_pixels(img)) * img.n_channels * sizeof(float);
-}
-
-//
-// image data (float32)
-
-image_data_f32 image_alloc_f32(i32x2 extent, int n_channels) {
-    size_t size = size_t(extent[0]) * extent[1] * n_channels;
-    float* ptr = new float[size]; // TODO should be 16-byte aligned
-    return image_data_f32{extent, n_channels, std::unique_ptr<float[]>(ptr)};
 }
 
 //
@@ -179,9 +211,9 @@ void convert(
 
     for (int y = 0; y < dst.extent[1]; ++y) {
         for (int x = 0; x < dst.extent[0]; ++x) {
-            i32x2 c = {x, y};
-            c = min(c + tile_offset, dst.extent - i32x2{1, 1});
-            dst.store(c, (src.load(c) + offset) * scale);
+            i32x2 i = {x, y};
+            i32x2 i_src = min(i + tile_offset, src.extent - i32x2{1, 1});
+            dst.store(i, (src.load(i_src) + offset) * scale);
         }
     }
 }
@@ -189,7 +221,9 @@ void convert(
 void image_u8_to_f32(
     image_view const& src, image_span const& dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
 
-    switch (dst.n_channels) {
+    ASSERT(!is_float(src.format) && is_float(dst.format));
+
+    switch (n_channels(dst)) {
         case 1: convert<uint8_t, float>(src, dst, offset, scale, tile_offset); break;
         case 3:
             switch (n_channels(src)) {
@@ -207,29 +241,106 @@ void image_u8_to_f32(
     }
 }
 
-void image_f32_to_u8(
-    std::span<float const> src, std::span<uint8_t> dst, float scale, float offset) {
+image_data image_u8_to_f32(image_view const& src, image_format format, f32x4 offset, f32x4 scale) {
+    image_data dst = image_alloc(src.extent, format);
+    image_u8_to_f32(src, dst, offset, scale, i32x2{0, 0});
+    return dst;
+}
 
-    ASSERT(src.size() == dst.size());
-    for (size_t i = 0; i < src.size(); ++i) {
-        float value = 255.0f * std::clamp(src[i] * scale + offset, 0.0f, 1.0f);
-        dst[i] = uint8_t(value);
+template <typename Src, typename Dst>
+void convert2(image_source<Src> src, image_target<Dst> dst, f32x4 offset, f32x4 scale) {
+    int n = n_pixels(dst);
+    for (int i = 0; i < n; ++i) {
+        dst.store(i, src.load(i) * scale + offset);
     }
+}
+
+void image_f32_to_u8(image_view const& src, image_span const& dst, float scale, float offset) {
+    ASSERT(src.extent == dst.extent);
+    ASSERT(is_float(src.format) && !is_float(dst.format));
+
+    f32x4 s = {scale, scale, scale, scale};
+    f32x4 o = {offset, offset, offset, offset};
+
+    switch (n_channels(dst)) {
+        case 1: convert2<float, uint8_t>(src, dst, o, s); break;
+        case 4:
+            switch (n_channels(src)) {
+                case 3: convert2<f32x3, u8x4>(src, dst, o, s); break;
+                case 4: convert2<f32x4, u8x4>(src, dst, o, s); break;
+            }
+            break;
+        default: ASSERT(false, "Number of channels in source and destination or not compatible");
+    }
+}
+
+image_data image_f32_to_u8(image_view const& src, image_format format, float scale, float offset) {
+    image_data dst = image_alloc(src.extent, format);
+    image_f32_to_u8(src, dst, scale, offset);
+    return dst;
+}
+
+void image_to_mask(image_view const& src, image_span const& dst) {
+    ASSERT(src.extent == dst.extent);
+    ASSERT(dst.format == image_format::alpha_u8);
+
+    int n = n_pixels(dst);
+    int chan = n_channels(src);
+    span<uint8_t const> src_data = src.as_bytes();
+    span<uint8_t> dst_data = dst.as_bytes();
+
+    for (int i = 0; i < n; ++i) {
+        dst_data[i] = src_data[i * chan];
+    }
+}
+
+image_data image_to_mask(image_view const& src) {
+    image_data dst = image_alloc(src.extent, image_format::alpha_u8);
+    image_to_mask(src, dst);
+    return dst;
 }
 
 //
 // image algorithms
 
+void image_resize(image_view const& img, i32x2 target, image_span const& dst) {
+    ASSERT(img.stride >= img.extent[0] * n_channels(img));
+
+    int result;
+    if (is_float(img.format)) {
+        result = stbir_resize_float_generic(
+            (float const*)img.data, img.extent[0], img.extent[1], img.stride, //
+            (float*)dst.data, target[0], target[1], 0,                        //
+            n_channels(img), alpha_channel(img.format), 0, STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT,
+            STBIR_COLORSPACE_LINEAR, nullptr);
+    } else {
+        result = stbir_resize_uint8_generic(
+            (uint8_t const*)img.data, img.extent[0], img.extent[1], img.stride, //
+            (uint8_t*)dst.data, target[0], target[1], 0,                        //
+            n_channels(img), alpha_channel(img.format), 0, STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT,
+            STBIR_COLORSPACE_SRGB, nullptr);
+    }
+    if (result == 0) {
+        throw error(
+            "Failed to resize image {}x{} to {}x{}", img.extent[0], img.extent[1], target[0],
+            target[1]);
+    }
+}
+
+image_data image_resize(image_view const& img, i32x2 target) {
+    image_data dst = image_alloc(target, img.format);
+    image_resize(img, target, dst);
+    return dst;
+}
+
 template <typename T>
-void blur_impl(image_cspan src_img, image_span dst_img, int radius) {
-    i32x2 extent = src_img.extent;
-    ASSERT(src_img.extent == dst_img.extent);
+void blur(image_source<T> src, image_target<T> dst, int radius) {
+    i32x2 extent = src.extent;
+    ASSERT(src.extent == dst.extent);
     ASSERT(radius > 0);
     ASSERT(radius <= extent[0] / 2 && radius <= extent[1] / 2);
 
-    T const* src = reinterpret_cast<T const*>(src_img.data);
-    T* dst = reinterpret_cast<T*>(dst_img.data);
-    std::vector<T> temp(n_pixels(src_img));
+    std::vector<T> temp(n_pixels(src));
     float weight = 1.0f / (2 * radius + 1);
 
     // Horizontal pass (src -> temp)
@@ -274,23 +385,21 @@ void blur_impl(image_cspan src_img, image_span dst_img, int radius) {
     }
 }
 
-void image_blur(image_cspan src, image_span dst, int radius) {
-    ASSERT(src.n_channels == dst.n_channels);
-    ASSERT(src.n_channels == 1 || src.n_channels == 4);
+void image_blur(image_view const& src, image_span const& dst, int radius) {
     ASSERT(src.extent == dst.extent);
     ASSERT(radius > 0);
 
-    if (src.n_channels == 1) {
-        blur_impl<float>(src, dst, radius);
-    } else if (src.n_channels == 4) {
-        blur_impl<f32x4>(src, dst, radius);
+    switch (src.format) {
+        case image_format::alpha_f32: blur<float>(src, dst, radius); break;
+        case image_format::rgba_f32: blur<f32x4>(src, dst, radius); break;
+        default: ASSERT(false, "Unsupported image format for blur operation");
     }
 }
 
 // Approximate Fast Foreground Colour Estimation
 // https://ieeexplore.ieee.org/document/9506164
 auto blur_fusion_foreground_estimator(
-    image_cspan img_in, image_cspan fg_in, image_cspan bg_in, image_cspan mask_in, int radius) {
+    image_view img_in, image_view fg_in, image_view bg_in, image_view mask_in, int radius) {
 
     i32x2 extent = img_in.extent;
     size_t n = n_pixels(img_in);
@@ -300,32 +409,33 @@ auto blur_fusion_foreground_estimator(
     image_source<f32x4> bg(bg_in);
     image_source<float> mask(mask_in);
 
-    auto blurred_mask_data = image_alloc_f32(extent, 1);
-    auto blurred_mask = image_target<float>(blurred_mask_data);
-    image_blur(mask_in, blurred_mask_data, radius);
+    image_data blurred_mask_data = image_alloc(extent, image_format::alpha_f32);
+    image_target<float> blurred_mask(blurred_mask_data);
+    blur(mask, blurred_mask, radius);
 
-    auto fg_masked_data = image_alloc_f32(extent, 4);
-    auto fg_masked = image_target<f32x4>(fg_masked_data);
+    image_data fg_masked_data = image_alloc(extent, image_format::rgba_f32);
+    image_target<f32x4> fg_masked(fg_masked_data);
     for (size_t i = 0; i < n; ++i) {
         fg_masked[i] = fg[i] * mask[i];
     }
 
-    auto blurred_fg_data = image_alloc_f32(extent, 4);
-    auto blurred_fg = image_target<f32x4>(blurred_fg_data);
-    image_blur(fg_masked_data, blurred_fg_data, radius);
+    image_data blurred_fg_data = image_alloc(extent, image_format::rgba_f32);
+    image_target<f32x4> blurred_fg(blurred_fg_data);
+    blur(fg_masked, blurred_fg, radius);
+
     for (size_t i = 0; i < n; ++i) {
         blurred_fg[i] = blurred_fg[i] / (blurred_mask[i] + 1e-5f);
     }
 
-    auto& bg_masked_data = fg_masked_data; // Reuse fg_masked memory for bg
-    auto& bg_masked = fg_masked;
+    auto& bg_masked = fg_masked; // Reuse fg_masked memory for bg
     for (size_t i = 0; i < n; ++i) {
         bg_masked[i] = bg[i] * (1.0f - mask[i]);
     }
 
-    auto blurred_bg_data = image_alloc_f32(extent, 4);
-    auto blurred_bg = image_target<f32x4>(blurred_bg_data);
-    image_blur(bg_masked_data, blurred_bg_data, radius);
+    image_data blurred_bg_data = image_alloc(extent, image_format::rgba_f32);
+    image_target<f32x4> blurred_bg(blurred_bg_data);
+    blur(bg_masked, blurred_bg, radius);
+
     for (size_t i = 0; i < n; ++i) {
         blurred_bg[i] = blurred_bg[i] / ((1.0f - blurred_mask[i]) + 1e-5f);
         f32x4 f = blurred_fg[i] +
@@ -336,9 +446,8 @@ auto blur_fusion_foreground_estimator(
     return std::pair{std::move(blurred_fg_data), std::move(blurred_bg_data)};
 }
 
-image_data_f32 image_estimate_foreground(image_cspan img, image_cspan mask, int radius) {
+image_data image_estimate_foreground(image_view const& img, image_view const& mask, int radius) {
     ASSERT(img.extent == mask.extent);
-    ASSERT(img.n_channels == 4 && mask.n_channels == 1);
 
     auto&& [fg, blur_bg] = blur_fusion_foreground_estimator(img, img, img, mask, radius);
     return blur_fusion_foreground_estimator(img, fg, blur_bg, mask, 3).first;
@@ -348,50 +457,37 @@ template <typename FG, typename BG>
 void alpha_composite(
     image_source<FG> fg, image_source<BG> bg, image_source<uint8_t> alpha, image_target<u8x4> out) {
 
-    for (int y = 0; y < fg.extent[1]; ++y) {
-        for (int x = 0; x < fg.extent[0]; ++x) {
-            i32x2 c = {x, y};
-            float w = alpha.load(c)[0];
-            f32x4 v = w * fg.load(c) + (1.0f - w) * bg.load(c);
-            v[3] = 1.0f;
-            out.store(c, v);
-        }
+    int n = n_pixels(fg);
+    for (int i = 0; i < n; ++i) {
+        float w = alpha.load(i)[3];
+        f32x4 v = w * fg.load(i) + (1.0f - w) * bg.load(i);
+        v[3] = 1.0f;
+        out.store(i, v);
     }
 }
 
 void image_alpha_composite(
-    image_view const& fg, image_view const& bg, image_view const& mask, uint8_t* dst) {
+    image_view const& fg, image_view const& bg, image_view const& mask, image_span const& dst) {
 
     ASSERT(fg.extent == bg.extent && fg.extent == mask.extent);
-    image_target<u8x4> out(fg.extent, (u8x4*)dst, fg.extent[0]);
 
     switch (n_channels(bg.format)) {
-        case 3: alpha_composite<u8x4, u8x3>(fg, bg, mask, out); break;
-        case 4: alpha_composite<u8x4, u8x4>(fg, bg, mask, out); break;
+        case 3: alpha_composite<u8x4, u8x3>(fg, bg, mask, dst); break;
+        case 4: alpha_composite<u8x4, u8x4>(fg, bg, mask, dst); break;
         default: ASSERT(false, "Unsupported number of channels in background image"); return;
     }
 }
 
-float image_difference_rms(image_view const& img1, image_view const& img2) {
-    ASSERT(img1.extent == img2.extent && img1.format == img2.format);
-
-    float sum_sq_diff = 0.0f;
-    size_t n = n_bytes(img1);
-    for (size_t i = 0; i < n; ++i) {
-        float p1 = float(img1.data[i]) / 255.0f;
-        float p2 = float(img2.data[i]) / 255.0f;
-        sum_sq_diff += sqr(p1 - p2);
-    }
-    return std::sqrt(sum_sq_diff / n);
+image_data image_alpha_composite(image_view const& fg, image_view const& bg, image_view const& m) {
+    image_data dst = image_alloc(fg.extent, image_format::rgba_u8);
+    image_alpha_composite(fg, bg, m, dst);
+    return dst;
 }
 
 template <typename T>
-float image_difference_rms_impl(image_cspan img1, image_cspan img2) {
-    image_source<T> a(img1);
-    image_source<T> b(img2);
-
+float difference_rms(image_source<T> a, image_source<T> b) {
     float sum_sq_diff = 0.0f;
-    size_t n = n_pixels(img1);
+    size_t n = n_pixels(a);
     for (size_t i = 0; i < n; ++i) {
         f32x4 diff = a.load(i) - b.load(i);
         sum_sq_diff += dot(diff, diff);
@@ -399,15 +495,17 @@ float image_difference_rms_impl(image_cspan img1, image_cspan img2) {
     return std::sqrt(sum_sq_diff / n);
 }
 
-float image_difference_rms(image_cspan const& img1, image_cspan const& img2) {
-    ASSERT(img1.extent == img2.extent);
-    ASSERT(img1.n_channels == img2.n_channels);
+float image_difference_rms(image_view const& a, image_view const& b) {
+    ASSERT(a.extent == b.extent);
 
-    switch (img1.n_channels) {
-        case 1: return image_difference_rms_impl<float>(img1, img2);
-        case 3: return image_difference_rms_impl<f32x3>(img1, img2);
-        case 4: return image_difference_rms_impl<f32x4>(img1, img2);
-        default: ASSERT(false, "Invalid number of channels"); return 0.0f;
+    switch (a.format) {
+        case image_format::alpha_u8: return difference_rms<uint8_t>(a, b);
+        case image_format::rgb_u8: return difference_rms<u8x3>(a, b);
+        case image_format::rgba_u8: return difference_rms<u8x4>(a, b);
+        case image_format::alpha_f32: return difference_rms<float>(a, b);
+        case image_format::rgb_f32: return difference_rms<f32x3>(a, b);
+        case image_format::rgba_f32: return difference_rms<f32x4>(a, b);
+        default: ASSERT(false, "Invalid image format"); return 0.0f;
     }
 }
 
@@ -458,7 +556,7 @@ i32x2 tile_layout::coord(int index) const {
 }
 
 void tile_merge(
-    image_cspan const& tile_img,
+    image_view const& tile_img,
     image_span const& dst_img,
     i32x2 tile_coord,
     tile_layout const& layout) {

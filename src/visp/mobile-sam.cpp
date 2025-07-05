@@ -548,7 +548,7 @@ i32x2 scale_extent(i32x2 extent, float scale) {
 
 } // namespace sam
 
-image_data_f32 sam_process_input(image_view image, sam_params const& p) {
+image_data sam_process_input(image_view image, sam_params const& p) {
     constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
     constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
 
@@ -559,8 +559,8 @@ image_data_f32 sam_process_input(image_view image, sam_params const& p) {
         image = image_view(*resized);
     }
 
-    image_data_f32 result = image_alloc_f32({p.image_size, p.image_size}, 3);
-    image_u8_to_f32(image, result.as_span(), -mean, 1.f / std);
+    image_data result = image_alloc({p.image_size, p.image_size}, image_format::rgb_f32);
+    image_u8_to_f32(image, result, -mean, 1.f / std);
     return result;
 }
 
@@ -580,7 +580,7 @@ image_data sam_process_mask(
 
     float scale = sam::resize_longest_side(target_extent, p.image_size);
     i32x2 scaled_extent = sam::scale_extent(target_extent, scale);
-    image_data mask = image_alloc(target_extent, image_format::alpha);
+    image_data mask = image_alloc(target_extent, image_format::alpha_u8);
 
     auto scaled = std::vector<float>(p.image_size * p.image_size);
     auto id = [](float x) {

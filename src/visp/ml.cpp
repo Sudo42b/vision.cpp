@@ -325,7 +325,7 @@ void transfer_to_backend(tensor x, std::span<const float> data) {
     ggml_backend_tensor_set(x, data.data(), 0, ggml_nbytes(x));
 }
 
-void transfer_to_backend(tensor x, image_cspan const& img) {
+void transfer_to_backend(tensor x, image_view const& img) {
     ASSERT(ggml_nbytes(x) == n_bytes(img));
     ggml_backend_tensor_set(x, img.data, 0, ggml_nbytes(x));
 }
@@ -339,6 +339,11 @@ tensor_data transfer_from_backend(tensor x) {
 void transfer_from_backend(tensor x, span<float> dst, size_t offset) {
     size_t size = std::min(dst.size_bytes(), ggml_nbytes(x) - offset);
     ggml_backend_tensor_get(x, dst.data(), offset, size);
+}
+
+void transfer_from_backend(tensor x, image_span const& dst) {
+    ASSERT(ggml_nbytes(x) == n_bytes(dst));
+    ggml_backend_tensor_get(x, dst.data, 0, ggml_nbytes(x));
 }
 
 //

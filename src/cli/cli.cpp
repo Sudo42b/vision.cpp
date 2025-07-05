@@ -223,16 +223,20 @@ void composite_image_with_mask(image_view image, image_view mask, char const* ou
     if (!output_path) {
         return;
     }
+    image_data image_f32_data;
+    if (!is_float(image.format)) {
+        image_f32_data = image_u8_to_f32(image, image_format::rgba_f32);
+        image = image_f32_data;
+    }
+    image_data mask_f32_data;
+    if (!is_float(mask.format)) {
+        mask_f32_data = image_u8_to_f32(mask, image_format::alpha_f32);
+        mask = mask_f32_data;
+    }
 
-    image_data_f32 image_f32 = image_alloc_f32(image.extent, 4);
-    image_u8_to_f32(image, image_f32);
+    image_data foreground = image_estimate_foreground(image, mask);
 
-    image_data_f32 mask_f32 = image_alloc_f32(mask.extent, 1);
-    image_u8_to_f32(mask, mask_f32);
-
-    image_data_f32 foreground = image_estimate_foreground(image_f32, mask_f32);
-    image_data output = image_alloc(image.extent, image_format::rgba);
-    image_f32_to_u8(foreground.as_span().elements(), span(output.data.get(), n_bytes(output)));
+    image_data output = image_f32_to_u8(foreground, image_format::rgba_u8);
     image_save(output, output_path);
     printf("-> image composited and saved to %s\n", output_path);
 }
@@ -287,7 +291,7 @@ void run_sam(cli_args const& args) {
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
-    image_data_f32 image_data_ = sam_process_input(image, params);
+    image_data image_data_ = sam_process_input(image, params);
 
     sam_prompt prompt = sam_parse_prompt(args.prompt, image.extent);
     f32x4 prompt_data = prompt.is_point()
@@ -341,7 +345,7 @@ void run_birefnet(cli_args const& args) {
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
-    image_data_f32 input_data = birefnet_process_input(image, params);
+    image_data input_data = birefnet_process_input(image, params);
 
     birefnet_buffers buffers = birefnet_precompute(model_ref(weights), params);
     allocate(weights, backend);
@@ -361,10 +365,10 @@ void run_birefnet(cli_args const& args) {
     compute_timed(graph, backend);
 
     tensor_data mask_data = transfer_from_backend(output);
-    image_data mask = image_alloc({img_size, img_size}, image_format::alpha);
-    image_f32_to_u8(mask_data.as_f32(), span(mask.data.get(), n_bytes(mask)));
-    image_data mask_resized = image_resize(mask, image.extent);
-    image_save(mask_resized, args.output);
+    image_view mask_output({img_size, img_size}, mask_data.as_f32());
+    image_data mask_resized = image_resize(mask_output, image.extent);
+    image_data mask = image_f32_to_u8(mask_resized, image_format::alpha_u8);
+    image_save(mask, args.output);
     printf("-> mask saved to %s\n", args.output);
 
     composite_image_with_mask(image, mask_resized, args.composite);
@@ -382,7 +386,10 @@ void run_migan(cli_args const& args) {
     require_inputs(args.inputs, 2, "<image> <mask>");
     image_data image = image_load(args.inputs[0]);
     image_data mask = image_load(args.inputs[1]);
-    image_data_f32 input_data = migan_process_input(image, mask, params);
+    if (mask.format != image_format::alpha_u8) {
+        mask = image_to_mask(mask);
+    }
+    image_data input_data = migan_process_input(image, mask, params);
 
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
@@ -398,8 +405,7 @@ void run_migan(cli_args const& args) {
     tensor_data output_data = transfer_from_backend(output);
     image_data output_image = migan_process_output(output_data.as_f32(), image.extent, params);
     image_data mask_resized = image_resize(mask, image.extent);
-    image_data composited = image_alloc(image.extent, image_format::rgb);
-    image_alpha_composite(output_image, image, mask_resized, composited.data.get());
+    image_data composited = image_alpha_composite(output_image, image, mask_resized);
     image_save(composited, args.output);
     printf("-> output image saved to %s\n", args.output);
 }
@@ -418,9 +424,9 @@ void run_esrgan(cli_args const& args) {
 
     tile_layout tiles = tile_layout(image.extent, tile_size, 16);
     tile_layout tiles_out = tile_scale(tiles, params.scale);
-    image_data_f32 input_tile = image_alloc_f32(tiles.tile_size, 3);
-    image_data_f32 output_tile = image_alloc_f32(tiles_out.tile_size, 3);
-    image_data_f32 output_image = image_alloc_f32(image.extent * params.scale, 3);
+    image_data input_tile = image_alloc(tiles.tile_size, image_format::rgb_f32);
+    image_data output_tile = image_alloc(tiles_out.tile_size, image_format::rgb_f32);
+    image_data output_image = image_alloc(image.extent * params.scale, image_format::rgb_f32);
 
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
@@ -439,20 +445,18 @@ void run_esrgan(cli_args const& args) {
         printf("\rRunning inference... tile %d of %d", t + 1, tiles.total());
         i32x2 tile_coord = tiles.coord(t);
         i32x2 tile_offset = tiles.start(tile_coord);
-        
+
         image_u8_to_f32(image, input_tile, f32x4{0, 0, 0, 0}, f32x4{1, 1, 1, 1}, tile_offset);
         transfer_to_backend(input, input_tile);
 
         compute(graph, backend);
 
-        transfer_from_backend(output, output_tile.as_span().elements());
+        transfer_from_backend(output, output_tile);
         tile_merge(output_tile, output_image, tile_coord, tiles_out);
     }
     printf("\rRunning inference... complete (%s)\n", total.elapsed_str());
 
-    image_data output_u8 = image_alloc(image.extent * params.scale, image_format::rgb);
-    image_f32_to_u8(
-        output_image.as_span().elements(), span(output_u8.data.get(), n_bytes(output_u8)));
+    image_data output_u8 = image_f32_to_u8(output_image, image_format::rgba_u8);
     image_save(output_u8, args.output);
     printf("-> output image saved to %s\n", args.output);
 }

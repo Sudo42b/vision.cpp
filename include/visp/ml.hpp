@@ -38,8 +38,9 @@ backend backend_init(backend_type);
 
 //
 // Model weights
-//   Loads, converts and stores model weights.
-//   Allocates and transfers tensor data to backend buffers.
+//
+// * loads, converts and stores model weights
+// * allocates and transfers tensor data to backend buffers
 
 struct model_weights {
     ggml_context_ptr context;
@@ -86,8 +87,11 @@ void compute(compute_graph const&, backend const&);
 
 //
 // Model ref - represents a ML model
-//   Allows access to the model's weights by name, with an optional name prefix
-//   to support nested modules. Main helper for building compute graphs.
+//
+// * helper for building compute graphs
+// * allows access to the model's weights by name, with an optional name prefix
+//   to support nested modules
+// * pass anywhere ggml_context* is expected while building the graph
 
 struct model_ref {
     ggml_context* weights_context = nullptr;
@@ -125,10 +129,13 @@ struct model_ref {
 tensor named(model_ref&, tensor);
 
 // Creates a new tensor as part of the model graph where input data can be stored.
-tensor create_input(model_ref&, ggml_type type, i64x4 shape, tensor_name = "input");
+tensor create_input(model_ref&, ggml_type, i64x4 ne, tensor_name = "input");
 
 // Marks a tensor as an output of the compute graph.
 tensor mark_output(model_ref&, tensor, tensor_name = "output");
+
+//
+// Tensor data and transfer to backend device
 
 struct tensor_data {
     tensor x;
@@ -147,11 +154,12 @@ tensor_data tensor_load(tensor x, char const* filepath);
 // Copies data to the tensor's backend buffer (which should already be allocated).
 void transfer_to_backend(tensor_data const&);
 void transfer_to_backend(tensor x, std::span<float const> data);
-void transfer_to_backend(tensor x, image_cspan const& data);
+void transfer_to_backend(tensor x, image_view const& data);
 
 // Copies tensor data from the backend buffer to main memory.
 tensor_data transfer_from_backend(tensor x);
 void transfer_from_backend(tensor x, std::span<float> dst, size_t offset = 0);
+void transfer_from_backend(tensor x, image_span const& dst);
 
 //
 // Tensor operations
@@ -202,7 +210,7 @@ struct sam_prediction {
     tensor iou;
 };
 
-image_data_f32 sam_process_input(image_view image, sam_params const&);
+image_data sam_process_input(image_view image, sam_params const&);
 f32x4 sam_process_point(i32x2 point, i32x2 image_extent, sam_params const&);
 f32x4 sam_process_box(i32x2 top_left, i32x2 bottom_right, i32x2 image_extent, sam_params const&);
 
@@ -250,7 +258,7 @@ using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
 birefnet_params birefnet_detect_params(model_ref);
 birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
 
-image_data_f32 birefnet_process_input(image_view, birefnet_params const&);
+image_data birefnet_process_input(image_view, birefnet_params const&);
 
 tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
 
@@ -264,8 +272,8 @@ struct migan_params {
 
 migan_params migan_detect_params(model_ref m);
 
-image_data_f32 migan_process_input(image_view image, image_view mask, migan_params const&);
-image_data migan_process_output(std::span<float> data, i32x2 extent, migan_params const&);
+image_data migan_process_input(image_view image, image_view mask, migan_params const&);
+image_data migan_process_output(std::span<float const> data, i32x2 extent, migan_params const&);
 
 tensor migan_generate(model_ref, tensor image, migan_params const&);
 

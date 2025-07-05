@@ -89,19 +89,12 @@ struct image_source {
     image_source(i32x2 extent, T const* ptr, size_t stride)
         : extent(extent), data(ptr), stride(stride) {}
 
-    template <class = void>
     image_source(image_view img)
-        : image_source(img.extent, reinterpret_cast<T const*>(img.data), img.stride / n_channels) {
-        static_assert(std::is_same_v<scalar, uint8_t>);
+        : image_source(img.extent, (T const*)img.data, img.stride / n_bytes(img.format)) {            
         ASSERT(visp::n_channels(img) == n_channels);
-        channel_map = get_channel_map(img.format);
-    }
+        ASSERT(is_float(img.format) == (std::is_same_v<scalar, float>));
 
-    template <class = void>
-    image_source(image_cspan img)
-        : image_source(img.extent, reinterpret_cast<T const*>(img.data), img.extent[0]) {
-        static_assert(std::is_same_v<scalar, float>);
-        ASSERT(img.n_channels == n_channels);
+        channel_map = get_channel_map(img.format);
     }
 
     T const& operator[](size_t i) const { return data[i]; }
@@ -109,6 +102,11 @@ struct image_source {
     f32x4 load(size_t i) const { return image_load(data, i, channel_map); }
     f32x4 load(i32x2 c) const { return load(c[1] * stride + c[0]); }
 };
+
+template <typename T>
+inline int n_pixels(image_source<T> const& img) {
+    return img.extent[0] * img.extent[1];
+}
 
 //
 // Image target - supports writing u8/f32 images with alpha or rgba format
@@ -119,7 +117,9 @@ struct image_target : image_source<T> {
     image_target(i32x2 extent, T* ptr, size_t stride) : image_source<T>(extent, ptr, stride) {}
 
     image_target(image_data& img) : image_source<T>(img) {
-        ASSERT(img.format == image_format::rgba || img.format == image_format::alpha);
+        ASSERT(
+            img.format != image_format::argb_u8 && img.format != image_format::bgra_u8 &&
+            img.format != image_format::rgb_u8); // not supported for writing
     }
 
     image_target(image_span img) : image_source<T>(img) {}
