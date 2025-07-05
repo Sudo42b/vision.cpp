@@ -535,7 +535,7 @@ void workbench_run(
         }
     }
 
-    allocate(weights, w.current_backend);
+    model_allocate(weights, w.current_backend);
     for (raw_tensor const& raw : tensors) {
         transfer_to_backend(m.weights(raw.name), span(raw.data, raw.size()));
     }
@@ -545,12 +545,12 @@ void workbench_run(
 
     std::vector<tensor> outputs = test.func(m, inputs, test_params);
     for (tensor& out : outputs) {
-        out = mark_output(m, ggml_cont(m, out));
+        out = compute_graph_output(m, ggml_cont(m, out));
     }
 
     ASSERT(!outputs.empty(), "Test function must return at least one output tensor");
 
-    allocate(graph, w.current_backend);
+    compute_graph_allocate(graph, w.current_backend);
     compute(graph, w.current_backend);
 
     size_t output_size = std::accumulate(

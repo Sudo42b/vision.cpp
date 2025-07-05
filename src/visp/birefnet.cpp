@@ -521,7 +521,7 @@ tensor birefnet_predict(model_ref m, tensor image, birefnet_params const& p) {
     // Decoder
     tensor scaled_preds = birefnet::decode(m["decoder"], image, features);
 
-    return mark_output(m, scaled_preds);
+    return compute_graph_output(m, scaled_preds);
 }
 
 image_data birefnet_process_input(image_view image, birefnet_params const& p) {

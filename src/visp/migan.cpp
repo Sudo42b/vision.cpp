@@ -146,7 +146,7 @@ void preprocess(
 tensor migan_generate(model_ref m, tensor image, migan_params const& p) {
     auto [x, feats] = migan::encode(m["encoder"], image, p.resolution);
     tensor result = migan::synthesis(m["synthesis"], x, feats, p.resolution);
-    return mark_output(m, result, "output");
+    return compute_graph_output(m, result);
 }
 
 migan_params migan_detect_params(model_ref m) {

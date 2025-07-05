@@ -65,7 +65,7 @@ model_weights model_load(char const* filepath, backend const&, model_load_params
 
 // Allocates backend buffers for the model weights if needed. Does not transfer data.
 // Returns false and does nothing if all tensors already have an associated backend buffer.
-bool allocate(model_weights&, backend const&);
+bool model_allocate(model_weights&, backend const&);
 
 //
 // Compute graph - wrapper for ggml_cgraph and its associated backend memory
@@ -80,7 +80,7 @@ struct compute_graph {
 compute_graph compute_graph_init(size_t size = GGML_DEFAULT_GRAPH_SIZE);
 
 // Allocates memory for inputs, outputs and computations on the backend.
-bool allocate(compute_graph&, backend const&);
+bool compute_graph_allocate(compute_graph&, backend const&);
 
 // Runs inference. Blocks until done.
 void compute(compute_graph const&, backend const&);
@@ -129,10 +129,10 @@ struct model_ref {
 tensor named(model_ref&, tensor);
 
 // Creates a new tensor as part of the model graph where input data can be stored.
-tensor create_input(model_ref&, ggml_type, i64x4 ne, tensor_name = "input");
+tensor compute_graph_input(model_ref&, ggml_type, i64x4 ne, tensor_name = "input");
 
 // Marks a tensor as an output of the compute graph.
-tensor mark_output(model_ref&, tensor, tensor_name = "output");
+tensor compute_graph_output(model_ref&, tensor, tensor_name = "output");
 
 //
 // Tensor data and transfer to backend device

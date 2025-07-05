@@ -616,7 +616,7 @@ sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed)
     tensor dense_prompt = sam::no_mask_embed(m["prompt_encoder"]);
     auto [masks, iou] = sam::predict_masks(m["dec"], image_embed, prompt_embed, dense_prompt);
 
-    return {mark_output(m, masks, "masks"), mark_output(m, iou, "iou")};
+    return {compute_graph_output(m, masks, "masks"), compute_graph_output(m, iou, "iou")};
 }
 
 } // namespace visp

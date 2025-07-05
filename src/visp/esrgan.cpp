@@ -71,7 +71,7 @@ tensor esrgan_generate(model_ref m, tensor x, esrgan_params const& p) {
     x = ggml_leaky_relu(m, x, 0.2f, true);
     x = conv_2d(m[seq + 2], x, 1, 1);
 
-    return mark_output(m, x, "result");
+    return compute_graph_output(m, x, "result");
 }
 
 esrgan_params esrgan_detect_params(model_ref m) {

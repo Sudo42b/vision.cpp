@@ -301,8 +301,8 @@ void run_sam(cli_args const& args) {
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
 
-    tensor image_tensor = create_input(m, GGML_TYPE_F32, {3, 1024, 1024, 1}, "image");
-    tensor point_tensor = create_input(m, GGML_TYPE_F32, {2, 2, 1, 1}, "points");
+    tensor image_tensor = compute_graph_input(m, GGML_TYPE_F32, {3, 1024, 1024, 1}, "image");
+    tensor point_tensor = compute_graph_input(m, GGML_TYPE_F32, {2, 2, 1, 1}, "points");
 
     tensor image_embed = sam_encode_image(m, image_tensor, params);
     tensor prompt_embed = prompt.is_point() ? sam_encode_points(m, point_tensor)
@@ -310,7 +310,7 @@ void run_sam(cli_args const& args) {
 
     sam_prediction output = sam_predict(m, image_embed, prompt_embed);
 
-    allocate(graph, backend);
+    compute_graph_allocate(graph, backend);
     transfer_to_backend(image_tensor, image_data_);
     transfer_to_backend(point_tensor, span(prompt_data.v, 4));
 
@@ -348,7 +348,7 @@ void run_birefnet(cli_args const& args) {
     image_data input_data = birefnet_process_input(image, params);
 
     birefnet_buffers buffers = birefnet_precompute(model_ref(weights), params);
-    allocate(weights, backend);
+    model_allocate(weights, backend);
     for (tensor_data const& buf : buffers) {
         transfer_to_backend(buf);
     }
@@ -356,10 +356,10 @@ void run_birefnet(cli_args const& args) {
     compute_graph graph = compute_graph_init(6 * 1024);
     model_ref m(weights, graph);
 
-    tensor input = create_input(m, GGML_TYPE_F32, {3, img_size, img_size, 1});
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, img_size, img_size, 1});
     tensor output = birefnet_predict(m, input, params);
 
-    allocate(graph, backend);
+    compute_graph_allocate(graph, backend);
     transfer_to_backend(input, input_data);
 
     compute_timed(graph, backend);
@@ -394,10 +394,11 @@ void run_migan(cli_args const& args) {
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
 
-    tensor input = create_input(m, GGML_TYPE_F32, {4, params.resolution, params.resolution, 1});
+    i64x4 input_shape = {4, params.resolution, params.resolution, 1};
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
     tensor output = migan_generate(m, input, params);
 
-    allocate(graph, backend);
+    compute_graph_allocate(graph, backend);
     transfer_to_backend(input, input_data);
 
     compute_timed(graph, backend);
@@ -431,10 +432,11 @@ void run_esrgan(cli_args const& args) {
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
 
-    tensor input = create_input(m, GGML_TYPE_F32, {3, tiles.tile_size[0], tiles.tile_size[1], 1});
+    i64x4 input_shape = {3, tiles.tile_size[0], tiles.tile_size[1], 1};
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
     tensor output = esrgan_generate(m, input, params);
 
-    allocate(graph, backend);
+    compute_graph_allocate(graph, backend);
 
     timer total;
     printf(

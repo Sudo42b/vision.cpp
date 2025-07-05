@@ -152,7 +152,7 @@ model_weights model_load(char const* filepath, backend const& backend, model_loa
     return model_weights{std::move(model_ctx), backend.type(), std::move(buffer), {}};
 }
 
-bool allocate(model_weights& m, backend const& b) {
+bool model_allocate(model_weights& m, backend const& b) {
     ASSERT(m.backend_type == b.type(), "Model weights must all be on the same backend");
 
     ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(m.context.get(), b.handle.get()));
@@ -186,7 +186,7 @@ compute_graph compute_graph_init(size_t size) {
     return compute_graph{std::move(ctx_ptr), graph};
 }
 
-bool allocate(compute_graph& g, backend const& backend) {
+bool compute_graph_allocate(compute_graph& g, backend const& backend) {
     if (!g.allocr) {
         g.allocr.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)));
     }
@@ -274,14 +274,14 @@ tensor named(model_ref& m, tensor tensor) {
 //
 // tensor creation and data handling
 
-tensor create_input(model_ref& m, ggml_type type, i64x4 shape, tensor_name name) {
+tensor compute_graph_input(model_ref& m, ggml_type type, i64x4 shape, tensor_name name) {
     tensor x = ggml_new_tensor_4d(m, type, shape[0], shape[1], shape[2], shape[3]);
     ggml_set_name(x, name.c_str());
     ggml_set_input(x);
     return x;
 }
 
-tensor mark_output(model_ref& m, tensor x, tensor_name name) {
+tensor compute_graph_output(model_ref& m, tensor x, tensor_name name) {
     ggml_set_name(x, name.c_str());
     ggml_set_output(x);
     ggml_build_forward_expand(m.graph, x);
