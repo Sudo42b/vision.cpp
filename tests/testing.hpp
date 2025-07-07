@@ -40,6 +40,7 @@ using std::filesystem::path;
 
 struct test_directories {
     path root;
+    path models;
     path test;
     path input;
     path results;
@@ -58,6 +59,8 @@ struct test_with_tolerance {
     }
     ~test_with_tolerance() { test_tolerance_value() = old_value; }
 };
+
+void test_set_info(std::string_view);
 
 template <typename T>
 bool test_is_equal(T const& a, T const& b) {

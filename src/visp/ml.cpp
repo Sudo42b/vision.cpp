@@ -51,6 +51,13 @@ ggml_type backend::preferred_float_type() const {
     return GGML_TYPE_COUNT; // use model's float type
 }
 
+size_t backend::total_memory() const {
+    ggml_backend_dev_t dev = ggml_backend_get_device(handle.get());
+    size_t free, total;
+    ggml_backend_dev_memory(dev, &free, &total);
+    return total;
+}
+
 //
 // model_weights
 
@@ -308,16 +315,31 @@ tensor_data tensor_load(tensor x, char const* filepath) {
 
 std::span<float> tensor_data::as_f32() {
     ASSERT(x->type == GGML_TYPE_F32);
-    return span<float>(reinterpret_cast<float*>(data.get()), ggml_nelements(x));
+    return span(reinterpret_cast<float*>(data.get()), ggml_nelements(x));
+}
+
+std::span<float const> tensor_data::as_f32() const {
+    ASSERT(x->type == GGML_TYPE_F32);
+    return span(reinterpret_cast<float const*>(data.get()), ggml_nelements(x));
 }
 
 std::span<int32_t> tensor_data::as_i32() {
     ASSERT(x->type == GGML_TYPE_I32);
-    return span<int32_t>(reinterpret_cast<int32_t*>(data.get()), ggml_nelements(x));
+    return span(reinterpret_cast<int32_t*>(data.get()), ggml_nelements(x));
+}
+
+std::span<int32_t const> tensor_data::as_i32() const {
+    ASSERT(x->type == GGML_TYPE_I32);
+    return span(reinterpret_cast<int32_t const*>(data.get()), ggml_nelements(x));
 }
 
 void transfer_to_backend(tensor_data const& d) {
     ggml_backend_tensor_set(d.x, d.data.get(), 0, ggml_nbytes(d.x));
+}
+
+void transfer_to_backend(tensor x, std::span<const byte> data) {
+    ASSERT(ggml_nbytes(x) == data.size_bytes());
+    ggml_backend_tensor_set(x, data.data(), 0, ggml_nbytes(x));
 }
 
 void transfer_to_backend(tensor x, std::span<const float> data) {

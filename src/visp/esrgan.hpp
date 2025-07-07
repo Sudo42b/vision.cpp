@@ -2,7 +2,7 @@
 
 #include "visp/ml.hpp"
 
-namespace visp :: esrgan {
+namespace visp::esrgan {
 
 tensor upsample(model_ref m, tensor x);
 tensor conv_block(model_ref m, tensor x);

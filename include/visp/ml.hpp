@@ -29,6 +29,7 @@ struct backend {
 
     backend_type type() const;
     ggml_type preferred_float_type() const;
+    size_t total_memory() const;
 
     operator ggml_backend_t() const { return handle.get(); }
 };
@@ -74,6 +75,8 @@ struct compute_graph {
     ggml_context_ptr context;
     ggml_cgraph* graph = nullptr;
     ggml_gallocr_ptr allocr;
+
+    explicit operator bool() const { return context && graph; }
 };
 
 // Initializes a compute graph and associated backend allocator.
@@ -143,6 +146,8 @@ struct tensor_data {
 
     std::span<float> as_f32();
     std::span<int32_t> as_i32();
+    std::span<float const> as_f32() const;
+    std::span<int32_t const> as_i32() const;
 };
 
 // Allocates data for a tensor in main memory, outside of context and backend buffers.
@@ -153,6 +158,7 @@ tensor_data tensor_load(tensor x, char const* filepath);
 
 // Copies data to the tensor's backend buffer (which should already be allocated).
 void transfer_to_backend(tensor_data const&);
+void transfer_to_backend(tensor x, std::span<byte const> data);
 void transfer_to_backend(tensor x, std::span<float const> data);
 void transfer_to_backend(tensor x, image_view const& data);
 
@@ -198,32 +204,6 @@ tensor concat(model_ref&, std::array<tensor, GGML_MAX_SRC> src, int dim);
 tensor interpolate(model_ref&, tensor x, i64x2 target, int32_t mode);
 
 //
-// Mobile SAM
-
-struct sam_params {
-    int image_size = 1024;
-    int mask_size = 256;
-};
-
-struct sam_prediction {
-    tensor masks;
-    tensor iou;
-};
-
-image_data sam_process_input(image_view image, sam_params const&);
-f32x4 sam_process_point(i32x2 point, i32x2 image_extent, sam_params const&);
-f32x4 sam_process_box(i32x2 top_left, i32x2 bottom_right, i32x2 image_extent, sam_params const&);
-
-tensor sam_encode_image(model_ref, tensor image, sam_params const&);
-tensor sam_encode_points(model_ref, tensor coords);
-tensor sam_encode_box(model_ref, tensor coords);
-
-sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed);
-
-image_data sam_process_mask(
-    std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const&);
-
-//
 // SWIN Transformer
 
 struct swin_layer_t {
@@ -244,49 +224,5 @@ struct swin_params {
 extern swin_params const swin_t_params;
 extern swin_params const swin_l_params;
 swin_params swin_detect_params(model_ref);
-
-//
-// BiRefNet
-
-struct birefnet_params {
-    int image_size = 1024;
-    swin_params encoder;
-};
-
-using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
-
-birefnet_params birefnet_detect_params(model_ref);
-birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
-
-image_data birefnet_process_input(image_view, birefnet_params const&);
-
-tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
-
-//
-// MI-GAN
-
-struct migan_params {
-    int resolution = 256;
-    bool invert_mask = false;
-};
-
-migan_params migan_detect_params(model_ref m);
-
-image_data migan_process_input(image_view image, image_view mask, migan_params const&);
-image_data migan_process_output(std::span<float const> data, i32x2 extent, migan_params const&);
-
-tensor migan_generate(model_ref, tensor image, migan_params const&);
-
-//
-// ESRGAN
-
-struct esrgan_params {
-    int scale = 4;
-    int n_blocks = 23;
-};
-
-esrgan_params esrgan_detect_params(model_ref);
-
-tensor esrgan_generate(model_ref, tensor image, esrgan_params const&);
 
 } // namespace visp

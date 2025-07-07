@@ -6,6 +6,12 @@
 
 using std::chrono::steady_clock;
 
+namespace visp {
+// Globals
+float tolerance = 1e-5f;
+std::string extra_info;
+}
+
 int main(int argc, char** argv) {
     auto& registry = visp::test_registry_instance();
 
@@ -31,25 +37,33 @@ int main(int argc, char** argv) {
             continue;
         }
         try {
+            printf(test.name);
+            fflush(stdout);
+
             test.func();
+            
             ++passed;
             if (verbose) {
-                printf("%s \033[32mPASSED\033[0m\n", test.name);
+                printf(" \033[32mPASSED\033[0m\n", test.name);
             }
         } catch (const visp::test_failure& e) {
             ++failed;
-            printf("%s \033[31mFAILED\033[0m\n", test.name);
+            printf(" \033[31mFAILED\033[0m\n", test.name);
             printf("  \033[90m%s:%d:\033[0m Assertion failed\n", e.file, e.line);
             printf("  \033[93m%s\033[0m\n", e.condition);
             if (e.eval) {
                 printf("  \033[93m%s\033[0m\n", e.eval.c_str());
             }
+            if (!visp::extra_info.empty()) {
+                printf("  %s\n", visp::extra_info.c_str());
+            }
         } catch (const std::exception& e) {
             ++errors;
-            printf("%s \033[31mERROR\033[0m\n", test.name);
+            printf(" \033[31mERROR\033[0m\n", test.name);
             printf("  \033[90m%s:%d:\033[0m Unhandled exception\n", test.file, test.line);
             printf("  \033[93m%s\033[0m\n", e.what());
         }
+        visp::extra_info.clear();
     }
 
     auto time_end = steady_clock::now();
@@ -92,6 +106,7 @@ test_directories const& test_dir() {
         }
         test_directories dirs{
             .root = cur,
+            .models = cur / "models",
             .test = cur / "tests",
             .input = cur / "tests" / "input",
             .results = cur / "tests" / "results",
@@ -104,7 +119,10 @@ test_directories const& test_dir() {
     return result;
 }
 
-float tolerance = 1e-5f;
+void test_set_info(std::string_view info) {
+    extra_info = info;
+}
+
 float& test_tolerance_value() {
     return tolerance;
 }

@@ -8,8 +8,10 @@ target_sources(visioncpp PRIVATE
   ml.cpp
   mobile-sam.cpp
   nn.cpp
+  vision.cpp
 )
 target_compile_definitions(visioncpp PRIVATE VISP_EXPORTS ${VISP_ASSERT})
+target_compile_options(visioncpp PRIVATE ${VISP_WARNINGS})
 target_include_directories(visioncpp PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -24,10 +26,6 @@ set_target_properties(visioncpp PROPERTIES
   SOVERSION ${PROJECT_VERSION_MAJOR}
 )
 
-if (MSVC)
-  target_compile_options(visioncpp PRIVATE /W4 /WX)
-
-  if (VISP_TESTS)
-    set_target_properties(visioncpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-  endif()
+if (MSVC AND VISP_TESTS)
+  set_target_properties(visioncpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()

@@ -191,6 +191,8 @@ image_data image_load(char const* filepath) {
 }
 
 void image_save(image_view const& img, char const* filepath) {
+    ASSERT(img.extent[0] > 0 && img.extent[1] > 0);
+    
     if (!(img.format == image_format::alpha_u8 || img.format == image_format::rgb_u8 ||
           img.format == image_format::rgba_u8)) {
         throw error("Unsupported image format [{}]", int(img.format));

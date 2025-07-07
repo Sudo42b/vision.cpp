@@ -296,7 +296,7 @@ void run_sam(cli_args const& args) {
     sam_prompt prompt = sam_parse_prompt(args.prompt, image.extent);
     f32x4 prompt_data = prompt.is_point()
         ? sam_process_point(prompt.point1, image.extent, params)
-        : sam_process_box(prompt.point1, prompt.point2, image.extent, params);
+        : sam_process_box({prompt.point1, prompt.point2}, image.extent, params);
 
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);

@@ -2,6 +2,7 @@
 #include "nn.hpp"
 #include "util/math.hpp"
 #include "util/string.hpp"
+#include "visp/vision.hpp"
 
 #include <ggml.h>
 
@@ -535,6 +536,19 @@ image_data birefnet_process_input(image_view image, birefnet_params const& p) {
     }
 
     return image_u8_to_f32(image, image_format::rgb_f32, -mean, 1.f / std);
+}
+
+image_data birefnet_process_output(
+    span<float const> mask_data, i32x2 target_extent, birefnet_params const& p) {
+
+    i32x2 model_extent = {p.image_size, p.image_size};
+    image_view mask_output(model_extent, mask_data);
+    image_data mask_resized;
+    if (model_extent != target_extent) {
+        mask_resized = image_resize(mask_output, target_extent);
+        mask_output = mask_resized;
+    }
+    return image_f32_to_u8(mask_output, image_format::alpha_u8);
 }
 
 birefnet_buffers birefnet_precompute(model_ref m, birefnet_params const& params) {

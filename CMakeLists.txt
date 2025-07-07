@@ -4,6 +4,7 @@ project(vision.cpp VERSION 0.1.0 LANGUAGES CXX)
 
 option(VISP_VULKAN "Enable Vulkan support" OFF)
 option(VISP_DEV "Enable development mode" OFF)
+option(VISP_CI "Enable for continuous integration environment" OFF)
 option(VISP_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
 option(VISP_ASAN "Enable AddressSanitizer" OFF)
 
@@ -39,6 +40,14 @@ if(MSVC)
   add_compile_options(/Zi /utf-8)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
   add_link_options(/DEBUG) # Enable debug symbols also in release builds
+endif()
+
+if(VISP_DEV OR VISP_CI)
+  if(MSVC)
+    set(VISP_WARNINGS /W4 /WX)
+  else()
+    set(VISP_WARNINGS -Wall -Wextra -Wpedantic -Werror)
+  endif()
 endif()
 
 add_subdirectory(depend/stb)
