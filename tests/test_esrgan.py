@@ -3,7 +3,7 @@ import torch
 from torch import nn
 
 from . import workbench
-from .workbench import to_channel_last, revert_channel_last, convert_to_channel_last
+from .workbench import to_nhwc, to_nchw, convert_to_nhwc
 from .workbench import input_tensor, generate_state
 
 torch.set_printoptions(precision=3, sci_mode=False)
@@ -66,10 +66,10 @@ def test_upconv():
     x = input_tensor(1, 3, 2, 2)
     expected = block(x)
 
-    x = to_channel_last(x)
-    state = convert_to_channel_last(state, "1.")
+    x = to_nhwc(x)
+    state = convert_to_nhwc(state, "1.")
     result = workbench.invoke_test("esrgan_upconv", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -107,10 +107,10 @@ def test_residual_dense_block():
     x = 0.1 * (input_tensor(1, 8, 6, 6) - 0.5)
     expected = block(x)
 
-    x = to_channel_last(x)
-    state = convert_to_channel_last(state, "conv")
+    x = to_nhwc(x)
+    state = convert_to_nhwc(state, "conv")
     result = workbench.invoke_test("esrgan_residual_dense_block", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -141,11 +141,11 @@ def test_rrdb():
     x = 0.1 * input_tensor(1, 8, 6, 6)
     expected = block(x)
 
-    x = to_channel_last(x)
-    state = convert_to_channel_last(state, "conv")
-    result = to_channel_last(torch.zeros_like(expected))
+    x = to_nhwc(x)
+    state = convert_to_nhwc(state, "conv")
+    result = to_nhwc(torch.zeros_like(expected))
     result = workbench.invoke_test("esrgan_rrdb", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected, atol=1e-5)
 
@@ -245,9 +245,9 @@ def test_rrdbnet():
     x = input_tensor(1, 3, 6, 6)
     expected = model(x)
 
-    x = to_channel_last(x)
-    state = convert_to_channel_last(state, ".")
+    x = to_nhwc(x)
+    state = convert_to_nhwc(state, ".")
     result = workbench.invoke_test("esrgan_rrdbnet", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected, atol=1e-4)

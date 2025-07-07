@@ -166,15 +166,15 @@ def randomize(state_dict: dict[str, torch.Tensor]):
     }
 
 
-def to_channel_last(tensor: torch.Tensor):
+def to_nhwc(tensor: torch.Tensor):
     return tensor.permute(0, 2, 3, 1).contiguous()
 
 
-def revert_channel_last(tensor: torch.Tensor):
+def to_nchw(tensor: torch.Tensor):
     return tensor.permute(0, 3, 1, 2).contiguous()
 
 
-def convert_to_channel_last(state: dict[str, torch.Tensor], key="c."):
+def convert_to_nhwc(state: dict[str, torch.Tensor], key="c."):
     for k, v in state.items():
         is_conv = (
             v.ndim == 4

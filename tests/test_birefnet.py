@@ -10,7 +10,7 @@ from timm.layers import to_2tuple, trunc_normal_
 from einops import rearrange
 
 from . import workbench
-from .workbench import to_channel_last, revert_channel_last, convert_to_channel_last
+from .workbench import to_nhwc, to_nchw, convert_to_nhwc
 from .workbench import input_tensor, generate_state
 
 torch.set_printoptions(precision=3, linewidth=100, edgeitems=6, sci_mode=False)
@@ -574,10 +574,10 @@ def test_patch_embed():
     x = input_tensor(1, 3, 8, 12)
     expected = patch_embed(x)
 
-    state = convert_to_channel_last(state, key="proj")
-    x = to_channel_last(x)
+    state = convert_to_nhwc(state, key="proj")
+    x = to_nhwc(x)
     result = workbench.invoke_test("biref_patch_embed", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -718,13 +718,13 @@ def test_swin_transformer():
     x = torch.rand(1, 3, w, h)
     expected = swin_transformer(x)
 
-    x = to_channel_last(x)
-    state = convert_to_channel_last(state, key="patch_embed.proj")
+    x = to_nhwc(x)
+    state = convert_to_nhwc(state, key="patch_embed.proj")
 
     result = workbench.invoke_test("biref_swin_transformer", x[0], state)
 
     for i, e in enumerate(expected):
-        result[i] = revert_channel_last(result[i])
+        result[i] = to_nchw(result[i])
         assert torch.allclose(result[i], e, atol=1e-3)
 
 
@@ -777,13 +777,13 @@ def test_encode():
     expected = forward_enc(x, xs, xs_low)
 
     state = {}
-    state.update({f"input{i}": to_channel_last(xs[i]) for i in range(4)})
-    state.update({f"input_low{i}": to_channel_last(xs_low[i]) for i in range(4)})
+    state.update({f"input{i}": to_nhwc(xs[i]) for i in range(4)})
+    state.update({f"input_low{i}": to_nhwc(xs_low[i]) for i in range(4)})
 
     results = workbench.invoke_test("biref_encode", x, state)
 
     for i, e in enumerate(expected):
-        result = revert_channel_last(results[i])
+        result = to_nchw(results[i])
         assert torch.allclose(result, e)
 
 
@@ -808,14 +808,14 @@ def test_conv_2d_deform(scenario: str, backend: str):
         x, offset, weight, mask=mask, padding=(1, 1)
     )
 
-    x = to_channel_last(x)
+    x = to_nhwc(x)
     state = {
-        "weight": to_channel_last(weight),
-        "offset": to_channel_last(offset),
-        "mask": to_channel_last(mask),
+        "weight": to_nhwc(weight),
+        "offset": to_nhwc(offset),
+        "mask": to_nhwc(mask),
     }
     result = workbench.invoke_test("conv_2d_deform", x, state, backend=backend)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected, atol=1e-2 if backend == "vulkan" else 1e-5)
 
@@ -905,11 +905,11 @@ def test_deformable_conv_2d():
     x = input_tensor(1, 3, 4, 4)
     expected = conv(x)
 
-    state = convert_to_channel_last(state, key="conv")
+    state = convert_to_nhwc(state, key="conv")
     state = {shorten_weight_name(k): v for k, v in state.items()}
-    x = to_channel_last(x)
+    x = to_nhwc(x)
     result = workbench.invoke_test("biref_deformable_conv_2d", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -940,12 +940,12 @@ def test_global_avg_pool(backend: str):
     expected = pool(x)
 
     state = add_variance_epsilon(state)
-    state = convert_to_channel_last(state, key="1.weight")
-    x = to_channel_last(x)
+    state = convert_to_nhwc(state, key="1.weight")
+    x = to_nhwc(x)
     result = workbench.invoke_test(
         "biref_global_avg_pool", x, state, backend=backend
     )
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -1033,13 +1033,13 @@ def test_aspp_deformable():
     expected = aspp(x)
 
     state = add_variance_epsilon(state)
-    state = convert_to_channel_last(state, key="conv")
-    state = convert_to_channel_last(state, key="pool.1")
+    state = convert_to_nhwc(state, key="conv")
+    state = convert_to_nhwc(state, key="pool.1")
     state = {shorten_weight_name(k): v for k, v in state.items()}
-    x = to_channel_last(x)
+    x = to_nhwc(x)
 
     result = workbench.invoke_test("biref_aspp_deformable", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -1075,13 +1075,13 @@ def test_basic_dec_blk():
     expected = block(x)
 
     state = add_variance_epsilon(state)
-    state = convert_to_channel_last(state, key="conv")
-    state = convert_to_channel_last(state, key="pool.1")
+    state = convert_to_nhwc(state, key="conv")
+    state = convert_to_nhwc(state, key="pool.1")
     state = {shorten_weight_name(k): v for k, v in state.items()}
-    x = to_channel_last(x)
+    x = to_nhwc(x)
 
     result = workbench.invoke_test("biref_basic_dec_blk", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -1323,16 +1323,16 @@ def test_decoder():
 
     state = add_variance_epsilon(state)
     state = {shorten_weight_name(k): v for k, v in state.items()}
-    state = convert_to_channel_last(state, key="conv")
-    state = convert_to_channel_last(state, key="pool.1")
+    state = convert_to_nhwc(state, key="conv")
+    state = convert_to_nhwc(state, key="pool.1")
 
-    x = to_channel_last(x)
-    state["x1"] = to_channel_last(x1)
-    state["x2"] = to_channel_last(x2)
-    state["x3"] = to_channel_last(x3)
-    state["x4"] = to_channel_last(x4)
+    x = to_nhwc(x)
+    state["x1"] = to_nhwc(x1)
+    state["x2"] = to_nhwc(x2)
+    state["x3"] = to_nhwc(x3)
+    state["x4"] = to_nhwc(x4)
 
     result = workbench.invoke_test("biref_decode", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)

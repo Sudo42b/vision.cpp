@@ -6,7 +6,7 @@ import pytest
 from torch import Tensor
 
 from . import workbench
-from .workbench import to_channel_last, revert_channel_last, convert_to_channel_last
+from .workbench import to_nhwc, to_nchw, convert_to_nhwc
 
 torch.set_printoptions(precision=2, linewidth=100, sci_mode=False)
 
@@ -46,10 +46,10 @@ def test_conv_2d_batch_norm():
     expected = conv2dbn(x)
 
     add_variance_epsilon(state)
-    convert_to_channel_last(state)
-    x = to_channel_last(x)
+    convert_to_nhwc(state)
+    x = to_nhwc(x)
     result = workbench.invoke_test("sam_conv_2d_batch_norm", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -90,11 +90,11 @@ def test_patch_embed():
     expected = patch_embed(x)
 
     add_variance_epsilon(state)
-    convert_to_channel_last(state)
-    x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
+    convert_to_nhwc(state)
+    x = to_nhwc(x)
+    result = to_nhwc(torch.zeros_like(expected))
     result = workbench.invoke_test("sam_patch_embed", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
 
@@ -123,10 +123,10 @@ def test_layer_norm_2d():
     x = torch.rand(1, 4, 8, 8)
     expected = layer_norm(x)
 
-    x = to_channel_last(x)
-    result = to_channel_last(torch.zeros_like(expected))
+    x = to_nhwc(x)
+    result = to_nhwc(torch.zeros_like(expected))
     result = workbench.invoke_test("layer_norm", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
 
@@ -185,10 +185,10 @@ def test_mb_conv():
     expected = mb_conv(x)
 
     add_variance_epsilon(state)
-    convert_to_channel_last(state)
-    x = to_channel_last(x)
+    convert_to_nhwc(state)
+    x = to_nhwc(x)
     result = workbench.invoke_test("sam_mb_conv", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     # precision: ggml_gelu uses fp16 look-up table & tanh approximation
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
@@ -236,8 +236,8 @@ def test_patch_merging():
     expected = patch_merging(x)
 
     add_variance_epsilon(state)
-    convert_to_channel_last(state)
-    x = to_channel_last(x)
+    convert_to_nhwc(state)
+    x = to_nhwc(x)
     result = result = workbench.invoke_test("sam_patch_merging", x, state)
     result = result.transpose(1, 2).reshape_as(expected)
 
@@ -498,7 +498,7 @@ def test_tiny_vit_block():
         :, tiny_vit_block.attn.attention_bias_idxs
     ]
     add_variance_epsilon(state)
-    convert_to_channel_last(state)
+    convert_to_nhwc(state)
     result = result = workbench.invoke_test("sam_tiny_vit_block", x, state)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
@@ -1282,8 +1282,8 @@ def test_two_way_transformer():
         for k, v in state.items()
     }
     # state["input_image_embedding"] = image_embedding
-    image_embedding = to_channel_last(image_embedding)
-    state["input_image_pe"] = to_channel_last(image_pe)
+    image_embedding = to_nhwc(image_embedding)
+    state["input_image_pe"] = to_nhwc(image_pe)
     state["input_point_embedding"] = point_embedding
     result_queries, result_keys = workbench.invoke_test(
         "sam_two_way_transformer", image_embedding, state
@@ -1359,9 +1359,9 @@ def test_output_upscaling():
     x = torch.rand(1, 16, 64, 64)
     expected = upscaling(x)
 
-    x = to_channel_last(x)
+    x = to_nhwc(x)
     result = workbench.invoke_test("sam_output_upscaling", x, state, backend="vulkan")
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected, atol=1e-4, rtol=1e-2)  # fp16 weights
 
@@ -1503,10 +1503,10 @@ def test_predict_masks():
         k.replace("token_to_image", "t2i").replace("image_to_token", "i2t"): v
         for k, v in state.items()
     }
-    image_embeddings = to_channel_last(image_embeddings)
-    state["dense_positional_embedding"] = to_channel_last(image_pe)
+    image_embeddings = to_nhwc(image_embeddings)
+    state["dense_positional_embedding"] = to_nhwc(image_pe)
     state["input_sparse_prompt"] = sparse_prompt_embeddings
-    state["input_dense_prompt"] = to_channel_last(dense_prompt_embeddings)
+    state["input_dense_prompt"] = to_nhwc(dense_prompt_embeddings)
     result_masks = torch.zeros_like(expected_masks).contiguous()
     result_masks, result_iou_pred = workbench.invoke_test(
         "sam_predict_masks", image_embeddings, state, backend="vulkan"

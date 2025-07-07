@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from . import workbench
-from .workbench import revert_channel_last, to_channel_last
+from .workbench import to_nchw, to_nhwc
 
 
 def test_linear():
@@ -42,13 +42,13 @@ def test_conv_2d_depthwise(scenario: str, memory_layout: str, batch: str, backen
     )
 
     if memory_layout == "nhwc":
-        x = to_channel_last(x)
+        x = to_nhwc(x)
         k = k.permute(2, 3, 1, 0)
     test_case = f"conv_2d_depthwise_{memory_layout}"
     params = dict(stride=stride, pad=pad, dilation=dilate)
     result = workbench.invoke_test(test_case, x, dict(weight=k), params, backend)
     if memory_layout == "nhwc":
-        result = revert_channel_last(result)
+        result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -66,7 +66,7 @@ def test_conv_transpose_2d(scenario: str):
     bias = None
     expected = torch.nn.functional.conv_transpose2d(x, weight, bias, stride=stride)
 
-    x = to_channel_last(x)  # -> [N, H, W, C_in]
+    x = to_nhwc(x)  # -> [N, H, W, C_in]
     result = workbench.invoke_test(
         "conv_transpose_2d",
         x,
@@ -74,7 +74,7 @@ def test_conv_transpose_2d(scenario: str):
         dict(stride=stride),
         backend="vulkan",
     )
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -87,12 +87,12 @@ def test_batch_norm_2d():
     var = torch.arange(1, 4).float()
     expected = torch.nn.functional.batch_norm(x, mean, var, weight, bias, eps=1e-5)
 
-    x = to_channel_last(x)
+    x = to_nhwc(x)
 
     var = (var + 1e-5).sqrt()
     state = dict(weight=weight, bias=bias, running_mean=mean, running_var=var)
     result = workbench.invoke_test("batch_norm_2d", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 

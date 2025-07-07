@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from . import workbench
-from .workbench import to_channel_last, revert_channel_last, convert_to_channel_last
+from .workbench import to_nhwc, to_nchw, convert_to_nhwc
 from .workbench import input_tensor, generate_state
 
 torch.set_printoptions(precision=3, sci_mode=False)
@@ -103,11 +103,11 @@ def test_downsample2d():
     downsample = Downsample2d(in_channels=4)
     expected = downsample(x)
     state = downsample.state_dict()
-    state = convert_to_channel_last(state, key="filter.")
+    state = convert_to_nhwc(state, key="filter.")
 
-    x = to_channel_last(x)
+    x = to_nhwc(x)
     result = workbench.invoke_test("migan_downsample_2d", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -148,11 +148,11 @@ def test_upsample2d():
     upsample = Upsample2d(in_channels=5, resolution=8)
     expected = upsample(x)
     state = upsample.state_dict()
-    state = convert_to_channel_last(state, key="filter.")
+    state = convert_to_nhwc(state, key="filter.")
 
-    x = to_channel_last(x)
+    x = to_nhwc(x)
     result = workbench.invoke_test("migan_upsample_2d", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -239,11 +239,11 @@ def test_separable_conv2d():
     separable_conv.load_state_dict(state)
     expected = separable_conv(x)
 
-    state = convert_to_channel_last(state, key="conv")
+    state = convert_to_nhwc(state, key="conv")
     state["noise_strength"] = torch.tensor([0.5])
-    x = to_channel_last(x)
+    x = to_nhwc(x)
     result = workbench.invoke_test("migan_separable_conv_2d", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -335,15 +335,15 @@ def test_encoder():
     encoder.load_state_dict(state)
     expected, feats = encoder(x)
 
-    state = convert_to_channel_last(state, key="conv")
-    state = convert_to_channel_last(state, key="filter")
-    state = convert_to_channel_last(state, key="fromrgb")
+    state = convert_to_nhwc(state, key="conv")
+    state = convert_to_nhwc(state, key="filter")
+    state = convert_to_nhwc(state, key="fromrgb")
     for k in state:
         if "noise_strength" in k:
             state[k] = torch.tensor([0.5])
-    x = to_channel_last(x)
+    x = to_nhwc(x)
     result = workbench.invoke_test("migan_encoder", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
@@ -491,15 +491,15 @@ def test_synthesis():
     }
     expected = synthesis(x, enc_feats)
 
-    state = convert_to_channel_last(state, key="conv")
-    state = convert_to_channel_last(state, key="filter")
-    state = convert_to_channel_last(state, key="torgb")
+    state = convert_to_nhwc(state, key="conv")
+    state = convert_to_nhwc(state, key="filter")
+    state = convert_to_nhwc(state, key="torgb")
     for k in state:
         if "noise_strength" in k:
             state[k] = torch.tensor([0.5])
-    x = to_channel_last(x)
-    state.update({f"feat{k}": to_channel_last(v) for k, v in enc_feats.items()})
+    x = to_nhwc(x)
+    state.update({f"feat{k}": to_nhwc(v) for k, v in enc_feats.items()})
     result = workbench.invoke_test("migan_synthesis", x, state)
-    result = revert_channel_last(result)
+    result = to_nchw(result)
 
     assert torch.allclose(result, expected)
