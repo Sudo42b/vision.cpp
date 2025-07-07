@@ -136,7 +136,7 @@ void preprocess(
             if (invert_mask) {
                 alpha = 1.0f - alpha;
             }
-            f32x4 color = alpha * (img.load(c) * 2.0f - f32x4{1.0f, 1.0f, 1.0f, 1.0f});
+            f32x4 color = alpha * (img.load(c) * 2.0f - f32x4(1.0f));
             dst.store(c, {alpha - 0.5f, color[0], color[1], color[2]});
         }
     }

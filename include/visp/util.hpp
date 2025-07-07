@@ -50,31 +50,69 @@ struct exception : std::exception {
 //
 // Simple vector types (fixed-size arrays)
 
-template <typename T, int Dim, size_t Align = alignof(T)>
-struct vec_t {
+template <typename T>
+struct vec2 {
     using value_type = T;
-    static constexpr int dim = Dim;
+    static constexpr int dim = 2;
 
-    alignas(Align) T v[Dim];
+    T v[2];
+
+    constexpr vec2() : v{0, 0} {}
+    constexpr vec2(T x, T y) : v{x, y} {}
+    constexpr vec2(T x) : v{x, x} {}
 
     constexpr T& operator[](size_t i) { return v[i]; }
     constexpr T const& operator[](size_t i) const { return v[i]; }
 
-    constexpr auto operator<=>(vec_t const&) const = default;
+    constexpr auto operator<=>(vec2 const&) const = default;
 };
 
-using u8x3 = vec_t<uint8_t, 3>;
-using u8x4 = vec_t<uint8_t, 4>;
+template <typename T>
+struct vec3 {
+    using value_type = T;
+    static constexpr int dim = 3;
 
-using i32x2 = vec_t<int32_t, 2>;
-using i32x4 = vec_t<int32_t, 4>;
+    T v[3];
 
-using i64x2 = vec_t<int64_t, 2>;
-using i64x4 = vec_t<int64_t, 4>;
+    constexpr vec3() : v{0, 0, 0} {}
+    constexpr vec3(T x, T y, T z) : v{x, y, z} {}
+    constexpr vec3(T x) : v{x, x, x} {}
 
-using f32x2 = vec_t<float, 2, 8>;
-using f32x3 = vec_t<float, 3>;
-using f32x4 = vec_t<float, 4, 16>;
+    constexpr T& operator[](size_t i) { return v[i]; }
+    constexpr T const& operator[](size_t i) const { return v[i]; }
+
+    constexpr auto operator<=>(vec3 const&) const = default;
+};
+
+template <typename T, size_t Align = alignof(T)>
+struct vec4 {
+    using value_type = T;
+    static constexpr int dim = 4;
+
+    alignas(Align) T v[4];
+
+    constexpr vec4() : v{0, 0, 0, 0} {}
+    constexpr vec4(T x, T y, T z, T w) : v{x, y, z, w} {}
+    constexpr vec4(T x) : v{x, x, x, x} {}
+
+    constexpr T& operator[](size_t i) { return v[i]; }
+    constexpr T const& operator[](size_t i) const { return v[i]; }
+
+    constexpr auto operator<=>(vec4 const&) const = default;
+};
+
+using u8x3 = vec3<uint8_t>;
+using u8x4 = vec4<uint8_t>;
+
+using i32x2 = vec2<int32_t>;
+using i32x4 = vec4<int32_t>;
+
+using i64x2 = vec2<int64_t>;
+using i64x4 = vec4<int64_t>;
+
+using f32x2 = vec2<float>;
+using f32x3 = vec3<float>;
+using f32x4 = vec4<float, 16>;
 
 //
 // Flags - extends enums with bit-wise operations to be used as bitmask

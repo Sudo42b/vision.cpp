@@ -16,6 +16,7 @@
 
 namespace visp {
 using std::byte;
+using std::span;
 using tensor_name = fixed_string<GGML_MAX_NAME>;
 using tensor = ggml_tensor*;
 
@@ -125,17 +126,17 @@ struct model_ref {
     model_ref operator[](tensor_name sub_module) const;
     model_ref operator[](int sub_module) const;
 
-    operator ggml_context*() { return graph_context; }
+    operator ggml_context*() const { return graph_context; }
 };
 
 // Sets the name of a tensor to the current model prefix.
-tensor named(model_ref&, tensor);
+tensor named(model_ref const&, tensor);
 
 // Creates a new tensor as part of the model graph where input data can be stored.
-tensor compute_graph_input(model_ref&, ggml_type, i64x4 ne, tensor_name = "input");
+tensor compute_graph_input(model_ref const&, ggml_type, i64x4 ne, tensor_name = "input");
 
 // Marks a tensor as an output of the compute graph.
-tensor compute_graph_output(model_ref&, tensor, tensor_name = "output");
+tensor compute_graph_output(model_ref const&, tensor, tensor_name = "output");
 
 //
 // Tensor data and transfer to backend device
@@ -144,10 +145,10 @@ struct tensor_data {
     tensor x;
     std::unique_ptr<byte[]> data;
 
-    std::span<float> as_f32();
-    std::span<int32_t> as_i32();
-    std::span<float const> as_f32() const;
-    std::span<int32_t const> as_i32() const;
+    span<float> as_f32();
+    span<int32_t> as_i32();
+    span<float const> as_f32() const;
+    span<int32_t const> as_i32() const;
 };
 
 // Allocates data for a tensor in main memory, outside of context and backend buffers.
@@ -158,13 +159,13 @@ tensor_data tensor_load(tensor x, char const* filepath);
 
 // Copies data to the tensor's backend buffer (which should already be allocated).
 void transfer_to_backend(tensor_data const&);
-void transfer_to_backend(tensor x, std::span<byte const> data);
-void transfer_to_backend(tensor x, std::span<float const> data);
+void transfer_to_backend(tensor x, span<byte const> data);
+void transfer_to_backend(tensor x, span<float const> data);
 void transfer_to_backend(tensor x, image_view const& data);
 
 // Copies tensor data from the backend buffer to main memory.
 tensor_data transfer_from_backend(tensor x);
-void transfer_from_backend(tensor x, std::span<float> dst, size_t offset = 0);
+void transfer_from_backend(tensor x, span<float> dst, size_t offset = 0);
 void transfer_from_backend(tensor x, image_span const& dst);
 
 //
@@ -195,13 +196,13 @@ struct slice_t {
 
 // Slice a tensor along one or more dimensions similar to numpy/torch. Returns a view.
 // Example: `x[0, 0:64, 16:32, :]` becomes `slice(m, x, {}, {16, 32}, {0, 64}, 0)`
-tensor slice(model_ref&, tensor x, slice_t s0, slice_t s1 = {}, slice_t s2 = {}, slice_t s3 = {});
+tensor slice(model_ref, tensor x, slice_t s0, slice_t s1 = {}, slice_t s2 = {}, slice_t s3 = {});
 
 // Concatenate multiple tensors along a specified dimension.
-tensor concat(model_ref&, std::array<tensor, GGML_MAX_SRC> src, int dim);
+tensor concat(model_ref const&, std::array<tensor, GGML_MAX_SRC> src, int dim);
 
 // Up- or downsample a 2D tensor (WHCN) to target width x height.
-tensor interpolate(model_ref&, tensor x, i64x2 target, int32_t mode);
+tensor interpolate(model_ref const&, tensor x, i64x2 target, int32_t mode);
 
 //
 // SWIN Transformer

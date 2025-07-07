@@ -117,15 +117,15 @@ void image_save(image_view const& img, char const* filepath);
 void image_u8_to_f32(
     image_view const& src,
     image_span const& dst,
-    f32x4 offset = f32x4{0.f, 0.f, 0.f, 0.f},
-    f32x4 scale = f32x4{1.f, 1.f, 1.f, 1.f},
+    f32x4 offset = f32x4{0.f},
+    f32x4 scale = f32x4{1.f},
     i32x2 tile_offset = {0, 0});
 
 image_data image_u8_to_f32(
     image_view const& src,
     image_format format,
-    f32x4 offset = f32x4{0.f, 0.f, 0.f, 0.f},
-    f32x4 scale = f32x4{1.f, 1.f, 1.f, 1.f});
+    f32x4 offset = f32x4{0.f},
+    f32x4 scale = f32x4{1.f});
 
 // Convert float32 image to uint8 image
 // * applies computation `dst = src * scale + offset` to every channel/pixel

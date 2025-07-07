@@ -273,7 +273,7 @@ model_ref model_ref::operator[](int sub_module) const {
     return chain_prefix(*this, sub_module);
 }
 
-tensor named(model_ref& m, tensor tensor) {
+tensor named(model_ref const& m, tensor tensor) {
     ggml_set_name(tensor, m.prefix.c_str());
     return tensor;
 }
@@ -281,14 +281,14 @@ tensor named(model_ref& m, tensor tensor) {
 //
 // tensor creation and data handling
 
-tensor compute_graph_input(model_ref& m, ggml_type type, i64x4 shape, tensor_name name) {
+tensor compute_graph_input(model_ref const& m, ggml_type type, i64x4 shape, tensor_name name) {
     tensor x = ggml_new_tensor_4d(m, type, shape[0], shape[1], shape[2], shape[3]);
     ggml_set_name(x, name.c_str());
     ggml_set_input(x);
     return x;
 }
 
-tensor compute_graph_output(model_ref& m, tensor x, tensor_name name) {
+tensor compute_graph_output(model_ref const& m, tensor x, tensor_name name) {
     ggml_set_name(x, name.c_str());
     ggml_set_output(x);
     ggml_build_forward_expand(m.graph, x);
@@ -371,7 +371,7 @@ void transfer_from_backend(tensor x, image_span const& dst) {
 //
 // tensor operations
 
-tensor slice(model_ref& m, tensor x, slice_t s0, slice_t s1, slice_t s2, slice_t s3) {
+tensor slice(model_ref m, tensor x, slice_t s0, slice_t s1, slice_t s2, slice_t s3) {
     ASSERT(s0.step == 1 && "Slice step must be 1 for the begin dimension");
 
     auto ne = std::array{x->ne[0], x->ne[1], x->ne[2], x->ne[3]};
@@ -394,7 +394,7 @@ tensor slice(model_ref& m, tensor x, slice_t s0, slice_t s1, slice_t s2, slice_t
     return ggml_view_4d(m, x, ne[0], ne[1], ne[2], ne[3], nb[1], nb[2], nb[3], offset);
 }
 
-tensor concat(model_ref& m, std::array<tensor, GGML_MAX_SRC> src, int dim) {
+tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim) {
     int n = (int)std::count_if(src.begin(), src.end(), [](tensor t) { return t != nullptr; });
     if (m.backend == backend_type::cpu) {
         return ggml_concat_n(m, src.data(), n, dim);
@@ -407,7 +407,7 @@ tensor concat(model_ref& m, std::array<tensor, GGML_MAX_SRC> src, int dim) {
     }
 }
 
-tensor interpolate(model_ref& m, tensor x, i64x2 target, int32_t mode) {
+tensor interpolate(model_ref const& m, tensor x, i64x2 target, int32_t mode) {
     return ggml_upscale_ext(
         m, x, int(target[0]), int(target[1]), int(x->ne[2]), int(x->ne[3]), mode);
 }

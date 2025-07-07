@@ -448,7 +448,7 @@ void run_esrgan(cli_args const& args) {
         i32x2 tile_coord = tiles.coord(t);
         i32x2 tile_offset = tiles.start(tile_coord);
 
-        image_u8_to_f32(image, input_tile, f32x4{0, 0, 0, 0}, f32x4{1, 1, 1, 1}, tile_offset);
+        image_u8_to_f32(image, input_tile, f32x4(0), f32x4(1), tile_offset);
         transfer_to_backend(input, input_tile);
 
         compute(graph, backend);

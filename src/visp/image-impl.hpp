@@ -16,7 +16,7 @@ i32x4 get_channel_map(image_format);
 
 inline f32x4 image_load(uint8_t const* img, size_t i, i32x4) {
     float v = float(img[i]) / 255.0f;
-    return f32x4{v, v, v, v};
+    return f32x4{v};
 }
 
 inline f32x4 image_load(u8x3 const* img, size_t i, i32x4) {
@@ -67,8 +67,8 @@ inline void image_store(f32x4* img, size_t i, f32x4 value) {
 }
 
 // clang-format off
-template <typename T> struct scalar_type_impl { using type = typename T::value_type; };
-template <>           struct scalar_type_impl<float> { using type = float; };
+template <typename T> struct scalar_type_impl          { using type = typename T::value_type; };
+template <>           struct scalar_type_impl<float>   { using type = float; };
 template <>           struct scalar_type_impl<uint8_t> { using type = uint8_t; };
 template <typename T> using scalar_type = typename scalar_type_impl<T>::type;
 // clang-format on
