@@ -10,6 +10,8 @@ dependencies = [
     "opencv-python",
     "ruff",
     "einops>=0.8.1",
+    "spandrel>=0.4.1",
+    "gguf>=0.17.1",
 ]
 
 [tool.uv]
