@@ -25,7 +25,7 @@ using tensor = ggml_tensor*;
 
 enum class backend_type { cpu = 1, gpu = 2 };
 
-struct backend {
+struct VISP_API backend {
     ggml_backend_ptr handle;
 
     backend_type type() const;
@@ -35,8 +35,8 @@ struct backend {
     operator ggml_backend_t() const { return handle.get(); }
 };
 
-backend backend_init();
-backend backend_init(backend_type);
+VISP_API backend backend_init();
+VISP_API backend backend_init(backend_type);
 
 //
 // Model weights
@@ -44,7 +44,7 @@ backend backend_init(backend_type);
 // * loads, converts and stores model weights
 // * allocates and transfers tensor data to backend buffers
 
-struct model_weights {
+struct VISP_API model_weights {
     ggml_context_ptr context;
     backend_type backend_type = backend_type::cpu;
     ggml_backend_buffer_ptr weights_buffer;
@@ -55,7 +55,7 @@ struct model_weights {
 
 // Creates a GGML context with storage for a fixed number of tensors.
 // Does not allocate any backend buffers.
-model_weights model_init(backend const&, size_t n_tensors);
+VISP_API model_weights model_init(backend const&, size_t n_tensors);
 
 struct model_load_params {
     ggml_type float_type = GGML_TYPE_COUNT; // default: use type stored in GGUF file
@@ -63,11 +63,11 @@ struct model_load_params {
 };
 
 // Loads model weights from a GGUF file and transfers them to backend buffers.
-model_weights model_load(char const* filepath, backend const&, model_load_params = {});
+VISP_API model_weights model_load(char const* filepath, backend const&, model_load_params = {});
 
 // Allocates backend buffers for the model weights if needed. Does not transfer data.
 // Returns false and does nothing if all tensors already have an associated backend buffer.
-bool model_allocate(model_weights&, backend const&);
+VISP_API bool model_allocate(model_weights&, backend const&);
 
 //
 // Compute graph - wrapper for ggml_cgraph and its associated backend memory
@@ -81,13 +81,13 @@ struct compute_graph {
 };
 
 // Initializes a compute graph and associated backend allocator.
-compute_graph compute_graph_init(size_t size = GGML_DEFAULT_GRAPH_SIZE);
+VISP_API compute_graph compute_graph_init(size_t size = GGML_DEFAULT_GRAPH_SIZE);
 
 // Allocates memory for inputs, outputs and computations on the backend.
-bool compute_graph_allocate(compute_graph&, backend const&);
+VISP_API bool compute_graph_allocate(compute_graph&, backend const&);
 
 // Runs inference. Blocks until done.
-void compute(compute_graph const&, backend const&);
+VISP_API void compute(compute_graph const&, backend const&);
 
 //
 // Model ref - represents a ML model
@@ -97,7 +97,7 @@ void compute(compute_graph const&, backend const&);
 //   to support nested modules
 // * pass anywhere ggml_context* is expected while building the graph
 
-struct model_ref {
+struct VISP_API model_ref {
     ggml_context* weights_context = nullptr;
     ggml_context* graph_context = nullptr;
     ggml_cgraph* graph = nullptr;
@@ -130,18 +130,18 @@ struct model_ref {
 };
 
 // Sets the name of a tensor to the current model prefix.
-tensor named(model_ref const&, tensor);
+VISP_API tensor named(model_ref const&, tensor);
 
 // Creates a new tensor as part of the model graph where input data can be stored.
-tensor compute_graph_input(model_ref const&, ggml_type, i64x4 ne, tensor_name = "input");
+VISP_API tensor compute_graph_input(model_ref const&, ggml_type, i64x4 ne, tensor_name = "input");
 
 // Marks a tensor as an output of the compute graph.
-tensor compute_graph_output(model_ref const&, tensor, tensor_name = "output");
+VISP_API tensor compute_graph_output(model_ref const&, tensor, tensor_name = "output");
 
 //
 // Tensor data and transfer to backend device
 
-struct tensor_data {
+struct VISP_API tensor_data {
     tensor x;
     std::unique_ptr<byte[]> data;
 
@@ -152,21 +152,21 @@ struct tensor_data {
 };
 
 // Allocates data for a tensor in main memory, outside of context and backend buffers.
-tensor_data tensor_alloc(tensor x);
+VISP_API tensor_data tensor_alloc(tensor x);
 
 // Loads tensor data from a file storing raw numbers as binary.
-tensor_data tensor_load(tensor x, char const* filepath);
+VISP_API tensor_data tensor_load(tensor x, char const* filepath);
 
 // Copies data to the tensor's backend buffer (which should already be allocated).
-void transfer_to_backend(tensor_data const&);
-void transfer_to_backend(tensor x, span<byte const> data);
-void transfer_to_backend(tensor x, span<float const> data);
-void transfer_to_backend(tensor x, image_view const& data);
+VISP_API void transfer_to_backend(tensor_data const&);
+VISP_API void transfer_to_backend(tensor x, span<byte const> data);
+VISP_API void transfer_to_backend(tensor x, span<float const> data);
+VISP_API void transfer_to_backend(tensor x, image_view const& data);
 
 // Copies tensor data from the backend buffer to main memory.
-tensor_data transfer_from_backend(tensor x);
-void transfer_from_backend(tensor x, span<float> dst, size_t offset = 0);
-void transfer_from_backend(tensor x, image_span const& dst);
+VISP_API tensor_data transfer_from_backend(tensor x);
+VISP_API void transfer_from_backend(tensor x, span<float> dst, size_t offset = 0);
+VISP_API void transfer_from_backend(tensor x, image_span const& dst);
 
 //
 // Tensor operations
@@ -196,13 +196,14 @@ struct slice_t {
 
 // Slice a tensor along one or more dimensions similar to numpy/torch. Returns a view.
 // Example: `x[0, 0:64, 16:32, :]` becomes `slice(m, x, {}, {16, 32}, {0, 64}, 0)`
-tensor slice(model_ref, tensor x, slice_t s0, slice_t s1 = {}, slice_t s2 = {}, slice_t s3 = {});
+VISP_API tensor slice(
+    model_ref const&, tensor x, slice_t s0, slice_t s1 = {}, slice_t s2 = {}, slice_t s3 = {});
 
 // Concatenate multiple tensors along a specified dimension.
-tensor concat(model_ref const&, std::array<tensor, GGML_MAX_SRC> src, int dim);
+VISP_API tensor concat(model_ref const&, std::array<tensor, GGML_MAX_SRC> src, int dim);
 
 // Up- or downsample a 2D tensor (WHCN) to target width x height.
-tensor interpolate(model_ref const&, tensor x, i64x2 target, int32_t mode);
+VISP_API tensor interpolate(model_ref const&, tensor x, i64x2 target, int32_t mode);
 
 //
 // SWIN Transformer
@@ -224,6 +225,6 @@ struct swin_params {
 
 extern swin_params const swin_t_params;
 extern swin_params const swin_l_params;
-swin_params swin_detect_params(model_ref);
+VISP_API swin_params swin_detect_params(model_ref);
 
 } // namespace visp

@@ -371,7 +371,7 @@ void transfer_from_backend(tensor x, image_span const& dst) {
 //
 // tensor operations
 
-tensor slice(model_ref m, tensor x, slice_t s0, slice_t s1, slice_t s2, slice_t s3) {
+tensor slice(model_ref const& m, tensor x, slice_t s0, slice_t s1, slice_t s2, slice_t s3) {
     ASSERT(s0.step == 1 && "Slice step must be 1 for the begin dimension");
 
     auto ne = std::array{x->ne[0], x->ne[1], x->ne[2], x->ne[3]};

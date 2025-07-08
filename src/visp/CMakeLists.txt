@@ -10,7 +10,7 @@ target_sources(visioncpp PRIVATE
   nn.cpp
   vision.cpp
 )
-target_compile_definitions(visioncpp PRIVATE VISP_EXPORTS ${VISP_ASSERT})
+target_compile_definitions(visioncpp PRIVATE VISP_API_EXPORT ${VISP_ASSERT})
 target_compile_options(visioncpp PRIVATE ${VISP_WARNINGS})
 target_include_directories(visioncpp PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
@@ -26,6 +26,9 @@ set_target_properties(visioncpp PROPERTIES
   SOVERSION ${PROJECT_VERSION_MAJOR}
 )
 
+if(MSVC)
+  target_compile_options(visioncpp PRIVATE /wd4251)
+endif()
 if (MSVC AND VISP_TESTS)
   set_target_properties(visioncpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()

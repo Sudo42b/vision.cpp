@@ -1,26 +1,36 @@
 #pragma once
 
+#include "visp/image.hpp"
 #include "visp/ml.hpp"
 #include "visp/util.hpp"
+
+#include <array>
+#include <span>
 
 namespace visp {
 
 //
 // Mobile SAM - image segmentation with prompt (point or box)
 
+struct sam_model;
+
 struct image_rect {
     i32x2 top_left;
     i32x2 bottom_right;
 };
 
-struct sam_model;
+// Loads a SAM model from GGUF file onto the backend device.
+// * only supports MobileSAM (TinyViT) for now
+VISP_API sam_model sam_load_model(char const* filepath, backend const&);
 
-sam_model sam_load_model(char const* filepath, backend const&);
+// Creates an image embedding from RGB input, required for subsequent `sam_compute` calls.
+VISP_API void sam_encode(sam_model&, image_view image, backend const&);
 
-void sam_encode(sam_model&, image_view image, backend const&);
-
-image_data sam_compute(sam_model&, i32x2 point, backend const&);
-image_data sam_compute(sam_model&, image_rect box, backend const&);
+// Computes a segmentation mask (alpha image) for an object in the image.
+// * takes either a point, ie. a pixel location with origin (0, 0) in the top left
+// * or a bounding box which contains the object
+VISP_API image_data sam_compute(sam_model&, i32x2 point, backend const&);
+VISP_API image_data sam_compute(sam_model&, image_rect box, backend const&);
 
 //
 
@@ -34,27 +44,30 @@ struct sam_prediction {
     tensor iou;
 };
 
-image_data sam_process_input(image_view image, sam_params const&);
-f32x4 sam_process_point(i32x2 point, i32x2 image_extent, sam_params const&);
-f32x4 sam_process_box(image_rect box, i32x2 image_extent, sam_params const&);
+VISP_API image_data sam_process_input(image_view image, sam_params const&);
+VISP_API f32x4 sam_process_point(i32x2 point, i32x2 image_extent, sam_params const&);
+VISP_API f32x4 sam_process_box(image_rect box, i32x2 image_extent, sam_params const&);
 
-tensor sam_encode_image(model_ref, tensor image, sam_params const&);
-tensor sam_encode_points(model_ref, tensor coords);
-tensor sam_encode_box(model_ref, tensor coords);
+VISP_API tensor sam_encode_image(model_ref, tensor image, sam_params const&);
+VISP_API tensor sam_encode_points(model_ref, tensor coords);
+VISP_API tensor sam_encode_box(model_ref, tensor coords);
 
-sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed);
+VISP_API sam_prediction sam_predict_mask(model_ref m, tensor image_embed, tensor prompt_embed);
 
-image_data sam_process_mask(
+VISP_API image_data sam_process_mask(
     std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const&);
 
 //
-// BiRefNet - dichomous image segmentation (background removal)
+// BiRefNet - dichotomous image segmentation (background removal)
 
 struct birefnet_model;
 
-birefnet_model birefnet_load_model(char const* filepath, backend const&);
+// Loads a BiRefNet model from GGUF file onto the backend device.
+// * supports BiRefNet, BiRefNet_lite, BiRefNet_Matting variants at 1024px resolution
+VISP_API birefnet_model birefnet_load_model(char const* filepath, backend const&);
 
-image_data birefnet_compute(birefnet_model&, image_view image, backend const&);
+// Takes RGB input and computes an alpha mask with foreground as 1.0 and background as 0.0.
+VISP_API image_data birefnet_compute(birefnet_model&, image_view image, backend const&);
 
 //
 
@@ -65,23 +78,27 @@ struct birefnet_params {
 
 using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
 
-birefnet_params birefnet_detect_params(model_ref);
-birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
+VISP_API birefnet_params birefnet_detect_params(model_ref);
+VISP_API birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
 
-image_data birefnet_process_input(image_view, birefnet_params const&);
-image_data birefnet_process_output(
+VISP_API image_data birefnet_process_input(image_view, birefnet_params const&);
+VISP_API image_data birefnet_process_output(
     std::span<float const> output_data, i32x2 target_extent, birefnet_params const&);
 
-tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
+VISP_API tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
 
 //
 // MI-GAN - image inpainting
 
 struct migan_model;
 
-migan_model migan_load_model(char const* filepath, backend const&);
+// Loads a MI-GAN model from GGUF file onto the backend device.
+// * supports variants at 256px or 512px resolution
+VISP_API migan_model migan_load_model(char const* filepath, backend const&);
 
-image_data migan_compute(migan_model&, image_view image, image_view mask, backend const&);
+// Fills pixels in the input image where the mask is 1.0 with new content.
+VISP_API image_data migan_compute(
+    migan_model&, image_view image, image_view mask, backend const&);
 
 //
 
@@ -90,21 +107,26 @@ struct migan_params {
     bool invert_mask = false;
 };
 
-migan_params migan_detect_params(model_ref m);
+VISP_API migan_params migan_detect_params(model_ref m);
 
-image_data migan_process_input(image_view image, image_view mask, migan_params const&);
-image_data migan_process_output(std::span<float const> data, i32x2 extent, migan_params const&);
+VISP_API image_data migan_process_input(image_view image, image_view mask, migan_params const&);
+VISP_API image_data migan_process_output(
+    std::span<float const> data, i32x2 extent, migan_params const&);
 
-tensor migan_generate(model_ref, tensor image, migan_params const&);
+VISP_API tensor migan_generate(model_ref, tensor image, migan_params const&);
 
 //
 // ESRGAN - image super-resolution
 
 struct esrgan_model;
 
-esrgan_model esrgan_load_model(char const* filepath, backend const&);
+// Loads an ESRGAN model from GGUF file onto the backend device.
+// * supports ESRGAN, RealESRGAN variants with flexible scale and number of blocks
+// * currently does not spport RealESRGAN+ (plus) models or those which use pixel shuffle
+VISP_API esrgan_model esrgan_load_model(char const* filepath, backend const&);
 
-image_data esrgan_compute(esrgan_model&, image_view image, backend const&);
+// Upscales the input image by the model's scale factor. Uses tiling for large inputs.
+VISP_API image_data esrgan_compute(esrgan_model&, image_view image, backend const&);
 
 //
 
@@ -113,9 +135,9 @@ struct esrgan_params {
     int n_blocks = 23;
 };
 
-esrgan_params esrgan_detect_params(model_ref);
+VISP_API esrgan_params esrgan_detect_params(model_ref);
 
-tensor esrgan_generate(model_ref, tensor image, esrgan_params const&);
+VISP_API tensor esrgan_generate(model_ref, tensor image, esrgan_params const&);
 
 //
 // Implementation

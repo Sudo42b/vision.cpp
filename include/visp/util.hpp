@@ -3,6 +3,16 @@
 #include <exception>
 #include <string_view>
 
+#ifdef _MSC_VER
+#    ifdef VISP_API_EXPORT
+#        define VISP_API __declspec(dllexport)
+#    else
+#        define VISP_API __declspec(dllimport)
+#    endif
+#else
+#    define VISP_API __attribute__((visibility("default")))
+#endif
+
 namespace visp {
 
 //

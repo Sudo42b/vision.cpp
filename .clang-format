@@ -125,6 +125,8 @@ LambdaBodyIndentation: Signature
 LineEnding:      DeriveLF
 MacroBlockBegin: ''
 MacroBlockEnd:   ''
+Macros:
+  - VISP_API = [[export]]
 MaxEmptyLinesToKeep: 1
 NamespaceIndentation: None
 ObjCBinPackProtocolList: Auto
@@ -142,7 +144,7 @@ PenaltyBreakString: 1000
 PenaltyBreakTemplateDeclaration: 10
 PenaltyExcessCharacter: 1000
 PenaltyIndentedWhitespace: 0
-PenaltyReturnTypeOnItsOwnLine: 400
+PenaltyReturnTypeOnItsOwnLine: 10000
 PointerAlignment: Left
 PPIndentWidth:   -1
 QualifierAlignment: Leave

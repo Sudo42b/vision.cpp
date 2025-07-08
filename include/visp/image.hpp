@@ -27,14 +27,14 @@ enum class image_format {
     alpha_f32
 };
 
-int n_channels(image_format);
-int n_bytes(image_format);
-bool is_float(image_format);
+VISP_API int n_channels(image_format);
+VISP_API int n_bytes(image_format);
+VISP_API bool is_float(image_format);
 
 //
 // Image view - read-only, non-owning reference to image data
 
-struct image_view {
+struct VISP_API image_view {
     i32x2 extent{}; // width, height
     int stride = 0; // row stride in bytes
     image_format format = image_format::rgba_u8;
@@ -56,16 +56,16 @@ struct image_view {
     span<float const> as_floats() const;
 };
 
-int n_channels(image_view const&);
-int n_pixels(image_view const&);
-size_t n_bytes(image_view const&);
+VISP_API int n_channels(image_view const&);
+VISP_API int n_pixels(image_view const&);
+VISP_API size_t n_bytes(image_view const&);
 
 //
 // Image span - mutable, non-owning reference to image data
 //
 // * can also be passed to functions that expect image_view
 
-struct image_span {
+struct VISP_API image_span {
     i32x2 extent = {}; // width, height
     int stride = 0;    // row stride in bytes
     image_format format = image_format::rgba_u8;
@@ -98,13 +98,13 @@ struct image_data {
 };
 
 // Allocate image data. Pixels are not initialized.
-image_data image_alloc(i32x2 extent, image_format format);
+VISP_API image_data image_alloc(i32x2 extent, image_format format);
 
 // Load image from file (PNG, JPEG, etc.)
-image_data image_load(char const* filepath);
+VISP_API image_data image_load(char const* filepath);
 
 // Save image to file (PNG, JPEG, etc.)
-void image_save(image_view const& img, char const* filepath);
+VISP_API void image_save(image_view const& img, char const* filepath);
 
 //
 // Image algorithms
@@ -114,14 +114,14 @@ void image_save(image_view const& img, char const* filepath);
 // * applies computation `dst = (src + offset) * scale` to each pixel
 // * starts reading `src` at `tile_offset`
 // * always writes all of `dst` -- if `src` is smaller the output is padded
-void image_u8_to_f32(
+VISP_API void image_u8_to_f32(
     image_view const& src,
     image_span const& dst,
     f32x4 offset = f32x4{0.f},
     f32x4 scale = f32x4{1.f},
     i32x2 tile_offset = {0, 0});
 
-image_data image_u8_to_f32(
+VISP_API image_data image_u8_to_f32(
     image_view const& src,
     image_format format,
     f32x4 offset = f32x4{0.f},
@@ -129,43 +129,44 @@ image_data image_u8_to_f32(
 
 // Convert float32 image to uint8 image
 // * applies computation `dst = src * scale + offset` to every channel/pixel
-void image_f32_to_u8(
+VISP_API void image_f32_to_u8(
     image_view const& src, image_span const& dst, float scale = 1, float offset = 0);
 
-image_data image_f32_to_u8(image_view const& src, image_format, float scale = 1, float offset = 0);
+VISP_API image_data image_f32_to_u8(
+    image_view const& src, image_format, float scale = 1, float offset = 0);
 
 // Converts an RGB/RGBA image to an alpha mask by keeping only the first channel (red)
-void image_to_mask(image_view const& src, image_span const& dst);
-image_data image_to_mask(image_view const& src);
+VISP_API void image_to_mask(image_view const& src, image_span const& dst);
+VISP_API image_data image_to_mask(image_view const& src);
 
 // Resize image to target size
-void image_resize(image_view const&, i32x2 target, image_span const& dst);
-image_data image_resize(image_view const&, i32x2 target);
+VISP_API void image_resize(image_view const&, i32x2 target, image_span const& dst);
+VISP_API image_data image_resize(image_view const&, i32x2 target);
 
 // Box filter with kernel size `2*radius + 1`
-void image_blur(image_view const& src, image_span const& dst, int radius);
+VISP_API void image_blur(image_view const& src, image_span const& dst, int radius);
 
 // Try to separate foreground and background contribution from pixels at the mask border
 // * `img` must be a 4-channel image (RGBA), the alpha channel is not used
 // * `mask` must be a single-channel image (alpha mask)
 // * result is a 4-channel image with extracted foreground as RGB and alpha set to `mask`
-image_data image_estimate_foreground(
+VISP_API image_data image_estimate_foreground(
     image_view const& img, image_view const& mask, int radius = 30);
 
 // Composite foreground and background images using alpha mask: `dst = fg * alpha + bg * (1-alpha)`
-void image_alpha_composite(
+VISP_API void image_alpha_composite(
     image_view const& fg, image_view const& bg, image_view const& mask, image_span const& dst);
 
-image_data image_alpha_composite(
+VISP_API image_data image_alpha_composite(
     image_view const& fg, image_view const& bg, image_view const& mask);
 
 // Compute root-mean-square difference between two images
-float image_difference_rms(image_view const& a, image_view const& b);
+VISP_API float image_difference_rms(image_view const& a, image_view const& b);
 
 //
 // Image tiling - helpers for processing large images in tiles
 
-struct tile_layout {
+struct VISP_API tile_layout {
     i32x2 image_extent;
     i32x2 overlap;
     i32x2 n_tiles;
@@ -184,10 +185,10 @@ struct tile_layout {
 };
 
 // Returns layout with same number of tiles within a larger image
-tile_layout tile_scale(tile_layout const&, int scale);
+VISP_API tile_layout tile_scale(tile_layout const&, int scale);
 
 // Merge a tile into the destination image. Both images must be rgb_f32 format.
-void tile_merge(
+VISP_API void tile_merge(
     image_view const& tile, image_span const& dst, i32x2 tile_coord, tile_layout const& layout);
 
 } // namespace visp

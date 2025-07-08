@@ -613,7 +613,7 @@ tensor sam_encode_image(model_ref m, tensor image, sam_params const&) {
     return sam::tiny_vit(m["enc"], image, sam::tiny_vit_params{});
 }
 
-sam_prediction sam_predict(model_ref m, tensor image_embed, tensor prompt_embed) {
+sam_prediction sam_predict_mask(model_ref m, tensor image_embed, tensor prompt_embed) {
     tensor dense_prompt = sam::no_mask_embed(m["prompt_encoder"]);
     auto [masks, iou] = sam::predict_masks(m["dec"], image_embed, prompt_embed, dense_prompt);
 
