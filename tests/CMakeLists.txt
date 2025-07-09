@@ -25,6 +25,8 @@ target_compile_options(visioncpp PRIVATE ${VISP_WARNINGS})
 target_link_libraries(test-models PRIVATE visioncpp)
 add_test(NAME models COMMAND test-models)
 
+include(reference-images.cmake)
+
 #
 # Workbench library for Python tests
 
@@ -33,11 +35,3 @@ target_include_directories(vision-workbench PRIVATE ../src)
 target_link_libraries(vision-workbench PRIVATE 
   visioncpp ggml
 )
-
-# Benchmark application for profiling
-
-# add_executable(vision-prof benchmark.cpp)
-# target_include_directories(vision-prof PRIVATE ../src)
-# target_link_libraries(vision-prof PRIVATE 
-#   visioncpp ggml
-# )

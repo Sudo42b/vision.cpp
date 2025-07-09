@@ -3,7 +3,9 @@ install
 .vscode
 .vtune
 .debug
+.env
 tests/results
+tests/reference
 *.pt
 *.pth
 *.bin
