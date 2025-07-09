@@ -5,34 +5,37 @@ Computer Vision ML inference in C++
 * Self-contained C++ library
 * Efficient inference on consumer CPU and GPUs
 * Lightweight deployment on many platforms (Windows, Linux,)
-* Simple modular design for experimentation and extension
+* Modular design for experimentation and extension
 
-Follows the spirit of the popular [llama.cpp]() project and is based on the same [infrastructure]().
+Inspired by the [llama.cpp]() project and based on the same [infrastructure]().
+
+> [!NOTE]
+> The API is not considered stable at the moment and may change without notice.
 
 ### Features
 
-| Model         | Task             | Backends    |
-| :------------ | :--------------- | :---------- |
-| [MobileSAM]() | Segmentation     | CPU, Vulkan |
-| [BiRefNet]()  | Segmentation     | CPU, Vulkan |
-| [MI-GAN]()    | Inpainting       | CPU, Vulkan |
-| [ESRGAN]()    | Super-resolution | CPU, Vulkan |
+| Model                                        | Task             | Backends    |
+| :------------------------------------------- | :--------------- | :---------- |
+| [**MobileSAM**](#segment-anything-model-sam) | Segmentation     | CPU, Vulkan |
+| [**BiRefNet**](#birefnet)                    | Segmentation     | CPU, Vulkan |
+| [**MI-GAN**](#mi-gan)                        | Inpainting       | CPU, Vulkan |
+| [**ESRGAN**](#esrgan)                        | Super-resolution | CPU, Vulkan |
 
 ## Get Started
 
-See [Building]() to build from source.
+See [Building](#building) to build from source. Binaries can be found in `build/bin` afterwards.
 
 ### Example: Select an object in an image
 
 Let's use MobileSAM to generate a segmentation mask for the <object>
 at pixel position (320, 240).
 
-First, download the model from [huggingface]().
+You can download the required model from huggingface: [MobileSAM-F16.gguf]().
 
 #### CLI
 
-```
-vision-cli -m MobileSAM-F16.gguf -i input.png -p "[320, 240]" -o mask.png
+```sh
+vision-cli -m MobileSAM-F16.gguf -i input.png -p 320 240 -o mask.png
 ```
 
 #### API
@@ -42,52 +45,86 @@ vision-cli -m MobileSAM-F16.gguf -i input.png -p "[320, 240]" -o mask.png
 using namespace visp;
 
 void main() {
-  backend cpu     = init_backend(backend_type::cpu);
-  sam_model model = load_sam_model(cpu, "MobileSAM-F16.gguf");
+  backend   cpu = backend_init(backend_type::cpu);
+  sam_model sam = sam_load_model("MobileSAM-F16.gguf", cpu);
   
-  image_data input     = load_image("input.png");
-  sam_embedding embeds = embed(cpu, model, input);
-  image_data mask      = predict(cpu, model, embeds, point{320, 240});
-  save_image(mask, "mask.png");
+  image_data input_image = image_load("input.png");
+  sam_encode(sam, input_image, cpu);
+
+  image_data object_mask = sam_compute(sam, {320, 240}, cpu);
+  image_save(object_mask, "mask.png");
 }
 ```
-There is also a low-level API with a high degree of flexibility and control over
-allocations and performance.
-
-> ![WARNING]
-> The API is not considered stable at the moment and may change without notice.
+This shows the high-level API. Internally it is composed of multiple smaller
+functions that handle model loading, pre-processing inputs, transferring
+data to backend devices, post-processing output, etc. 
+These can be used as building blocks for flexible pipelines which integrate
+with your existing data sources and infrastructure.
 
 #### UI
 
 
 ## Models
 
+### Segment Anything Model (SAM)
+
+```sh
+vision-cli sam -m models/MobileSAM.gguf -i input.png -p 300 200 -o mask.png --composite comp.png
+```
+
+### BiRefNet
+
+```sh
+vision-cli birefnet -m models/BiRefNet_lite-F16.gguf -i input.png -o mask.png --composite comp.png
+```
+
+### MI-GAN
+
+```sh
+vision-cli migan -m models/migan_places2_512-F16.gguf -i image.png mask.png -o output.png
+```
+
+### ESRGAN
+
+```sh
+vision-cli esrgan -m models/4x_foolhardy_Remacrih-F16.gguf -i input.png -o output.png
+```
 
 
 ### Converting models
 
+Models need to be converted to GGUF before they can be used. This can also
+rearrange or precompute tensors for more optimal inference.
+
+To convert eg. an ESRGAN model, install [uv](https://docs.astral.sh/uv/) and run:
+```sh
+uv run scripts/convert.py esrgan 4x_NMKD-Superscale-SP_178000_G.pth -q f16
+```
+This will create `models/4x_NMKD-Superscale-SP_178000_G-F16.gguf`.
+
+See `convert.py --help` for more options.
 
 ## Building
 
 Building requires CMake and a compiler with C++20 support.
 
 **Get the sources**
-```
+```sh
 git clone --recursive
 cd vision.cpp
 ```
 
 **Configure and build**
-```
+```sh
 cmake . -B build
 cmake --build build --config Release
 ```
 
 ### Vulkan
 
-Vulkan GPU support requires the [Vulkan SDK]() to be installed.
+Vulkan GPU support requires the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) to be installed.
 
-```
+```sh
 cmake . -B build -DVISP_VULKAN=ON
 cmake --build build --config Release
 ```
@@ -95,12 +132,12 @@ cmake --build build --config Release
 ### Tests
 
 Run all tests with the following command:
-```
+```sh
 ctest build -C Release
 ```
 
-Some tests require a Python environment. It can be set up with [uv]():
-```
+Some tests require a Python environment. It can be set up with [uv](https://docs.astral.sh/uv/):
+```sh
 # Setup venv and install dependencies
 uv sync
 
