@@ -308,7 +308,7 @@ void run_sam(cli_args const& args) {
     tensor prompt_embed = prompt.is_point() ? sam_encode_points(m, point_tensor)
                                             : sam_encode_box(m, point_tensor);
 
-    sam_prediction output = sam_predict(m, image_embed, prompt_embed);
+    sam_prediction output = sam_predict_mask(m, image_embed, prompt_embed);
 
     compute_graph_allocate(graph, backend);
     transfer_to_backend(image_tensor, image_data_);
