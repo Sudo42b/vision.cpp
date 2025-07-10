@@ -577,7 +577,7 @@ image_data sam_process_mask(
     std::span<float const> mask_data, int mask_index, i32x2 target_extent, sam_params const& p) {
 
     mask_data = mask_data.subspan(mask_index * sqr(p.mask_size));
-    ASSERT(mask_data.size() >= sqr(p.mask_size));
+    ASSERT(int(mask_data.size()) >= sqr(p.mask_size));
 
     float scale = sam::resize_longest_side(target_extent, p.image_size);
     i32x2 scaled_extent = sam::scale_extent(target_extent, scale);

@@ -51,6 +51,8 @@ struct VISP_API model_weights {
     std::vector<ggml_backend_buffer_ptr> extra_buffers;
 
     ggml_type float_type() const;
+
+    operator ggml_context*() const { return context.get(); }
 };
 
 // Creates a GGML context with storage for a fixed number of tensors.
@@ -77,7 +79,7 @@ struct compute_graph {
     ggml_cgraph* graph = nullptr;
     ggml_gallocr_ptr allocr;
 
-    explicit operator bool() const { return context && graph; }
+    operator ggml_cgraph*() const { return graph; }
 };
 
 // Initializes a compute graph and associated backend allocator.

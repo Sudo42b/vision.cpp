@@ -190,7 +190,7 @@ compute_graph compute_graph_init(size_t size) {
     ggml_context* ctx = ggml_init(graph_ctx_params);
     ggml_context_ptr ctx_ptr(ctx);
     ggml_cgraph* graph = ggml_new_graph_custom(ctx, size, false);
-    return compute_graph{std::move(ctx_ptr), graph};
+    return compute_graph{std::move(ctx_ptr), graph, nullptr};
 }
 
 bool compute_graph_allocate(compute_graph& g, backend const& backend) {
@@ -232,8 +232,8 @@ model_ref::model_ref(
     : weights_context(weights_context),
       graph_context(graph_context ? graph_context : weights_context),
       graph(graph),
-      prefix(prefix),
-      backend(backend) {}
+      backend(backend),
+      prefix(prefix) {}
 
 tensor model_ref::find(char const* name) const {
     auto full_name = tensor_name();
@@ -304,7 +304,7 @@ tensor_data tensor_load(tensor x, char const* filepath) {
     if (!file) {
         throw std::runtime_error(std::format("Failed to open file: {}", filepath));
     }
-    tensor_data result{x};
+    tensor_data result = tensor_alloc(x);
     size_t read = fread(result.data.get(), 1, ggml_nbytes(x), file);
     fclose(file);
     if (read != ggml_nbytes(x)) {
@@ -400,7 +400,7 @@ tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim)
         return ggml_concat_n(m, src.data(), n, dim);
     } else {
         tensor x = src[0];
-        for (size_t i = 1; i < n; ++i) {
+        for (int i = 1; i < n; ++i) {
             x = ggml_concat(m, x, src[i], dim);
         }
         return x;

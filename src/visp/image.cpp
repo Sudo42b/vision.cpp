@@ -81,17 +81,17 @@ image_view::image_view(i32x2 extent, image_format format, float const* data)
 
 image_view::image_view(i32x2 extent, span<float const> data)
     : image_view(extent, image_format::alpha_f32, data.data()) {
-    ASSERT(data.size() >= n_pixels(*this));
+    ASSERT(data.size() >= size_t(n_pixels(*this)));
 }
 
 image_view::image_view(i32x2 extent, span<f32x3 const> data)
     : image_view(extent, image_format::rgb_f32, &data[0][0]) {
-    ASSERT(data.size() >= n_pixels(*this));
+    ASSERT(data.size() >= size_t(n_pixels(*this)));
 }
 
 image_view::image_view(i32x2 extent, span<f32x4 const> data)
     : image_view(extent, image_format::rgba_f32, &data[0][0]) {
-    ASSERT(data.size() >= n_pixels(*this));
+    ASSERT(data.size() >= size_t(n_pixels(*this)));
 }
 
 image_view::image_view(image_data const& img)
@@ -138,17 +138,17 @@ image_span::image_span(i32x2 extent, image_format format, float* data)
 
 image_span::image_span(i32x2 extent, span<float> data)
     : image_span(extent, image_format::alpha_f32, data.data()) {
-    ASSERT(data.size() >= n_pixels(*this));
+    ASSERT(data.size() >= size_t(n_pixels(*this)));
 }
 
 image_span::image_span(i32x2 extent, span<f32x3> data)
     : image_span(extent, image_format::rgb_f32, &data[0][0]) {
-    ASSERT(data.size() >= n_pixels(*this));
+    ASSERT(data.size() >= size_t(n_pixels(*this)));
 }
 
 image_span::image_span(i32x2 extent, span<f32x4> data)
     : image_span(extent, image_format::rgba_f32, &data[0][0]) {
-    ASSERT(data.size() >= n_pixels(*this));
+    ASSERT(data.size() >= size_t(n_pixels(*this)));
 }
 
 span<uint8_t> image_span::as_bytes() const {

@@ -2,8 +2,6 @@
 #include "util/math.hpp"
 #include "util/string.hpp"
 
-#pragma optimize("", off)
-
 namespace visp {
 
 //

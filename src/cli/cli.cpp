@@ -3,6 +3,7 @@
 #include "visp/vision.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
