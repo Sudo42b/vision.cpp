@@ -4,6 +4,7 @@ install
 .vtune
 .debug
 .env
+.install
 tests/results
 tests/reference
 *.pt

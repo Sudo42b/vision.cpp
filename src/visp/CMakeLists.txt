@@ -10,6 +10,7 @@ target_sources(visioncpp PRIVATE
   nn.cpp
   vision.cpp
 )
+target_compile_features(visioncpp PUBLIC cxx_std_20)
 target_compile_definitions(visioncpp PRIVATE VISP_API_EXPORT ${VISP_ASSERT})
 target_compile_options(visioncpp PRIVATE ${VISP_WARNINGS})
 target_include_directories(visioncpp PUBLIC

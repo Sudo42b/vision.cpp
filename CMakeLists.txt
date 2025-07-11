@@ -8,11 +8,6 @@ option(VISP_CI "Enable for continuous integration environment" OFF)
 option(VISP_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
 option(VISP_ASAN "Enable AddressSanitizer" OFF)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_INSTALL_RPATH $ORIGIN)
-
 if(PROJECT_IS_TOP_LEVEL)
   set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -22,7 +17,8 @@ endif()
 
 if(VISP_DEV OR ${CMAKE_BUILD_TYPE} STREQUAL "Debug")
   set(VISP_ASSERT "VISP_ASSERT_BREAK")
-else()
+endif()
+if(${CMAKE_BUILD_TYPE} STREQUAL "Release")
   set(VISP_ASSERT "VISP_ASSERT_DISABLE")
 endif()
 
@@ -64,25 +60,37 @@ if(VISP_TESTS)
   add_subdirectory(tests)
 endif()
 
-# install(TARGETS visioncpp
-#   EXPORT visioncppTargets
-#   RUNTIME DESTINATION bin
-#   LIBRARY DESTINATION lib
-#   ARCHIVE DESTINATION lib)
-# install(DIRECTORY src/include/ DESTINATION include)
-# install(FILES README.md LICENSE DESTINATION .)
+install(TARGETS visioncpp
+  RUNTIME DESTINATION bin
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include)
+if(PROJECT_IS_TOP_LEVEL)
+  install(FILES README.md LICENSE DESTINATION .)
+endif()
 
-# include(CMakePackageConfigHelpers)
-# write_basic_package_version_file(
-#   visioncppConfigVersion.cmake
-#   VERSION ${PACKAGE_VERSION}
-#   COMPATIBILITY AnyNewerVersion
-# )
-# install(EXPORT visioncppTargets
-#   FILE visioncppConfig.cmake
-#   CONFIGURATIONS Release
-#   DESTINATION lib/cmake/visioncpp
-# )
+include(CMakePackageConfigHelpers)
+
+set(VISP_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header files")
+set(VISP_LIB_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR} CACHE PATH "Location of library files")
+set(VISP_BIN_INSTALL_DIR ${CMAKE_INSTALL_BINDIR} CACHE PATH "Location of binary files")
+
+configure_package_config_file(
+  scripts/cmake/visioncpp-config.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-config.cmake
+  INSTALL_DESTINATION lib/cmake/visioncpp
+  PATH_VARS VISP_INCLUDE_INSTALL_DIR VISP_LIB_INSTALL_DIR VISP_BIN_INSTALL_DIR
+)
+write_basic_package_version_file(
+  visioncpp-version.cmake
+  VERSION ${PACKAGE_VERSION}
+  COMPATIBILITY AnyNewerVersion
+)
+install(
+  FILES ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-config.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-version.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/visioncpp
+)
 
 # if(WIN32)
 #   set(CPACK_GENERATOR "ZIP")
