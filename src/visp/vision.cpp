@@ -39,6 +39,8 @@ image_data sam_compute_impl(sam_model& model, i32x2 point1, i32x2 point2, backen
     bool is_point = point2 == i32x2{-1, -1};
 
     if (!model.decoder || model.is_point_prompt != is_point) {
+        model.is_point_prompt = is_point;
+
         model.decoder = compute_graph_init();
         model_ref m(model.weights, model.decoder);
         model.input_embed = compute_graph_input(m, GGML_TYPE_F32, {256, 64, 64, 1});
@@ -46,6 +48,7 @@ image_data sam_compute_impl(sam_model& model, i32x2 point1, i32x2 point2, backen
         tensor prompt_embed = is_point ? sam_encode_points(m, model.input_prompt)
                                        : sam_encode_box(m, model.input_prompt);
         model.output = sam_predict_mask(m, model.input_embed, prompt_embed);
+        
         compute_graph_allocate(model.decoder, b);
     }
     f32x4 prompt_data = is_point

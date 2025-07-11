@@ -21,33 +21,27 @@ void compare_images(std::string_view name, image_view result, float tolerance = 
     CHECK_IMAGES_EQUAL(result, reference);
 }
 
-void test_mobile_sam(backend_type bt, bool use_point_prompt) {
+void test_mobile_sam(backend_type bt) {
     path model_path = test_dir().models / "mobile_sam.gguf";
     path input_path = test_dir().input / "cat-and-hat.jpg";
-    std::string name = "mobile_sam";
-    name += use_point_prompt ? "-point" : "-box";
-    name += bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
 
     backend b = backend_init(bt);
     sam_model model = sam_load_model(model_path.string().c_str(), b);
     image_data input = image_load(input_path.string().c_str());
     sam_encode(model, input, b);
-    image_data mask = use_point_prompt ? sam_compute(model, i32x2{200, 300}, b)
-                                       : sam_compute(model, image_rect{{180, 110}, {505, 330}}, b);
-    compare_images(name, mask);
+    image_data mask_box = sam_compute(model, image_rect{{180, 110}, {505, 330}}, b);
+    image_data mask_point =  sam_compute(model, i32x2{200, 300}, b);
+
+    char const* suffix = bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
+    compare_images(std::format("mobile_sam-box{}", suffix), mask_box);
+    compare_images(std::format("mobile_sam-point{}", suffix), mask_point);
 }
 
-TEST_CASE(test_mobile_sam_point_cpu) {
-    test_mobile_sam(backend_type::cpu, true);
+TEST_CASE(test_mobile_sam_cpu) {
+    test_mobile_sam(backend_type::cpu);
 }
-TEST_CASE(test_mobile_sam_box_cpu) {
-    test_mobile_sam(backend_type::cpu, false);
-}
-TEST_CASE(test_mobile_sam_point_gpu) {
-    test_mobile_sam(backend_type::gpu, true);
-}
-TEST_CASE(test_mobile_sam_box_gpu) {
-    test_mobile_sam(backend_type::gpu, false);
+TEST_CASE(test_mobile_sam_gpu) {
+    test_mobile_sam(backend_type::gpu);
 }
 
 void test_birefnet(backend_type bt) {
