@@ -71,6 +71,9 @@ template <typename T> struct scalar_type_impl          { using type = typename T
 template <>           struct scalar_type_impl<float>   { using type = float; };
 template <>           struct scalar_type_impl<uint8_t> { using type = uint8_t; };
 template <typename T> using scalar_type = typename scalar_type_impl<T>::type;
+
+constexpr uint8_t one(uint8_t) { return 255; }
+constexpr float one(float) { return 1.0f; }
 // clang-format on
 
 //

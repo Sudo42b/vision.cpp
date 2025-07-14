@@ -149,6 +149,9 @@ VISP_API image_data image_resize(image_view const&, i32x2 target);
 // Box filter with kernel size `2*radius + 1`
 VISP_API void image_blur(image_view const& src, image_span const& dst, int radius);
 
+// Erosion filter for masks (minimum value in square neighborhood)
+VISP_API void image_erosion(image_view const& src, image_span const& dst, int radius);
+
 // Try to separate foreground and background contribution from pixels at the mask border
 // * `img` must be a 4-channel image (RGBA), the alpha channel is not used
 // * `mask` must be a single-channel image (alpha mask)

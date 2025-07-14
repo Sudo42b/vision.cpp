@@ -500,6 +500,34 @@ image_data image_alpha_composite(image_view const& fg, image_view const& bg, ima
 }
 
 template <typename T>
+void erosion(image_source<T> src, image_target<T> dst, int radius) {
+    for (int y = 0; y < src.extent[1]; ++y) {
+        for (int x = 0; x < src.extent[0]; ++x) {
+            T val = one(T{});
+            for (int dy = -radius; dy <= radius; ++dy) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    int nx = clamp(x + dx, 0, src.extent[0] - 1);
+                    int ny = clamp(y + dy, 0, src.extent[1] - 1);
+                    int i = ny * src.extent[0] + nx;
+                    val = std::min(val, src[i]);
+                }
+            }
+            dst[y * src.extent[0] + x] = val;
+        }
+    }
+}
+
+void image_erosion(image_view const& src, image_span const& dst, int radius) {
+    ASSERT(src.extent == dst.extent);
+    ASSERT(radius > 0);
+    switch (src.format) {
+        case image_format::alpha_u8: erosion<uint8_t>(src, dst, radius); break;
+        case image_format::alpha_f32: erosion<float>(src, dst, radius); break;
+        default: ASSERT(false, "erosion operation only supports single channel alpha formats");
+    }
+}
+
+template <typename T>
 float difference_rms(image_source<T> a, image_source<T> b) {
     float sum_sq_diff = 0.0f;
     size_t n = n_pixels(a);
