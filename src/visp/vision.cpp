@@ -132,7 +132,7 @@ migan_model migan_load_model(char const* filepath, backend const& b) {
     model.output = migan_generate(m, model.input, model.params);
     compute_graph_allocate(model.graph, b);
 
-    return model;    
+    return model;
 }
 
 image_data migan_compute(migan_model& model, image_view image, image_view mask, backend const& b) {
@@ -142,7 +142,9 @@ image_data migan_compute(migan_model& model, image_view image, image_view mask, 
     compute(model.graph, b);
 
     tensor_data output_data = transfer_from_backend(model.output);
-    return migan_process_output(output_data.as_f32(), image.extent, model.params);
+    image_data output = migan_process_output(output_data.as_f32(), image.extent, model.params);
+    image_set_alpha(output, mask);
+    return output;
 }
 
 //

@@ -302,6 +302,19 @@ image_data image_to_mask(image_view const& src) {
     return dst;
 }
 
+void image_set_alpha(image_span const& img, image_view const& alpha) {
+    ASSERT(img.extent == alpha.extent);
+    ASSERT(img.format == image_format::rgba_u8 && alpha.format == image_format::alpha_u8);
+
+    int n = n_pixels(img);
+    image_source<uint8_t> src(alpha);
+    image_target<u8x4> dst(img);
+
+    for (int i = 0; i < n; ++i) {
+        dst[i][3] = src[i];
+    }
+}
+
 //
 // image algorithms
 

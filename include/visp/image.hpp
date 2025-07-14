@@ -139,6 +139,9 @@ VISP_API image_data image_f32_to_u8(
 VISP_API void image_to_mask(image_view const& src, image_span const& dst);
 VISP_API image_data image_to_mask(image_view const& src);
 
+// Write values in `alpha` to the 4th channel of `img`.
+VISP_API void image_set_alpha(image_span const& img, image_view const& alpha);
+
 // Resize image to target size
 VISP_API void image_resize(image_view const&, i32x2 target, image_span const& dst);
 VISP_API image_data image_resize(image_view const&, i32x2 target);
