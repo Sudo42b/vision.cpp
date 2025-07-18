@@ -52,7 +52,7 @@ VISP_API void backend_set_n_threads(backend&, int n_threads);
 
 struct VISP_API model_weights {
     ggml_context_ptr context;
-    backend_type backend_type = backend_type::cpu;
+    backend_type buffer_type = backend_type::cpu;
     ggml_backend_buffer_ptr weights_buffer;
     std::vector<ggml_backend_buffer_ptr> extra_buffers;
 
@@ -105,11 +105,23 @@ VISP_API void compute(compute_graph const&, backend const&);
 //   to support nested modules
 // * pass anywhere ggml_context* is expected while building the graph
 
+enum class model_build_flag {
+    // clang-format off
+    cwhn                = 1 << 0,
+    conv_2d_direct      = 1 << 1,
+    fused_batch_norm    = 1 << 2,
+    concat_n            = 1 << 3,
+    f16_conv_transpose  = 1 << 4,
+    window_partition    = 1 << 5
+}; // clang-format on
+
+using model_build_flags = flags<model_build_flag>;
+
 struct VISP_API model_ref {
     ggml_context* weights_context = nullptr;
     ggml_context* graph_context = nullptr;
     ggml_cgraph* graph = nullptr;
-    backend_type backend = backend_type::cpu;
+    model_build_flags flags;
     tensor_name prefix;
 
     model_ref() = default;
@@ -120,8 +132,8 @@ struct VISP_API model_ref {
         ggml_context* weights_context,
         ggml_context* graph_context = nullptr,
         ggml_cgraph* graph = nullptr,
-        tensor_name prefix = {},
-        backend_type backend = backend_type::cpu);
+        model_build_flags flags = {},
+        tensor_name prefix = {});
 
     // Find weights tensor by name, prepends the current prefix.
     tensor find(char const* name) const;    // returns null if not found
@@ -234,5 +246,12 @@ struct swin_params {
 extern swin_params const swin_t_params;
 extern swin_params const swin_l_params;
 VISP_API swin_params swin_detect_params(model_ref);
+
+//
+// implementation
+
+constexpr model_build_flags operator|(model_build_flag lhs, model_build_flag rhs) {
+    return model_build_flags(uint32_t(lhs) | uint32_t(rhs));
+}
 
 } // namespace visp

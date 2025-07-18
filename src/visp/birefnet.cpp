@@ -294,9 +294,9 @@ tensor upscale_to_whcn(model_ref m, tensor x, tensor target) {
 }
 
 tensor upscale_to(model_ref m, tensor x, tensor target) {
-    x = ggml_permute(m, x, 2, 0, 1, 3); // cwhn -> whcn
+    x = permute_cwhn_to_whcn(m, x);
     x = interpolate(m, x, {target->ne[1], target->ne[2]}, bilinear_align_corners);
-    x = ggml_permute(m, x, 1, 2, 0, 3); // whcn -> cwhn
+    x = permute_whcn_to_cwhn(m, x);
     return ggml_cont(m, x);
 }
 
@@ -305,9 +305,9 @@ tensor downscale_by_whcn(model_ref m, tensor x, int f) {
 }
 
 tensor downscale_by(model_ref m, tensor x, int f) {
-    x = ggml_permute(m, x, 2, 0, 1, 3); // cwhn -> whcn
+    x = permute_cwhn_to_whcn(m, x);
     x = downscale_by_whcn(m, x, f);
-    x = ggml_permute(m, x, 1, 2, 0, 3); // whcn -> cwhn
+    x = permute_whcn_to_cwhn(m, x);
     return ggml_cont(m, x);
 }
 
@@ -395,9 +395,9 @@ tensor aspp_deformable(model_ref m, tensor x) {
         x_deforms[i] = aspp_module_deformable(aspp_deforms[i], x, padding);
     }
     tensor x5 = global_avg_pool(m["global_avg_pool"], x);
-    x5 = ggml_permute(m, x5, 2, 0, 1, 3); // cwhn -> whcn
+    x5 = permute_cwhn_to_whcn(m, x5);
     x5 = interpolate(m, x5, {x1->ne[1], x1->ne[2]}, bilinear_align_corners);
-    x5 = ggml_cont(m, ggml_permute(m, x5, 1, 2, 0, 3)); // whcn -> cwhn
+    x5 = ggml_cont(m, permute_whcn_to_cwhn(m, x5));
     x = concat(m, {x1, x_deforms[0], x_deforms[1], x_deforms[2], x5}, 0);
 
     x = conv_2d(m["conv1"], x);

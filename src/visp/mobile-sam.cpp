@@ -15,7 +15,7 @@ namespace sam {
 tensor window_partition(model_ref m, tensor x, int window) {
     int64_t c = x->ne[0];
     int64_t b = x->ne[3];
-    if (m.backend == backend_type::cpu) {
+    if (m.flags & model_build_flag::window_partition) {
         x = ggml_win_part(m, x, window);
         x = ggml_reshape_3d(m, x, c, window * window, x->ne[3]);
         return x;
@@ -37,7 +37,7 @@ tensor window_partition(model_ref m, tensor x, int window) {
 tensor window_reverse(model_ref m, tensor x, int w, int h, int window) {
     int64_t c = x->ne[0];
     int64_t b = x->ne[3];
-    if (m.backend == backend_type::cpu) {
+    if (m.flags & model_build_flag::window_partition) {
         x = ggml_reshape_4d(m, x, c, window, window, x->ne[2]);
         x = ggml_win_unpart(m, x, w, h, window);
         return x;

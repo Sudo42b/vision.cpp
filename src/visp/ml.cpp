@@ -196,7 +196,7 @@ model_weights model_load(char const* filepath, backend const& backend, model_loa
 }
 
 bool model_allocate(model_weights& m, backend const& b) {
-    ASSERT(m.backend_type == b.type(), "Model weights must all be on the same backend");
+    ASSERT(m.buffer_type == b.type(), "Model weights must all be on the same backend");
 
     ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(m.context.get(), b.handle.get()));
     if (!buffer) {
@@ -247,28 +247,38 @@ void compute(compute_graph const& g, backend const& b) {
 //
 // model_ref
 
+model_build_flags default_backend_flags(backend_type type) {
+    using enum model_build_flag;
+    switch (type) {
+        case backend_type::cpu:
+            return cwhn | conv_2d_direct | fused_batch_norm | f16_conv_transpose | window_partition;
+        case backend_type::gpu: return cwhn;
+    }
+    return {};
+}
+
 model_ref::model_ref(model_weights& m)
     : weights_context(m.context.get()),
       graph_context(m.context.get()),
       graph(nullptr),
-      backend(m.backend_type) {}
+      flags(default_backend_flags(m.buffer_type)) {}
 
 model_ref::model_ref(model_weights& m, compute_graph& g)
     : weights_context(m.context.get()),
       graph_context(g.context.get()),
       graph(g.graph),
-      backend(m.backend_type) {}
+      flags(default_backend_flags(m.buffer_type)) {}
 
 model_ref::model_ref(
     ggml_context* weights_context,
     ggml_context* graph_context,
     ggml_cgraph* graph,
-    tensor_name prefix,
-    backend_type backend)
+    model_build_flags flags,
+    tensor_name prefix)
     : weights_context(weights_context),
       graph_context(graph_context ? graph_context : weights_context),
       graph(graph),
-      backend(backend),
+      flags(flags),
       prefix(prefix) {}
 
 tensor model_ref::find(char const* name) const {
@@ -287,7 +297,7 @@ tensor model_ref::weights(char const* name) const {
 }
 
 model_ref model_ref::with_prefix(tensor_name new_prefix) const {
-    return model_ref{weights_context, graph_context, graph, new_prefix, backend};
+    return model_ref{weights_context, graph_context, graph, flags, new_prefix};
 }
 
 template <typename Stringable>
@@ -432,7 +442,7 @@ tensor slice(model_ref const& m, tensor x, slice_t s0, slice_t s1, slice_t s2, s
 
 tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim) {
     int n = (int)std::count_if(src.begin(), src.end(), [](tensor t) { return t != nullptr; });
-    if (m.backend == backend_type::cpu) {
+    if (m.flags & model_build_flag::concat_n) {
         return ggml_concat_n(m, src.data(), n, dim);
     } else {
         tensor x = src[0];
