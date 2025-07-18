@@ -144,7 +144,7 @@ tensor attention_rel_bias(model_ref m, tensor x, int dim, int num_heads) {
     v = ggml_cont(m, ggml_permute(m, v, 1, 2, 0, 3)); // transpose for mul_mat later
 
     tensor attn = ggml_mul_mat(m, k, q); // q @ k (k is transposed in mul_mat)
-    attn = ggml_scale_inplace(m, attn, 1.0f / std::sqrtf(float(key_dim)));
+    attn = ggml_scale_inplace(m, attn, 1.0f / std::sqrt(float(key_dim)));
     attn = ggml_add_inplace(m, attn, m.weights("attention_biases_indexed"));
     attn = ggml_soft_max(m, attn);
 
@@ -330,7 +330,7 @@ tensor attention(model_ref m, tensor q, tensor k, tensor v, int num_heads) {
     v = ggml_cont(m, ggml_permute(m, v, 1, 2, 0, 3)); // already transposed for mul_mat
 
     tensor attn = ggml_mul_mat(m, k, q);
-    attn = ggml_scale_inplace(m, attn, 1.0f / std::sqrtf(float(q->ne[0])));
+    attn = ggml_scale_inplace(m, attn, 1.0f / std::sqrt(float(q->ne[0])));
     attn = ggml_soft_max(m, attn);
 
     tensor out = ggml_mul_mat(m, v, attn);

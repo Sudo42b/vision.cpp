@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <span>
 #include <vector>

@@ -82,7 +82,7 @@ tensor window_attention(model_ref m, tensor x, tensor mask, int num_heads, int w
     tensor k = split(qkv, 1);
     tensor v = split(qkv, 2, true);
 
-    q = ggml_scale_inplace(m, q, 1.0f / std::sqrtf(float(c / num_heads)));
+    q = ggml_scale_inplace(m, q, 1.0f / std::sqrt(float(c / num_heads)));
 
     tensor attn = ggml_mul_mat(m, k, q);
 

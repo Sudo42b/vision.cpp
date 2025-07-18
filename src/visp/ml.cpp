@@ -39,7 +39,9 @@ bool backend_is_available(backend_type type) {
 
 backend_device backend_init() {
     load_ggml_backends();
-    backend_device b{ggml_backend_ptr(ggml_backend_init_best())};
+    backend_device b;
+    b.handle.reset(ggml_backend_init_best());
+    b.device = ggml_backend_get_device(b.handle.get());
     ASSERT(b.handle, "Failed to initialize backend");
     return b;
 }

@@ -23,7 +23,7 @@ struct cli_args {
     std::vector<char const*> prompt;   // -p --prompt
     // int threads = -1; // -t --threads
     // bool verbose = false; // -v --verbose
-    std::optional<backend_type> backend_type; // -b --backend
+    std::optional<backend_type> bknd_type; // -b --backend
     // std::string_view device = 0; // -d --device
     // ggml_type float_type = GGML_TYPE_COUNT; // -f32 -f16
 
@@ -107,9 +107,9 @@ cli_args cli_parse(int argc, char** argv) {
         } else if (arg == "-b" || arg == "--backend") {
             std::string_view backend_arg = next_arg(argc, argv, i);
             if (backend_arg == "cpu") {
-                r.backend_type = backend_type::cpu;
+                r.bknd_type = backend_type::cpu;
             } else if (backend_arg == "gpu") {
-                r.backend_type = backend_type::gpu;
+                r.bknd_type = backend_type::gpu;
             } else {
                 throw error("Unknown backend type '{}', must be one of: cpu, gpu", backend_arg);
             }
@@ -181,8 +181,8 @@ backend_device backend_init(cli_args const& args) {
     printf("Initializing backend... ");
 
     backend_device b;
-    if (args.backend_type) {
-        b = backend_init(*args.backend_type);
+    if (args.bknd_type) {
+        b = backend_init(*args.bknd_type);
     } else {
         b = backend_init();
     }
