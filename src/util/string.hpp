@@ -3,8 +3,18 @@
 #include "visp/util.hpp"
 
 #include <cstdio>
-#include <format>
 #include <utility>
+
+#ifdef VISP_FMT_LIB
+#    include <fmt/format.h>
+#else
+#    include <format>
+namespace fmt {
+using std::format;
+using std::make_format_args;
+using std::vformat_to;
+} // namespace fmt
+#endif
 
 #define UNUSED(x) (void)(x)
 
@@ -18,6 +28,7 @@
 #endif
 
 namespace visp {
+using fmt::format;
 
 struct truncating_iterator {
     using iterator_category = std::output_iterator_tag;
@@ -41,7 +52,11 @@ struct truncating_iterator {
         }
         return *this;
     }
-    truncating_iterator& operator++(int) { return ++(*this); }
+    truncating_iterator operator++(int) {
+        truncating_iterator tmp = *this;
+        ++(*this);
+        return tmp;
+    }
     truncating_iterator& operator*() { return *this; }
     difference_type operator-(truncating_iterator const& other) const { return cur - other.cur; }
     auto operator<=>(truncating_iterator const&) const = default;
@@ -50,7 +65,7 @@ struct truncating_iterator {
 template <size_t N, typename... Args>
 char const* format(fixed_string<N>& dst, char const* fmt, Args&&... args) {
     auto it = truncating_iterator(dst.data, N);
-    auto out = std::vformat_to(it, fmt, std::make_format_args(args...));
+    auto out = fmt::vformat_to(it, fmt, fmt::make_format_args(args...));
     dst.data[N - 1] = 0;
     dst.length = std::min(size_t(out - it), N - 1);
     return dst.c_str();

@@ -247,7 +247,7 @@ tensor model_ref::weights(char const* name) const {
     if (tensor result = find(name)) {
         return result;
     }
-    throw std::runtime_error(std::format("tensor not found: {}.{}", prefix.view(), name));
+    throw error("tensor not found: {}.{}", prefix.view(), name);
 }
 
 model_ref model_ref::with_prefix(tensor_name new_prefix) const {
@@ -302,13 +302,13 @@ tensor_data tensor_alloc(tensor x) {
 tensor_data tensor_load(tensor x, char const* filepath) {
     FILE* file = fopen(filepath, "rb");
     if (!file) {
-        throw std::runtime_error(std::format("Failed to open file: {}", filepath));
+        throw error("Failed to open file: {}", filepath);
     }
     tensor_data result = tensor_alloc(x);
     size_t read = fread(result.data.get(), 1, ggml_nbytes(x), file);
     fclose(file);
     if (read != ggml_nbytes(x)) {
-        throw std::runtime_error(std::format("Failed to read data from file: {}", filepath));
+        throw error("Failed to read data from file: {}", filepath);
     }
     return result;
 }

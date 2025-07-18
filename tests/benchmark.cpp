@@ -167,7 +167,7 @@ void run_sam_ggml2(Path const& model_path, Path const& input_path, dlimg::Region
     auto time_mask_decode = std::chrono::steady_clock::now();
 
     int chosen_mask = 2;
-    auto filepath = std::format("{}_mask.png", output_path.string());
+    auto filepath = format("{}_mask.png", output_path.string());
     auto data = std::span(mask_data).subspan(chosen_mask * n * n, n * n);
     auto output_mask_img = sam::postprocess_mask(data, input_image.extent());
     Image::save(output_mask_img, filepath.c_str());

@@ -1,8 +1,7 @@
 #include "visp/vision.hpp"
+#include "util/string.hpp"
 
 #include "testing.hpp"
-
-#include <format>
 
 namespace visp {
 
@@ -14,7 +13,7 @@ void compare_images(std::string_view name, image_view result, float tolerance = 
     image_data reference = image_load(reference_path.string().c_str());
 
     test_set_info(
-        std::format(
+        format(
             "while comparing images {} and {}", relative(result_path).string(),
             relative(reference_path).string()));
     test_with_tolerance with(tolerance);
@@ -33,8 +32,8 @@ void test_mobile_sam(backend_type bt) {
     image_data mask_point =  sam_compute(model, i32x2{200, 300}, b);
 
     char const* suffix = bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
-    compare_images(std::format("mobile_sam-box{}", suffix), mask_box);
-    compare_images(std::format("mobile_sam-point{}", suffix), mask_point);
+    compare_images(format("mobile_sam-box{}", suffix), mask_box);
+    compare_images(format("mobile_sam-point{}", suffix), mask_point);
 }
 
 TEST_CASE(test_mobile_sam_cpu) {

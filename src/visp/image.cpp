@@ -118,7 +118,7 @@ int n_pixels(image_view const& img) {
 }
 
 size_t n_bytes(image_view const& img) {
-    return size_t(img.extent[1] * img.stride) * n_bytes(img.format);
+    return size_t(img.extent[1]) * img.stride;
 }
 
 //

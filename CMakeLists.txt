@@ -6,6 +6,7 @@ option(VISP_VULKAN "Enable Vulkan support" OFF)
 option(VISP_DEV "Enable development mode" OFF)
 option(VISP_CI "Enable for continuous integration environment" OFF)
 option(VISP_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+option(VISP_FMT_LIB "Use external fmt library instead of standard C++ <format>" OFF)
 option(VISP_ASAN "Enable AddressSanitizer" OFF)
 
 if(PROJECT_IS_TOP_LEVEL)
@@ -40,25 +41,39 @@ endif()
 
 if(VISP_DEV OR VISP_CI)
   if(MSVC)
-    set(VISP_WARNINGS /W4 /WX)
+    set(VISP_WARNINGS /W4 /WX /wd4251)
   else()
     set(VISP_WARNINGS -Wall -Wextra -Wpedantic -Werror)
   endif()
 endif()
 
+# Dependencies
+
 add_subdirectory(depend/stb)
+
+if(VISP_FMT_LIB)
+  add_subdirectory(depend/fmt)
+  set(VISP_FMT_LINK fmt::fmt)
+  set(VISP_FMT_DEFS VISP_FMT_LIB)
+endif()
 
 set(GGML_VULKAN ${VISP_VULKAN})
 set(GGML_LLAMAFILE ON)
 add_subdirectory(depend/ggml)
 
+# Vision.cpp libraries and executables
+
 add_subdirectory(src/visp)
 add_subdirectory(src/cli)
+
+# Tests
 
 if(VISP_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+# Installation and packaging
 
 install(TARGETS visioncpp
   RUNTIME DESTINATION bin
