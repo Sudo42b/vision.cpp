@@ -59,6 +59,13 @@ endif()
 
 set(GGML_VULKAN ${VISP_VULKAN})
 set(GGML_LLAMAFILE ON)
+if(VISP_CI)
+  set(GGML_NATIVE OFF)
+  set(GGML_BACKEND_DL ON)
+  foreach (feat SSE42 AVX AVX2 F16C BMI2 FMA) # ~haswell and newer
+    set(GGML_${feat} ON)
+  endforeach()
+endif()
 add_subdirectory(depend/ggml)
 
 # Vision.cpp libraries and executables

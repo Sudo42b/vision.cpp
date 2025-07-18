@@ -1,9 +1,6 @@
 #include "visp/ml.hpp"
 #include "util/string.hpp"
 
-#include <ggml-cpu.h>
-#include <ggml-vulkan.h>
-
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -14,24 +11,51 @@ namespace visp {
 //
 // backend
 
+enum ggml_backend_dev_type convert(backend_type type) {
+    switch (type) {
+        case backend_type::cpu: return GGML_BACKEND_DEVICE_TYPE_CPU;
+        case backend_type::gpu: return GGML_BACKEND_DEVICE_TYPE_GPU;
+        default:
+            ASSERT(false, "Unsupported backend type");
+            return GGML_BACKEND_DEVICE_TYPE_CPU; // fallback
+    }
+}
+
+bool load_ggml_backends() {
+    static const bool loaded = []() {
+        if (ggml_backend_reg_count() > 0) {
+            return true; // already loaded
+        }
+        ggml_backend_load_all();
+        return true;
+    }();
+    return loaded;
+}
+
+bool backend_is_available(backend_type type) {
+    load_ggml_backends();
+    return ggml_backend_dev_by_type(convert(type)) != nullptr;
+}
+
 backend backend_init() {
+    load_ggml_backends();
     backend b{ggml_backend_ptr(ggml_backend_init_best())};
     ASSERT(b.handle, "Failed to initialize backend");
     return b;
 }
 
 backend backend_init(backend_type type) {
+    load_ggml_backends();
+
     backend b;
-    if (type == backend_type::gpu) {
-        b.handle.reset(ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr));
-        if (!b.handle) {
-            throw error("Failed to initialize GPU backend, not available");
-        }
-    } else {
-        b.handle.reset(ggml_backend_cpu_init());
-        uint32_t nthreads = std::max(1u, std::thread::hardware_concurrency() - 2);
-        ggml_backend_cpu_set_n_threads(b.handle.get(), nthreads);
+    b.handle.reset(ggml_backend_init_by_type(convert(type), nullptr));
+    if (!b.handle) {
+        throw error("Failed to initialize backend, no suitable device available");
     }
+    b.device = ggml_backend_get_device(b.handle.get());
+
+    int nthreads = std::max(1, (int)std::thread::hardware_concurrency() - 2);
+    backend_set_n_threads(b, nthreads);
     return b;
 }
 
@@ -56,6 +80,18 @@ size_t backend::total_memory() const {
     size_t free, total;
     ggml_backend_dev_memory(dev, &free, &total);
     return total;
+}
+
+void backend_set_n_threads(backend& b, int n_threads) {
+    if (b.type() != backend_type::cpu) {
+        return;
+    }
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(b.device);
+    ggml_backend_set_n_threads_t set_n_threads =
+        (ggml_backend_set_n_threads_t)ggml_backend_reg_get_proc_address(
+            reg, "ggml_backend_set_n_threads");
+    ASSERT(set_n_threads, "Failed to get backend set_n_threads function");
+    set_n_threads(b.handle.get(), n_threads);
 }
 
 //

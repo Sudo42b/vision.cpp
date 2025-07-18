@@ -25,8 +25,12 @@ using tensor = ggml_tensor*;
 
 enum class backend_type { cpu = 1, gpu = 2 };
 
+// True if the backend library is loaded and has at least one supported device.
+VISP_API bool backend_is_available(backend_type);
+
 struct VISP_API backend {
     ggml_backend_ptr handle;
+    ggml_backend_dev_t device;
 
     backend_type type() const;
     ggml_type preferred_float_type() const;
@@ -37,6 +41,8 @@ struct VISP_API backend {
 
 VISP_API backend backend_init();
 VISP_API backend backend_init(backend_type);
+
+VISP_API void backend_set_n_threads(backend&, int n_threads);
 
 //
 // Model weights
