@@ -28,7 +28,7 @@ enum class backend_type { cpu = 1, gpu = 2 };
 // True if the backend library is loaded and has at least one supported device.
 VISP_API bool backend_is_available(backend_type);
 
-struct VISP_API backend {
+struct VISP_API backend_device {
     ggml_backend_ptr handle;
     ggml_backend_dev_t device;
 
@@ -39,10 +39,10 @@ struct VISP_API backend {
     operator ggml_backend_t() const { return handle.get(); }
 };
 
-VISP_API backend backend_init();
-VISP_API backend backend_init(backend_type);
+VISP_API backend_device backend_init();
+VISP_API backend_device backend_init(backend_type);
 
-VISP_API void backend_set_n_threads(backend&, int n_threads);
+VISP_API void backend_set_n_threads(backend_device&, int n_threads);
 
 //
 // Model weights
@@ -63,7 +63,7 @@ struct VISP_API model_weights {
 
 // Creates a GGML context with storage for a fixed number of tensors.
 // Does not allocate any backend buffers.
-VISP_API model_weights model_init(backend const&, size_t n_tensors);
+VISP_API model_weights model_init(backend_device const&, size_t n_tensors);
 
 struct model_load_params {
     ggml_type float_type = GGML_TYPE_COUNT; // default: use type stored in GGUF file
@@ -71,11 +71,11 @@ struct model_load_params {
 };
 
 // Loads model weights from a GGUF file and transfers them to backend buffers.
-VISP_API model_weights model_load(char const* filepath, backend const&, model_load_params = {});
+VISP_API model_weights model_load(char const* filepath, backend_device const&, model_load_params = {});
 
 // Allocates backend buffers for the model weights if needed. Does not transfer data.
 // Returns false and does nothing if all tensors already have an associated backend buffer.
-VISP_API bool model_allocate(model_weights&, backend const&);
+VISP_API bool model_allocate(model_weights&, backend_device const&);
 
 //
 // Compute graph - wrapper for ggml_cgraph and its associated backend memory
@@ -92,10 +92,10 @@ struct compute_graph {
 VISP_API compute_graph compute_graph_init(size_t size = GGML_DEFAULT_GRAPH_SIZE);
 
 // Allocates memory for inputs, outputs and computations on the backend.
-VISP_API bool compute_graph_allocate(compute_graph&, backend const&);
+VISP_API bool compute_graph_allocate(compute_graph&, backend_device const&);
 
 // Runs inference. Blocks until done.
-VISP_API void compute(compute_graph const&, backend const&);
+VISP_API void compute(compute_graph const&, backend_device const&);
 
 //
 // Model ref - represents a ML model

@@ -55,7 +55,7 @@ struct param_dict {
 
 using test_function = std::vector<tensor> (*)(model_ref, std::span<tensor>, param_dict const&);
 
-backend const& workbench_backend();
+backend_device const& workbench_backend();
 void workbench_add_test(char const* name, test_function func);
 
 struct test_case_def {
@@ -485,7 +485,7 @@ struct workbench {
     std::vector<test_case> tests;
     std::vector<raw_tensor> outputs;
     std::vector<byte> data; // for storing output tensor data
-    backend current_backend;
+    backend_device current_backend;
 };
 
 workbench& get_workbench() {
@@ -493,7 +493,7 @@ workbench& get_workbench() {
     return w;
 }
 
-backend const& workbench_backend() {
+backend_device const& workbench_backend() {
     return get_workbench().current_backend;
 }
 

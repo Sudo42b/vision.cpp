@@ -21,16 +21,16 @@ struct box_2d {
 
 // Loads a SAM model from GGUF file onto the backend device.
 // * only supports MobileSAM (TinyViT) for now
-VISP_API sam_model sam_load_model(char const* filepath, backend const&);
+VISP_API sam_model sam_load_model(char const* filepath, backend_device const&);
 
 // Creates an image embedding from RGB input, required for subsequent `sam_compute` calls.
-VISP_API void sam_encode(sam_model&, image_view image, backend const&);
+VISP_API void sam_encode(sam_model&, image_view image);
 
 // Computes a segmentation mask (alpha image) for an object in the image.
 // * takes either a point, ie. a pixel location with origin (0, 0) in the top left
 // * or a bounding box which contains the object
-VISP_API image_data sam_compute(sam_model&, i32x2 point, backend const&);
-VISP_API image_data sam_compute(sam_model&, box_2d box, backend const&);
+VISP_API image_data sam_compute(sam_model&, i32x2 point);
+VISP_API image_data sam_compute(sam_model&, box_2d box);
 
 //
 
@@ -64,10 +64,10 @@ struct birefnet_model;
 
 // Loads a BiRefNet model from GGUF file onto the backend device.
 // * supports BiRefNet, BiRefNet_lite, BiRefNet_Matting variants at 1024px resolution
-VISP_API birefnet_model birefnet_load_model(char const* filepath, backend const&);
+VISP_API birefnet_model birefnet_load_model(char const* filepath, backend_device const&);
 
 // Takes RGB input and computes an alpha mask with foreground as 1.0 and background as 0.0.
-VISP_API image_data birefnet_compute(birefnet_model&, image_view image, backend const&);
+VISP_API image_data birefnet_compute(birefnet_model&, image_view image);
 
 //
 
@@ -94,11 +94,10 @@ struct migan_model;
 
 // Loads a MI-GAN model from GGUF file onto the backend device.
 // * supports variants at 256px or 512px resolution
-VISP_API migan_model migan_load_model(char const* filepath, backend const&);
+VISP_API migan_model migan_load_model(char const* filepath, backend_device const&);
 
 // Fills pixels in the input image where the mask is 1.0 with new content.
-VISP_API image_data migan_compute(
-    migan_model&, image_view image, image_view mask, backend const&);
+VISP_API image_data migan_compute(migan_model&, image_view image, image_view mask);
 
 //
 
@@ -123,10 +122,10 @@ struct esrgan_model;
 // Loads an ESRGAN model from GGUF file onto the backend device.
 // * supports ESRGAN, RealESRGAN variants with flexible scale and number of blocks
 // * currently does not spport RealESRGAN+ (plus) models or those which use pixel shuffle
-VISP_API esrgan_model esrgan_load_model(char const* filepath, backend const&);
+VISP_API esrgan_model esrgan_load_model(char const* filepath, backend_device const&);
 
 // Upscales the input image by the model's scale factor. Uses tiling for large inputs.
-VISP_API image_data esrgan_compute(esrgan_model&, image_view image, backend const&);
+VISP_API image_data esrgan_compute(esrgan_model&, image_view image);
 
 //
 
@@ -144,6 +143,7 @@ VISP_API tensor esrgan_generate(model_ref, tensor image, esrgan_params const&);
 
 // internal
 struct sam_model {
+    backend_device const* backend = nullptr;
     model_weights weights;
     sam_params params;
 
@@ -161,6 +161,7 @@ struct sam_model {
 
 // internal
 struct birefnet_model {
+    backend_device const* backend = nullptr;
     model_weights weights;
     birefnet_params params;
 
@@ -171,6 +172,7 @@ struct birefnet_model {
 
 // internal
 struct migan_model {
+    backend_device const* backend = nullptr;
     model_weights weights;
     migan_params params;
 
@@ -181,6 +183,7 @@ struct migan_model {
 
 // internal
 struct esrgan_model {
+    backend_device const* backend = nullptr;
     model_weights weights;
     esrgan_params params;
 

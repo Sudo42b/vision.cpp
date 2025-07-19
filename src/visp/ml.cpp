@@ -37,17 +37,17 @@ bool backend_is_available(backend_type type) {
     return ggml_backend_dev_by_type(convert(type)) != nullptr;
 }
 
-backend backend_init() {
+backend_device backend_init() {
     load_ggml_backends();
-    backend b{ggml_backend_ptr(ggml_backend_init_best())};
+    backend_device b{ggml_backend_ptr(ggml_backend_init_best())};
     ASSERT(b.handle, "Failed to initialize backend");
     return b;
 }
 
-backend backend_init(backend_type type) {
+backend_device backend_init(backend_type type) {
     load_ggml_backends();
 
-    backend b;
+    backend_device b;
     b.handle.reset(ggml_backend_init_by_type(convert(type), nullptr));
     if (!b.handle) {
         throw error("Failed to initialize backend, no suitable device available");
@@ -59,7 +59,7 @@ backend backend_init(backend_type type) {
     return b;
 }
 
-backend_type backend::type() const {
+backend_type backend_device::type() const {
     ggml_backend_dev_t dev = ggml_backend_get_device(handle.get());
     switch (ggml_backend_dev_type(dev)) {
         case GGML_BACKEND_DEVICE_TYPE_CPU: return backend_type::cpu;
@@ -68,21 +68,21 @@ backend_type backend::type() const {
     }
 }
 
-ggml_type backend::preferred_float_type() const {
+ggml_type backend_device::preferred_float_type() const {
     if (type() == backend_type::cpu) {
         return GGML_TYPE_F32;
     }
     return GGML_TYPE_COUNT; // use model's float type
 }
 
-size_t backend::total_memory() const {
+size_t backend_device::total_memory() const {
     ggml_backend_dev_t dev = ggml_backend_get_device(handle.get());
     size_t free, total;
     ggml_backend_dev_memory(dev, &free, &total);
     return total;
 }
 
-void backend_set_n_threads(backend& b, int n_threads) {
+void backend_set_n_threads(backend_device& b, int n_threads) {
     if (b.type() != backend_type::cpu) {
         return;
     }
@@ -147,7 +147,7 @@ struct float_converter {
     }
 };
 
-model_weights model_init(backend const& be, size_t size) {
+model_weights model_init(backend_device const& be, size_t size) {
     ggml_init_params params{};
     params.mem_size = size * ggml_tensor_overhead();
     params.no_alloc = true;
@@ -156,7 +156,7 @@ model_weights model_init(backend const& be, size_t size) {
     return model_weights{std::move(ctx), be.type(), {}, {}};
 }
 
-model_weights model_load(char const* filepath, backend const& backend, model_load_params p) {
+model_weights model_load(char const* filepath, backend_device const& backend, model_load_params p) {
 
     ggml_context* data_ctx;
     gguf_init_params params;
@@ -195,7 +195,7 @@ model_weights model_load(char const* filepath, backend const& backend, model_loa
     return model_weights{std::move(model_ctx), backend.type(), std::move(buffer), {}};
 }
 
-bool model_allocate(model_weights& m, backend const& b) {
+bool model_allocate(model_weights& m, backend_device const& b) {
     ASSERT(m.buffer_type == b.type(), "Model weights must all be on the same backend");
 
     ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(m.context.get(), b.handle.get()));
@@ -229,7 +229,7 @@ compute_graph compute_graph_init(size_t size) {
     return compute_graph{std::move(ctx_ptr), graph, nullptr};
 }
 
-bool compute_graph_allocate(compute_graph& g, backend const& backend) {
+bool compute_graph_allocate(compute_graph& g, backend_device const& backend) {
     if (!g.allocr) {
         g.allocr.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)));
     }
@@ -240,7 +240,7 @@ bool compute_graph_allocate(compute_graph& g, backend const& backend) {
     return result;
 }
 
-void compute(compute_graph const& g, backend const& b) {
+void compute(compute_graph const& g, backend_device const& b) {
     ggml_backend_graph_compute(b, g.graph);
 }
 

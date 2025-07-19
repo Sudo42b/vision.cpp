@@ -176,11 +176,11 @@ struct timer {
 //
 // Common helpers
 
-backend backend_init(cli_args const& args) {
+backend_device backend_init(cli_args const& args) {
     timer t;
     printf("Initializing backend... ");
 
-    backend b;
+    backend_device b;
     if (args.backend_type) {
         b = backend_init(*args.backend_type);
     } else {
@@ -196,7 +196,7 @@ backend backend_init(cli_args const& args) {
 }
 
 model_weights load_model_weights(
-    cli_args const& args, backend const& b, char const* default_model, int n_tensors = 0) {
+    cli_args const& args, backend_device const& b, char const* default_model, int n_tensors = 0) {
 
     timer t;
     char const* model_path = args.model ? args.model : default_model;
@@ -213,7 +213,7 @@ model_weights load_model_weights(
     return weights;
 }
 
-void compute_timed(compute_graph const& g, backend const& b) {
+void compute_timed(compute_graph const& g, backend_device const& b) {
     timer t;
     printf("Running inference... ");
     compute(g, b);
@@ -286,7 +286,7 @@ sam_prompt sam_parse_prompt(std::span<char const* const> args, i32x2 extent) {
 };
 
 void run_sam(cli_args const& args) {
-    backend backend = backend_init(args);
+    backend_device backend = backend_init(args);
     model_weights weights = load_model_weights(args, backend, "models/mobile-sam.gguf");
     sam_params params{};
 
@@ -339,7 +339,7 @@ void run_sam(cli_args const& args) {
 // BirefNet
 
 void run_birefnet(cli_args const& args) {
-    backend backend = backend_init(args);
+    backend_device backend = backend_init(args);
     model_weights weights = load_model_weights(args, backend, "models/birefnet.gguf", 6);
     birefnet_params params = birefnet_detect_params(weights);
     int img_size = params.image_size;
@@ -379,7 +379,7 @@ void run_birefnet(cli_args const& args) {
 // MI-GAN
 
 void run_migan(cli_args const& args) {
-    backend backend = backend_init(args);
+    backend_device backend = backend_init(args);
     model_weights weights = load_model_weights(args, backend, "models/migan_512_places2-f16.gguf");
     migan_params params = migan_detect_params(weights);
     params.invert_mask = true; // -> inpaint opaque areas
@@ -416,7 +416,7 @@ void run_migan(cli_args const& args) {
 // ESRGAN
 
 void run_esrgan(cli_args const& args) {
-    backend backend = backend_init(args);
+    backend_device backend = backend_init(args);
     model_weights weights = load_model_weights(args, backend, "models/RealESRGAN_x4.gguf");
     esrgan_params params = esrgan_detect_params(weights);
 

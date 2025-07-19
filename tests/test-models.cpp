@@ -24,12 +24,12 @@ void test_mobile_sam(backend_type bt) {
     path model_path = test_dir().models / "mobile_sam.gguf";
     path input_path = test_dir().input / "cat-and-hat.jpg";
 
-    backend b = backend_init(bt);
+    backend_device b = backend_init(bt);
     sam_model model = sam_load_model(model_path.string().c_str(), b);
     image_data input = image_load(input_path.string().c_str());
-    sam_encode(model, input, b);
-    image_data mask_box = sam_compute(model, box_2d{{180, 110}, {505, 330}}, b);
-    image_data mask_point =  sam_compute(model, i32x2{200, 300}, b);
+    sam_encode(model, input);
+    image_data mask_box = sam_compute(model, box_2d{{180, 110}, {505, 330}});
+    image_data mask_point =  sam_compute(model, i32x2{200, 300});
 
     char const* suffix = bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
     compare_images(format("mobile_sam-box{}", suffix), mask_box);
@@ -49,10 +49,10 @@ void test_birefnet(backend_type bt) {
     std::string name = "birefnet";
     name += bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
 
-    backend b = backend_init(bt);
+    backend_device b = backend_init(bt);
     birefnet_model model = birefnet_load_model(model_path.string().c_str(), b);
     image_data input = image_load(input_path.string().c_str());
-    image_data output = birefnet_compute(model, input, b);
+    image_data output = birefnet_compute(model, input);
 
     compare_images(name, output);
 }
@@ -71,11 +71,11 @@ void test_migan(backend_type bt) {
     std::string name = "migan";
     name += bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
 
-    backend b = backend_init(bt);
+    backend_device b = backend_init(bt);
     migan_model model = migan_load_model(model_path.string().c_str(), b);
     image_data image = image_load(image_path.string().c_str());
     image_data mask = image_load(mask_path.string().c_str());
-    image_data output = migan_compute(model, image, mask, b);
+    image_data output = migan_compute(model, image, mask);
     image_data composited = image_alpha_composite(output, image, mask);
 
     compare_images(name, composited);
@@ -94,10 +94,10 @@ void test_esrgan(backend_type bt) {
     std::string name = "esrgan";
     name += bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
 
-    backend b = backend_init(bt);
+    backend_device b = backend_init(bt);
     esrgan_model model = esrgan_load_model(model_path.string().c_str(), b);
     image_data input = image_load(input_path.string().c_str());
-    image_data output = esrgan_compute(model, input, b);
+    image_data output = esrgan_compute(model, input);
 
     compare_images(name, output);
 }
