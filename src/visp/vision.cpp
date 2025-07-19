@@ -70,7 +70,7 @@ image_data sam_compute(sam_model& model, i32x2 point, backend const& b) {
     return sam_compute_impl(model, point, i32x2{-1, -1}, b);
 }
 
-image_data sam_compute(sam_model& model, image_rect box, backend const& b) {
+image_data sam_compute(sam_model& model, box_2d box, backend const& b) {
     return sam_compute_impl(model, box.top_left, box.bottom_right, b);
 }
 

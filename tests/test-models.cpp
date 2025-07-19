@@ -28,7 +28,7 @@ void test_mobile_sam(backend_type bt) {
     sam_model model = sam_load_model(model_path.string().c_str(), b);
     image_data input = image_load(input_path.string().c_str());
     sam_encode(model, input, b);
-    image_data mask_box = sam_compute(model, image_rect{{180, 110}, {505, 330}}, b);
+    image_data mask_box = sam_compute(model, box_2d{{180, 110}, {505, 330}}, b);
     image_data mask_point =  sam_compute(model, i32x2{200, 300}, b);
 
     char const* suffix = bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";

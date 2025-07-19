@@ -569,7 +569,7 @@ f32x4 sam_process_point(i32x2 point, i32x2 input_image_extent, sam_params const&
     return sam::preprocess_point(point, input_image_extent, p);
 }
 
-f32x4 sam_process_box(image_rect box, i32x2 input_image_extent, sam_params const& p) {
+f32x4 sam_process_box(box_2d box, i32x2 input_image_extent, sam_params const& p) {
     return sam::preprocess_box(box.top_left, box.bottom_right, input_image_extent, p);
 }
 

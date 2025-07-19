@@ -14,7 +14,7 @@ namespace visp {
 
 struct sam_model;
 
-struct image_rect {
+struct box_2d {
     i32x2 top_left;
     i32x2 bottom_right;
 };
@@ -30,7 +30,7 @@ VISP_API void sam_encode(sam_model&, image_view image, backend const&);
 // * takes either a point, ie. a pixel location with origin (0, 0) in the top left
 // * or a bounding box which contains the object
 VISP_API image_data sam_compute(sam_model&, i32x2 point, backend const&);
-VISP_API image_data sam_compute(sam_model&, image_rect box, backend const&);
+VISP_API image_data sam_compute(sam_model&, box_2d box, backend const&);
 
 //
 
@@ -46,7 +46,7 @@ struct sam_prediction {
 
 VISP_API image_data sam_process_input(image_view image, sam_params const&);
 VISP_API f32x4 sam_process_point(i32x2 point, i32x2 image_extent, sam_params const&);
-VISP_API f32x4 sam_process_box(image_rect box, i32x2 image_extent, sam_params const&);
+VISP_API f32x4 sam_process_box(box_2d box, i32x2 image_extent, sam_params const&);
 
 VISP_API tensor sam_encode_image(model_ref, tensor image, sam_params const&);
 VISP_API tensor sam_encode_points(model_ref, tensor coords);
