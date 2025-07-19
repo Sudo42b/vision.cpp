@@ -241,7 +241,7 @@ swin_layer_result swin_layer(
     model_ref blocks = m["blocks"];
     for (int i = 0; i < p.depth; ++i) {
         swin_block_params block_params = {
-            .num_heads = p.num_heads,
+            .n_heads = p.n_heads,
             .window_size = window_size,
             .w = w,
             .h = h,
@@ -281,7 +281,7 @@ swin_result swin_transformer(model_ref m, tensor x, swin_params const& p) {
 
         tensor_name norm_layer = format<tensor_name>("norm{}", i);
         tensor out = layer_norm(m[norm_layer], r.x_out);
-        out = ggml_reshape_4d(m, out, p.layers[i].num_features, r.w_out, r.h_out, b);
+        out = ggml_reshape_4d(m, out, p.layers[i].n_features, r.w_out, r.h_out, b);
         outs[i] = out;
     }
     return outs;

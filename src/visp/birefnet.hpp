@@ -12,7 +12,7 @@ namespace birefnet {
 // SWIN Transformer
 
 struct swin_block_params {
-    int num_heads = 6;
+    int n_heads = 6;
     int window_size = 7;
     int64_t w = 0;
     int64_t h = 0;

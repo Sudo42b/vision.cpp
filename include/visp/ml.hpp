@@ -230,8 +230,8 @@ VISP_API tensor interpolate(model_ref const&, tensor x, i64x2 target, int32_t mo
 
 struct swin_layer_t {
     int depth;
-    int num_heads;
-    int num_features;
+    int n_heads;
+    int n_features;
     bool downsample;
 };
 

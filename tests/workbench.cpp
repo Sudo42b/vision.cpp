@@ -247,7 +247,7 @@ DEF(biref_window_attention)(model_ref m, span<tensor> input, param_dict const& p
 
 DEF(biref_swin_block)(model_ref m, span<tensor> input, param_dict const& p) {
     birefnet::swin_block_params block;
-    block.num_heads = 2;
+    block.n_heads = 2;
     block.window_size = 3;
     block.w = 6;
     block.h = 6;
@@ -272,8 +272,8 @@ DEF(biref_attention_mask)(model_ref m, span<tensor> input, param_dict const& p) 
 DEF(biref_swin_layer)(model_ref m, span<tensor> input, param_dict const& p) {
     swin_layer_t layer;
     layer.depth = 2;
-    layer.num_heads = 2;
-    layer.num_features = 8;
+    layer.n_heads = 2;
+    layer.n_features = 8;
     layer.downsample = true;
     auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
     ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
