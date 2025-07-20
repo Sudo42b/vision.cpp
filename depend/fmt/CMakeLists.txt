@@ -1,7 +1,17 @@
 include(FetchContent)
 
+# Build fmt as a static library regardless of project settings
+set(BUILD_SHARED_LIBS_OLD ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
+
+set(CMAKE_POSITION_INDEPENDENT_CODE_OLD ${CMAKE_POSITION_INDEPENDENT_CODE})
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 FetchContent_Declare(
   fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt
   GIT_TAG        40626af88bd7df9a5fb80be7b25ac85b122d6c21) # 11.2.0
 FetchContent_MakeAvailable(fmt)
+
+set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_OLD})
+set(CMAKE_POSITION_INDEPENDENT_CODE ${CMAKE_POSITION_INDEPENDENT_CODE_OLD})
