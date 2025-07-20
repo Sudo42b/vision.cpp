@@ -13,8 +13,6 @@ add_test(NAME vision COMMAND test-vision)
 
 #
 # Model tests (image comparisons)
-#
-# * these require models to be downloaded and placed in the `models` directory
 
 add_executable(test-models)
 target_sources(test-models PRIVATE

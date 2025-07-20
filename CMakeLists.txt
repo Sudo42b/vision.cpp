@@ -78,6 +78,7 @@ add_subdirectory(src/cli)
 if(VISP_TESTS)
   enable_testing()
   add_subdirectory(tests)
+  add_subdirectory(models)
 endif()
 
 # Installation and packaging

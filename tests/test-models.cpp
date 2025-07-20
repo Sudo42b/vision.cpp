@@ -21,7 +21,7 @@ void compare_images(std::string_view name, image_view result, float tolerance = 
 }
 
 void test_mobile_sam(backend_type bt) {
-    path model_path = test_dir().models / "mobile_sam.gguf";
+    path model_path = test_dir().models / "MobileSAM-F16.gguf";
     path input_path = test_dir().input / "cat-and-hat.jpg";
 
     backend_device b = backend_init(bt);
@@ -32,8 +32,9 @@ void test_mobile_sam(backend_type bt) {
     image_data mask_point =  sam_compute(model, i32x2{200, 300});
 
     char const* suffix = bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
-    compare_images(format("mobile_sam-box{}", suffix), mask_box);
-    compare_images(format("mobile_sam-point{}", suffix), mask_point);
+    float tolerance = bt == backend_type::cpu ? 0.01f : 0.015f;
+    compare_images(format("mobile_sam-box{}", suffix), mask_box, tolerance);
+    compare_images(format("mobile_sam-point{}", suffix), mask_point, tolerance);
 }
 
 TEST_CASE(test_mobile_sam_cpu) {
@@ -44,7 +45,7 @@ TEST_CASE(test_mobile_sam_gpu) {
 }
 
 void test_birefnet(backend_type bt) {
-    path model_path = test_dir().models / "birefnet_lite-f16.gguf";
+    path model_path = test_dir().models / "BiRefNet-lite-F16.gguf";
     path input_path = test_dir().input / "wardrobe.jpg";
     std::string name = "birefnet";
     name += bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
@@ -65,7 +66,7 @@ TEST_CASE(test_birefnet_gpu) {
 }
 
 void test_migan(backend_type bt) {
-    path model_path = test_dir().models / "migan_512_places2-f16.gguf";
+    path model_path = test_dir().models / "MIGAN-512-places2-F16.gguf";
     path image_path = test_dir().input / "bench-image.jpg";
     path mask_path = test_dir().input / "bench-mask.png";
     std::string name = "migan";
