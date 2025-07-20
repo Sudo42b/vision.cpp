@@ -5,7 +5,6 @@ install
 .debug
 .env
 .install
-models
 tests/results
 tests/reference
 *.pt
@@ -16,6 +15,7 @@ tests/reference
 *.zip
 *.tar.gz
 *.egg-info
+/*.png
 __pycache__
 
 # Don't sync Python dependencies for now, latest versions should work

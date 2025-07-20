@@ -68,11 +68,21 @@ backend_type backend_device::type() const {
     }
 }
 
+typedef bool (*ggml_backend_dev_supports_f16_t)(ggml_backend_dev_t);
+
 ggml_type backend_device::preferred_float_type() const {
     if (type() == backend_type::cpu) {
-        return GGML_TYPE_F32;
+        return GGML_TYPE_F32; // not all operations support F16
+    } else {
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(device);
+        if (void* f = ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_supports_f16")) {
+            bool supports_f16 = ((ggml_backend_dev_supports_f16_t)f)(device);
+            if (!supports_f16) {
+                return GGML_TYPE_F32;
+            }
+        }
     }
-    return GGML_TYPE_COUNT; // use model's float type
+    return GGML_TYPE_COUNT; // no preference, use float type of model weights
 }
 
 size_t backend_device::total_memory() const {
