@@ -442,10 +442,12 @@ sam_prediction predict_masks(
     const int transformer_depth = 2;
     const int num_mask_tokens = 4; // num_multimask_outputs + 1
 
+    tensor iou_token = m.weights("iou_token.weight");
+    tensor mask_tokens = m.weights("mask_tokens.weight");
+
     // Concatenate output tokens
     int64_t prompt_size = sparse_prompt->ne[2];
-    tensor output_tokens = ggml_concat(
-        m, m.weights("iou_token.weight"), m.weights("mask_tokens.weight"), 1);
+    tensor output_tokens = ggml_concat(m, iou_token, mask_tokens, 1);
     output_tokens = ggml_repeat(
         m, output_tokens,
         ggml_new_tensor_3d(

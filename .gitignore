@@ -5,11 +5,13 @@ install
 .debug
 .env
 .install
+models
 tests/results
 tests/reference
 *.pt
 *.pth
 *.bin
+*.safetensors
 *.gguf
 *.zip
 *.tar.gz

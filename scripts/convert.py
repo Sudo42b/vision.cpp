@@ -73,7 +73,7 @@ def add_tensor(
 def convert_sam(
     input_filepath: Path, writer: GGUFWriter, quantize: str | None, verbose: bool
 ):
-    assert quantize is None, "MobileSAM does not support quantization"
+    writer.add_license("apache-2.0")
 
     model: dict[str, Tensor] = torch.load(
         input_filepath, map_location="cpu", weights_only=True
@@ -108,7 +108,11 @@ def convert_sam(
             pe = build_dense_positional_embeddings(tensor)
             writer.add_tensor("dec.dense_positional_embedding", pe.numpy())
 
-        add_tensor(writer, name, tensor, quantize, verbose)
+        data_type = quantize
+        if name in ["dec.iou_token.weight", "dec.mask_tokens.weight"]:
+            data_type = None
+
+        add_tensor(writer, name, tensor, data_type, verbose)
 
 
 def build_attention_bias_indices(resolution: int):
@@ -153,6 +157,8 @@ def build_dense_positional_embeddings(
 def convert_birefnet(
     input_filepath: Path, writer: GGUFWriter, quantize: str | None, verbose: bool
 ):
+    writer.add_license("mit")
+
     model: dict[str, Tensor] = safetensors.safe_open(input_filepath, "pt")
 
     for name in model.keys():
@@ -185,6 +191,8 @@ def convert_birefnet(
 def convert_migan(
     input_filepath: Path, writer: GGUFWriter, quantize: str | None, verbose: bool
 ):
+    writer.add_license("mit")
+
     model: dict[str, Tensor] = torch.load(input_filepath, weights_only=True)
 
     for name, tensor in model.items():
@@ -230,6 +238,12 @@ arch_names = {
     "esrgan": "esrgan",
 }
 
+file_types = {
+    None: 0,
+    "f32": 0,
+    "f16": 1
+}
+
 if __name__ == "__main__":
     # fmt: off
     parser = argparse.ArgumentParser(description="Convert model weights (.pt/.pth/.safetensors) to GGUF format.")
@@ -271,6 +285,8 @@ if __name__ == "__main__":
 
         metadata.set_gguf_meta_model(writer)
         writer.add_quantization_version(GGML_QUANT_VERSION)
+        writer.add_tensor_data_layout("cwhn")
+        writer.add_file_type(file_types[args.quantize])
         writer.write_header_to_file()
         writer.write_kv_data_to_file()
         writer.write_tensors_to_file(progress=True)
