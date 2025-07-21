@@ -466,7 +466,7 @@ tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim)
 }
 
 tensor interpolate(model_ref const& m, tensor x, i64x2 target, int32_t mode) {
-    return ggml_upscale_ext(
+    return ggml_interpolate(
         m, x, int(target[0]), int(target[1]), int(x->ne[2]), int(x->ne[3]), mode);
 }
 

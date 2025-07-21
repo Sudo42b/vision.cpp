@@ -11,7 +11,7 @@ namespace esrgan {
 
 tensor upsample(model_ref m, tensor x) {
     auto [c, w, h, n] = nelements(x);
-    x = ggml_upscale_ext(m, x, int(c), int(w * 2), int(h * 2), int(n), GGML_SCALE_MODE_NEAREST);
+    x = ggml_interpolate(m, x, int(c), int(w * 2), int(h * 2), int(n), GGML_SCALE_MODE_NEAREST);
     x = conv_2d(m, x, 1, 1);
     x = ggml_leaky_relu(m, x, 0.2f, true);
     return named(m, x);

@@ -287,7 +287,7 @@ swin_result swin_transformer(model_ref m, tensor x, swin_params const& p) {
     return outs;
 }
 
-constexpr int32_t bilinear_align_corners = GGML_SCALE_MODE_BILINEAR | GGML_SCALE_ALIGN_CORNERS;
+constexpr int32_t bilinear_align_corners = GGML_SCALE_MODE_BILINEAR | (int)GGML_SCALE_FLAG_ALIGN_CORNERS;
 
 tensor upscale_to_whcn(model_ref m, tensor x, tensor target) {
     return interpolate(m, x, {target->ne[0], target->ne[1]}, bilinear_align_corners);

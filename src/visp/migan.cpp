@@ -34,7 +34,7 @@ tensor upsample_2d(model_ref m, tensor x) {
     filter_const = ggml_reshape_4d(m, filter_const, 1, filter_const->ne[0], filter_const->ne[1], 1);
 
     auto [c, w, h, b] = nelements(x);
-    x = ggml_upscale_ext(m, x, int(c), int(w * 2), int(h * 2), int(b), GGML_SCALE_MODE_NEAREST);
+    x = ggml_interpolate(m, x, int(c), int(w * 2), int(h * 2), int(b), GGML_SCALE_MODE_NEAREST);
     x = ggml_mul_inplace(m, x, filter_const);
     x = conv_2d_depthwise(m["filter"], x, 1, 2); // 4x4 filter
     x = slice(m, x, {}, {0, -1}, {0, -1}, {});   // remove padding from right and bottom
