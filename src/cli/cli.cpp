@@ -367,7 +367,7 @@ void run_birefnet(cli_args const& args) {
 
     tensor_data mask_data = transfer_from_backend(output);
     image_view mask_output({img_size, img_size}, mask_data.as_f32());
-    image_data mask_resized = image_resize(mask_output, image.extent);
+    image_data mask_resized = image_scale(mask_output, image.extent);
     image_data mask = image_f32_to_u8(mask_resized, image_format::alpha_u8);
     image_save(mask, args.output);
     printf("-> mask saved to %s\n", args.output);
@@ -406,7 +406,7 @@ void run_migan(cli_args const& args) {
 
     tensor_data output_data = transfer_from_backend(output);
     image_data output_image = migan_process_output(output_data.as_f32(), image.extent, params);
-    image_data mask_resized = image_resize(mask, image.extent);
+    image_data mask_resized = image_scale(mask, image.extent);
     image_data composited = image_alpha_composite(output_image, image, mask_resized);
     image_save(composited, args.output);
     printf("-> output image saved to %s\n", args.output);

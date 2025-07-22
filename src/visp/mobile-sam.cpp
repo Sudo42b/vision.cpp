@@ -558,7 +558,7 @@ image_data sam_process_input(image_view image, sam_params const& p) {
     std::optional<image_data> resized;
     float scale = sam::resize_longest_side(image.extent, p.image_size);
     if (scale != 1) {
-        resized = image_resize(image, sam::scale_extent(image.extent, scale));
+        resized = image_scale(image, sam::scale_extent(image.extent, scale));
         image = image_view(*resized);
     }
 

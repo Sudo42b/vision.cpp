@@ -183,7 +183,7 @@ TEST_CASE(image_rgb_f32_to_rgba_u8) {
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
-TEST_CASE(image_resize) {
+TEST_CASE(image_scale) {
     image_data img = image_alloc(i32x2{8, 8}, image_format::rgba_u8);
     for (int i = 0; i < 8 * 8; ++i) {
         img.data[i * 4 + 0] = uint8_t(255);
@@ -191,7 +191,7 @@ TEST_CASE(image_resize) {
         img.data[i * 4 + 2] = uint8_t(4 * (i % 8));
         img.data[i * 4 + 3] = uint8_t(255);
     }
-    image_data result = image_resize(img, i32x2{4, 4});
+    image_data result = image_scale(img, i32x2{4, 4});
     CHECK(result.extent == i32x2{4, 4});
     CHECK(result.format == image_format::rgba_u8);
     for (int i = 0; i < 16; ++i) {

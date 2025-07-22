@@ -320,7 +320,7 @@ void image_set_alpha(image_span const& img, image_view const& alpha) {
 //
 // image algorithms
 
-void image_resize(image_view const& img, i32x2 target, image_span const& dst) {
+void image_scale(image_view const& img, i32x2 target, image_span const& dst) {
     ASSERT(img.stride >= img.extent[0] * n_channels(img));
 
     int result;
@@ -344,9 +344,9 @@ void image_resize(image_view const& img, i32x2 target, image_span const& dst) {
     }
 }
 
-image_data image_resize(image_view const& img, i32x2 target) {
+image_data image_scale(image_view const& img, i32x2 target) {
     image_data dst = image_alloc(target, img.format);
-    image_resize(img, target, dst);
+    image_scale(img, target, dst);
     return dst;
 }
 

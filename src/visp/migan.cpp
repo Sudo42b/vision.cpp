@@ -164,12 +164,12 @@ image_data migan_process_input(image_view image, image_view mask, migan_params c
     i32x2 res = {p.resolution, p.resolution};
     std::optional<image_data> resized_image;
     if (image.extent != res) {
-        resized_image = image_resize(image, res);
+        resized_image = image_scale(image, res);
         image = image_view(*resized_image);
     }
     std::optional<image_data> resized_mask;
     if (mask.extent != res) {
-        resized_mask = image_resize(mask, res);
+        resized_mask = image_scale(mask, res);
         mask = image_view(*resized_mask);
     }
     image_data result = image_alloc(res, image_format::rgba_f32);
@@ -186,7 +186,7 @@ image_data migan_process_output(std::span<float const> data, i32x2 extent, migan
     image_view image(model_extent, image_format::rgb_f32, data.data());
     image_data resized;
     if (model_extent != extent) {
-        resized = image_resize(image, extent);
+        resized = image_scale(image, extent);
         image = image_view(resized);
     }
     return image_f32_to_u8(image, image_format::rgba_u8, 0.5f, 0.5f);

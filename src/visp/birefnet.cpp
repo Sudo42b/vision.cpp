@@ -531,7 +531,7 @@ image_data birefnet_process_input(image_view image, birefnet_params const& p) {
 
     std::optional<image_data> resized;
     if (image.extent[0] != p.image_size || image.extent[1] != p.image_size) {
-        resized = image_resize(image, i32x2{p.image_size, p.image_size});
+        resized = image_scale(image, i32x2{p.image_size, p.image_size});
         image = image_view(*resized);
     }
 
@@ -545,7 +545,7 @@ image_data birefnet_process_output(
     image_view mask_output(model_extent, mask_data);
     image_data mask_resized;
     if (model_extent != target_extent) {
-        mask_resized = image_resize(mask_output, target_extent);
+        mask_resized = image_scale(mask_output, target_extent);
         mask_output = mask_resized;
     }
     return image_f32_to_u8(mask_output, image_format::alpha_u8);

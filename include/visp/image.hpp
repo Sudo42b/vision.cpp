@@ -143,8 +143,8 @@ VISP_API image_data image_to_mask(image_view const& src);
 VISP_API void image_set_alpha(image_span const& img, image_view const& alpha);
 
 // Resize image to target size with bilinear interpolation
-VISP_API void image_resize(image_view const&, i32x2 target, image_span const& dst);
-VISP_API image_data image_resize(image_view const&, i32x2 target);
+VISP_API void image_scale(image_view const&, i32x2 target, image_span const& dst);
+VISP_API image_data image_scale(image_view const&, i32x2 target);
 
 // Box filter with kernel size `2*radius + 1`
 VISP_API void image_blur(image_view const& src, image_span const& dst, int radius);
