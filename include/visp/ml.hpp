@@ -48,8 +48,9 @@ VISP_API void backend_set_n_threads(backend_device&, int n_threads);
 //
 // Model weights
 //
-// * loads, converts and stores model weights
-// * allocates and transfers tensor data to backend buffers
+// * stores the tensor descriptors of model weights
+// * holds the backend buffers for model weight data
+// * holds buffers for extra tensors such as pre-computed lookup tables
 
 struct VISP_API model_weights {
     ggml_context_ptr context;

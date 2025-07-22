@@ -78,18 +78,18 @@ image_data sam_compute(sam_model& model, box_2d box) {
 //
 // BiRefNet
 
-birefnet_model birefnet_load_model(char const* filepath, backend_device const& b) {
+birefnet_model birefnet_load_model(char const* filepath, backend_device const& backend) {
     birefnet_model model;
-    model.backend = &b;
+    model.backend = &backend;
     model_load_params load_params = {
-        .float_type = b.preferred_float_type(),
+        .float_type = backend.preferred_float_type(),
         .n_extra_tensors = swin_params::n_layers + 2
     };
-    model.weights = model_load(filepath, b, load_params);
-    model.params = birefnet_detect_params(model.weights);    
+    model.weights = model_load(filepath, backend, load_params);
+    model.params = birefnet_detect_params(model.weights);
 
     birefnet_buffers buffers = birefnet_precompute(model.weights, model.params);
-    model_allocate(model.weights, b);
+    model_allocate(model.weights, backend);
     for (tensor_data const& buf : buffers) {
         transfer_to_backend(buf);
     }
@@ -99,7 +99,7 @@ birefnet_model birefnet_load_model(char const* filepath, backend_device const& b
     int res = model.params.image_size;
     model.input = compute_graph_input(m, GGML_TYPE_F32, {3, res, res, 1});
     model.output = birefnet_predict(m, model.input, model.params);
-    compute_graph_allocate(model.graph, b);
+    compute_graph_allocate(model.graph, backend);
 
     return model;
 }

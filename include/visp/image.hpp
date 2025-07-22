@@ -87,7 +87,7 @@ struct VISP_API image_span {
 };
 
 //
-// Image data - storage for image data
+// Image data - storage for pixel data
 //
 // * can also be passed to functions that expect image_view, or image_span (if non-const)
 
@@ -190,7 +190,7 @@ struct VISP_API tile_layout {
     i32x2 coord(int index) const; // flat index -> tile index
 };
 
-// Returns layout with same number of tiles within a larger image
+// Returns layout with same number of tiles mapped to a larger image
 VISP_API tile_layout tile_scale(tile_layout const&, int scale);
 
 // Merge a tile into the destination image. Both images must be rgb_f32 format.

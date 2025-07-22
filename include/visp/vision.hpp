@@ -1,3 +1,74 @@
+//
+// Vision.cpp
+//
+// Library for inference of computer vision neural networks.
+//
+// Overview
+// --------
+//
+// Vision.cpp comes in 3 main headers:
+//
+// visp/image.hpp
+//
+//   Defines structures to store and reference pixel data. Supports loading, saving and
+//   common processing of images. Most tasks take an `image_view` as input, which
+//   is a non-owning reference to external pixel data. Output is returned as
+//   `image_data` (allocated by the library) or written to an `image_span`.
+//
+// visp/ml.hpp
+//
+//   Contains ML infrastructure shared between all models: loading weights,
+//   transferring data between backend devices (eg. GPU), and executing
+//   compute graphs. Most of these are thin convenience wrappers around GGML.
+//   Alternatively you can use GGML directly for greater flexibility.
+//
+// visp/vision.hpp (this file)
+//
+//   Provides a high-level API to run inference on various vision models for
+//   common tasks. These operations are built for simplicity and don't provide
+//   a lot of options. Rather, you will find below each operation it is split into
+//   several steps, which can be used to build more flexible pipelines.
+//
+// Basic Use
+// ---------
+//
+// Evaluating a model on an image with the high-level API usually looks like this:
+//
+// ```
+// backend_device backend = backend_init();
+// image_view input  = image_view({width, height}, image_format::rgb_u8, pixel_data_ptr);
+// ARCH_model model  = ARCH_load_model("path/to/model.gguf", backend);
+// image_data output = ARCH_compute(model, input);
+// ```
+//
+// ARCH referes to the model architecture, such as `sam_model`, `birefnet_model`, etc.
+// The `compute` function can be called repeatedly with different inputs.
+//
+// Advanced Use
+// ------------
+//
+// Internally running the model is split into several steps:
+// 1. Load the model weights from a GGUF file.
+// 2. Allocate storage on the backend device and transfer the weights.
+// 3. Detect model hyperparameters and precompute required buffers.
+// 4. Build a compute graph for the model architecture.
+// 5. Allocate storage for input, output and intermediate tensors on the backend device.
+// 6. Pre-process the image and transfer it to the backend device.
+// 7. Run the compute graph.
+// 8. Transfer the output to the host and post-process it.
+//
+// You can run all steps individually in order to customize the pipeline. Check the
+// implementation of the high-level API functions to get started.
+//
+// This allows to:
+// * load model weights from a different source
+// * control exactly when allocation happens
+// * offload weights to host memory when not needed
+// * implement pre-processing and post-processing for custom image formats
+// * integrate model compute graphs into your own GGML graphs
+// * ... etc.
+//
+
 #pragma once
 
 #include "visp/image.hpp"
@@ -32,7 +103,7 @@ VISP_API void sam_encode(sam_model&, image_view image);
 VISP_API image_data sam_compute(sam_model&, i32x2 point);
 VISP_API image_data sam_compute(sam_model&, box_2d box);
 
-//
+// --- SAM pipeline
 
 struct sam_params {
     int image_size = 1024;
@@ -69,7 +140,7 @@ VISP_API birefnet_model birefnet_load_model(char const* filepath, backend_device
 // Takes RGB input and computes an alpha mask with foreground as 1.0 and background as 0.0.
 VISP_API image_data birefnet_compute(birefnet_model&, image_view image);
 
-//
+// --- BiRefNet pipeline
 
 struct birefnet_params {
     int image_size = 1024;
@@ -99,7 +170,7 @@ VISP_API migan_model migan_load_model(char const* filepath, backend_device const
 // Fills pixels in the input image where the mask is 1.0 with new content.
 VISP_API image_data migan_compute(migan_model&, image_view image, image_view mask);
 
-//
+// --- MI-GAN pipeline
 
 struct migan_params {
     int resolution = 256;
@@ -127,7 +198,7 @@ VISP_API esrgan_model esrgan_load_model(char const* filepath, backend_device con
 // Upscales the input image by the model's scale factor. Uses tiling for large inputs.
 VISP_API image_data esrgan_compute(esrgan_model&, image_view image);
 
-//
+// --- ESRGAN pipeline
 
 struct esrgan_params {
     int scale = 4;
