@@ -39,8 +39,10 @@ int main(int argc, char** argv) {
 
     auto run = [&](test_case const& test, char const* name, backend_type backend) {
         try {
-            printf("%s", name);
-            fflush(stdout);
+            if (verbose) {
+                printf("%s", name);
+                fflush(stdout);
+            }
 
             if (test.is_backend_test) {
                 test.backend_func(backend);
@@ -50,11 +52,11 @@ int main(int argc, char** argv) {
 
             ++passed;
             if (verbose) {
-                printf(" \033[32mPASSED\033[0m\n", name);
+                printf(" %s\n", "\033[32mPASSED\033[0m");
             }
         } catch (const visp::test_failure& e) {
             ++failed;
-            printf(" \033[31mFAILED\033[0m\n", name);
+            printf(" %s\n", "\033[31mFAILED\033[0m");
             printf("  \033[90m%s:%d:\033[0m Assertion failed\n", e.file, e.line);
             printf("  \033[93m%s\033[0m\n", e.condition);
             if (e.eval) {
@@ -65,7 +67,7 @@ int main(int argc, char** argv) {
             }
         } catch (const std::exception& e) {
             ++errors;
-            printf(" \033[31mERROR\033[0m\n", name);
+            printf(" %s\n", "\033[31mERROR\033[0m");
             printf("  \033[90m%s:%d:\033[0m Unhandled exception\n", test.file, test.line);
             printf("  \033[93m%s\033[0m\n", e.what());
         }
@@ -94,14 +96,16 @@ int main(int argc, char** argv) {
         std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start).count();
 
     char const* color = (failed > 0 || errors > 0) ? "\033[31m" : "\033[32m";
-    printf("%s----------------------------------------------------------------------\n", color);
+    if (verbose || failed > 0 || errors > 0) {
+        printf("%s----------------------------------------------------------------------\n", color);
+    }
     if (failed > 0) {
         printf("\033[31m%d failed, ", failed);
     }
     if (errors > 0) {
         printf("\033[31m%d errors, ", errors);
     }
-    printf("\033[92m%d passed %sin %lldms\033[0m\n", passed, color, duration);
+    printf("\033[92m%d passed %sin %lldms\033[0m\n", passed, color, (long long)duration);
 
     return (failed > 0 || errors > 0) ? 1 : 0;
 }
@@ -115,7 +119,10 @@ test_registry& test_registry_instance() {
 
 test_registration::test_registration(
     char const* name, test_function f, char const* file, int line) {
-    test_case t{name, file, line};
+    test_case t;
+    t.name = name;
+    t.file = file;
+    t.line = line;
     t.func = f;
     t.is_backend_test = false;
     test_registry_instance().tests.push_back(t);
@@ -123,7 +130,10 @@ test_registration::test_registration(
 
 test_registration::test_registration(
     char const* name, test_backend_function f, char const* file, int line) {
-    test_case t{name, file, line};
+    test_case t;
+    t.name = name;
+    t.file = file;
+    t.line = line;
     t.backend_func = f;
     t.is_backend_test = true;
     test_registry_instance().tests.push_back(t);
