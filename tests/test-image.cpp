@@ -8,7 +8,7 @@
 
 namespace visp {
 
-TEST_CASE(image_formats) {
+VISP_TEST(image_formats) {
     auto formats = std::array{image_format::rgba_u8, image_format::bgra_u8,  image_format::argb_u8,
                               image_format::rgb_u8,  image_format::alpha_u8, image_format::rgba_f32,
                               image_format::rgb_f32, image_format::alpha_f32};
@@ -36,14 +36,14 @@ TEST_CASE(image_formats) {
     }
 }
 
-TEST_CASE(image_load) {
+VISP_TEST(image_load) {
     image_data img = image_load((test_dir().input / "cat-and-hat.jpg").string().c_str());
     CHECK(img.extent == i32x2{512, 512});
     CHECK(img.format == image_format::rgb_u8);
     CHECK(n_bytes(img) == 512 * 512 * 3);
 }
 
-TEST_CASE(image_save) {
+VISP_TEST(image_save) {
     image_data img = image_alloc(i32x2{16, 16}, image_format::rgba_u8);
     for (int i = 0; i < 16 * 16; ++i) {
         img.data.get()[i * 4 + 0] = 255;
@@ -74,20 +74,20 @@ void test_image_u8_to_f32(
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
-TEST_CASE(image_alpha_u8_to_alpha_f32) {
+VISP_TEST(image_alpha_u8_to_alpha_f32) {
     test_image_u8_to_f32(
         image_format::alpha_u8, image_format::alpha_f32, //
         std::array<uint8_t, 4>{0, 128, 190, 255},        //
         std::array<float, 4>{0.05f, 0.3f, 0.4225f, 0.55f});
 }
-TEST_CASE(image_rgb_u8_to_rgb_f32) {
+VISP_TEST(image_rgb_u8_to_rgb_f32) {
     test_image_u8_to_f32(
         image_format::rgb_u8, image_format::rgb_f32,                                  //
         std::array<uint8_t, 12>{0, 128, 192, 255, 0, 128, 128, 255, 0, 128, 64, 255}, //
         std::array<float, 12>{
             0.05f, 0.7f, -1.05f, 0.55f, 0.2f, -0.8f, 0.3f, 1.2f, -0.3f, 0.3f, 0.45f, -1.3f});
 }
-TEST_CASE(image_rgba_u8_to_rgb_f32) {
+VISP_TEST(image_rgba_u8_to_rgb_f32) {
     test_image_u8_to_f32(
         image_format::rgba_u8, image_format::rgb_f32, //
         std::array<uint8_t, 16>{
@@ -101,7 +101,7 @@ TEST_CASE(image_rgba_u8_to_rgb_f32) {
             0.3f, 1.2f, -0.3f,   //
             0.3f, 0.45f, -1.3f});
 }
-TEST_CASE(image_rgba_u8_to_rgba_f32) {
+VISP_TEST(image_rgba_u8_to_rgba_f32) {
     test_image_u8_to_f32(
         image_format::rgba_u8, image_format::rgba_f32, //
         std::array<uint8_t, 16>{
@@ -115,7 +115,7 @@ TEST_CASE(image_rgba_u8_to_rgba_f32) {
             0.3f, 1.2f, -0.3f, 0.9f, 0.3f, //
             0.45f, -1.3f, 1.4f});
 }
-TEST_CASE(image_bgra_u8_to_rgb_f32) {
+VISP_TEST(image_bgra_u8_to_rgb_f32) {
     test_image_u8_to_f32(
         image_format::bgra_u8, image_format::rgb_f32, //
         std::array<uint8_t, 16>{
@@ -129,7 +129,7 @@ TEST_CASE(image_bgra_u8_to_rgb_f32) {
             0.3f, 1.2f, -0.3f,   //
             0.3f, 0.45f, -1.3f});
 }
-TEST_CASE(image_argb_u8_to_rgb_f32) {
+VISP_TEST(image_argb_u8_to_rgb_f32) {
     test_image_u8_to_f32(
         image_format::argb_u8, image_format::rgb_f32, //
         std::array<uint8_t, 16>{
@@ -144,7 +144,7 @@ TEST_CASE(image_argb_u8_to_rgb_f32) {
             0.3f, 0.45f, -1.3f});
 }
 
-TEST_CASE(image_u8_to_f32_tiled_pad) {
+VISP_TEST(image_u8_to_f32_tiled_pad) {
     std::array<uint8_t, 9> input_data = {0, 0, 102, 0, 0, 255, 0, 0, 102};
     std::array<float, 4> expected_data = {1.0f, 1.0f, 0.4f, 0.4f};
     image_view input(i32x2{3, 3}, image_format::alpha_u8, input_data);
@@ -159,7 +159,7 @@ TEST_CASE(image_u8_to_f32_tiled_pad) {
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
-TEST_CASE(image_alpha_f32_to_alpha_u8) {
+VISP_TEST(image_alpha_f32_to_alpha_u8) {
     std::array<float, 4> input_data{0.0f, 0.3f, 0.4225f, 1.1f};
     std::array<uint8_t, 4> expected_data = {0, 76, 107, 255};
     image_view input(i32x2{2, 2}, image_format::alpha_f32, input_data.data());
@@ -171,7 +171,7 @@ TEST_CASE(image_alpha_f32_to_alpha_u8) {
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
-TEST_CASE(image_rgb_f32_to_rgba_u8) {
+VISP_TEST(image_rgb_f32_to_rgba_u8) {
     std::array<float, 6> input_data{0.0f, 0.31f, -0.51f, 1.0f, 0.2f, 1.8f};
     std::array<uint8_t, 8> expected_data = {0, 79, 0, 255, 255, 51, 255, 255};
     image_view input(i32x2{2, 1}, image_format::rgb_f32, input_data.data());
@@ -183,7 +183,7 @@ TEST_CASE(image_rgb_f32_to_rgba_u8) {
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
-TEST_CASE(image_scale) {
+VISP_TEST(image_scale) {
     image_data img = image_alloc(i32x2{8, 8}, image_format::rgba_u8);
     for (int i = 0; i < 8 * 8; ++i) {
         img.data[i * 4 + 0] = uint8_t(255);
@@ -202,7 +202,7 @@ TEST_CASE(image_scale) {
     }
 }
 
-TEST_CASE(image_alpha_composite) {
+VISP_TEST(image_alpha_composite) {
     std::array<uint8_t, 2 * 2 * 4> fg_data = {255, 0, 0,   255, 0,   255, 0, 255, //
                                               0,   0, 255, 255, 255, 255, 0, 255};
     image_view fg{i32x2{2, 2}, image_format::rgba_u8, fg_data};
@@ -222,7 +222,7 @@ TEST_CASE(image_alpha_composite) {
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
-TEST_CASE(image_blur) {
+VISP_TEST(image_blur) {
     constexpr i32x2 extent{6, 6};
     // clang-format off
     std::array<float, extent[0] * extent[1]> input_data = {
@@ -252,7 +252,7 @@ TEST_CASE(image_blur) {
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
-TEST_CASE(tile_merge) {
+VISP_TEST(tile_merge) {
     std::array<std::array<f32x3, 5 * 5>, 4> tiles;
     for (int t = 0; t < 4; ++t) {
         float v = float(t);
@@ -290,7 +290,7 @@ TEST_CASE(tile_merge) {
     CHECK_IMAGES_EQUAL(dst_span, expected);
 }
 
-TEST_CASE(tile_merge_blending) {
+VISP_TEST(tile_merge_blending) {
     std::array<f32x3, 22 * 19> dst{};
     auto dst_span = image_span({22, 19}, dst);
 

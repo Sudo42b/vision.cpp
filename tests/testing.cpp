@@ -1,4 +1,5 @@
 #include "testing.hpp"
+#include "visp/ml.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -10,45 +11,50 @@ namespace visp {
 // Globals
 float tolerance = 1e-5f;
 std::string extra_info;
-}
+} // namespace visp
 
 int main(int argc, char** argv) {
-    auto& registry = visp::test_registry_instance();
+    using namespace visp;
+
+    auto& registry = test_registry_instance();
 
     int passed = 0;
     int failed = 0;
     int errors = 0;
 
     std::string_view filter;
+    bool exclude_gpu = false;
     bool verbose = false;
+
     for (int i = 1; i < argc; ++i) {
         std::string_view arg(argv[i]);
         if (arg == "-v" || arg == "--verbose") {
             verbose = true;
+        } else if (arg == "--no-gpu") {
+            exclude_gpu = true;
         } else {
             filter = arg;
         }
     }
 
-    auto time_start = steady_clock::now();
-
-    for (auto& test : registry.tests) {
-        if (!filter.empty() && test.name != filter) {
-            continue;
-        }
+    auto run = [&](test_case const& test, char const* name, backend_type backend) {
         try {
-            printf(test.name);
+            printf("%s", name);
             fflush(stdout);
 
-            test.func();
-            
+            if (test.is_backend_test) {
+                test.backend_func(backend);
+            } else {
+                test.func();
+            }
+
             ++passed;
             if (verbose) {
-                printf(" \033[32mPASSED\033[0m\n", test.name);
+                printf(" \033[32mPASSED\033[0m\n", name);
             }
         } catch (const visp::test_failure& e) {
             ++failed;
-            printf(" \033[31mFAILED\033[0m\n", test.name);
+            printf(" \033[31mFAILED\033[0m\n", name);
             printf("  \033[90m%s:%d:\033[0m Assertion failed\n", e.file, e.line);
             printf("  \033[93m%s\033[0m\n", e.condition);
             if (e.eval) {
@@ -59,11 +65,28 @@ int main(int argc, char** argv) {
             }
         } catch (const std::exception& e) {
             ++errors;
-            printf(" \033[31mERROR\033[0m\n", test.name);
+            printf(" \033[31mERROR\033[0m\n", name);
             printf("  \033[90m%s:%d:\033[0m Unhandled exception\n", test.file, test.line);
             printf("  \033[93m%s\033[0m\n", e.what());
         }
         visp::extra_info.clear();
+    };
+
+    auto time_start = steady_clock::now();
+    fixed_string<128> name;
+
+    for (auto& test : registry.tests) {
+        if (!filter.empty() && test.name != filter) {
+            continue;
+        }
+        if (test.is_backend_test) {
+            run(test, format(name, "{}<cpu>", test.name), backend_type::cpu);
+            if (!exclude_gpu) {
+                run(test, format(name, "{}<gpu>", test.name), backend_type::gpu);
+            }
+        } else {
+            run(test, test.name, backend_type::cpu);
+        }
     }
 
     auto time_end = steady_clock::now();
@@ -92,7 +115,18 @@ test_registry& test_registry_instance() {
 
 test_registration::test_registration(
     char const* name, test_function f, char const* file, int line) {
-    test_registry_instance().tests.push_back({name, f, file, line});
+    test_case t{name, file, line};
+    t.func = f;
+    t.is_backend_test = false;
+    test_registry_instance().tests.push_back(t);
+}
+
+test_registration::test_registration(
+    char const* name, test_backend_function f, char const* file, int line) {
+    test_case t{name, file, line};
+    t.backend_func = f;
+    t.is_backend_test = true;
+    test_registry_instance().tests.push_back(t);
 }
 
 test_directories const& test_dir() {
@@ -130,9 +164,7 @@ float& test_tolerance_value() {
 test_failure test_failure_image_mismatch(
     char const* file, int line, char const* condition, float rms) {
     test_failure result(file, line, condition);
-    format(
-        result.eval, "-> rmse {:.5f} > {:.5f} tolerance", rms,
-        test_tolerance_value());
+    format(result.eval, "-> rmse {:.5f} > {:.5f} tolerance", rms, test_tolerance_value());
     return result;
 }
 

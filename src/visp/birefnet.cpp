@@ -588,14 +588,14 @@ const swin_params swin_l_params = {
 swin_params swin_detect_params(model_ref m) {
     tensor t = m.find("bb.layers.0.blocks.0.attn.proj.bias");
     if (t == nullptr) {
-        throw error("Failed to detect model parameters");
+        throw except("Failed to detect model parameters");
     }
     if (t->ne[0] == 96) {
         return swin_t_params;
     } else if (t->ne[0] == 192) {
         return swin_l_params;
     } else {
-        throw error("Unsupported Swin Transformer embed dim: {}", t->ne[0]);
+        throw except("Unsupported Swin Transformer embed dim: {}", t->ne[0]);
     }
 }
 

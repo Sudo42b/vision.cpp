@@ -1,5 +1,6 @@
-#include "visp/vision.hpp"
 #include "util/string.hpp"
+#include "visp/vision.hpp"
+
 
 #include "testing.hpp"
 
@@ -12,15 +13,14 @@ void compare_images(std::string_view name, image_view result, float tolerance = 
     image_save(result, result_path.string().c_str());
     image_data reference = image_load(reference_path.string().c_str());
 
-    test_set_info(
-        format(
-            "while comparing images {} and {}", relative(result_path).string(),
-            relative(reference_path).string()));
+    test_set_info(format(
+        "while comparing images {} and {}", relative(result_path).string(),
+        relative(reference_path).string()));
     test_with_tolerance with(tolerance);
     CHECK_IMAGES_EQUAL(result, reference);
 }
 
-void test_mobile_sam(backend_type bt) {
+VISP_BACKEND_TEST(test_mobile_sam)(backend_type bt) {
     path model_path = test_dir().models / "MobileSAM-F16.gguf";
     path input_path = test_dir().input / "cat-and-hat.jpg";
 
@@ -29,7 +29,7 @@ void test_mobile_sam(backend_type bt) {
     image_data input = image_load(input_path.string().c_str());
     sam_encode(model, input);
     image_data mask_box = sam_compute(model, box_2d{{180, 110}, {505, 330}});
-    image_data mask_point =  sam_compute(model, i32x2{200, 300});
+    image_data mask_point = sam_compute(model, i32x2{200, 300});
 
     char const* suffix = bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
     float tolerance = bt == backend_type::cpu ? 0.01f : 0.015f;
@@ -37,14 +37,7 @@ void test_mobile_sam(backend_type bt) {
     compare_images(format("mobile_sam-point{}", suffix), mask_point, tolerance);
 }
 
-TEST_CASE(test_mobile_sam_cpu) {
-    test_mobile_sam(backend_type::cpu);
-}
-TEST_CASE(test_mobile_sam_gpu) {
-    test_mobile_sam(backend_type::gpu);
-}
-
-void test_birefnet(backend_type bt) {
+VISP_BACKEND_TEST(test_birefnet)(backend_type bt) {
     path model_path = test_dir().models / "BiRefNet-lite-F16.gguf";
     path input_path = test_dir().input / "wardrobe.jpg";
     std::string name = "birefnet";
@@ -58,14 +51,7 @@ void test_birefnet(backend_type bt) {
     compare_images(name, output);
 }
 
-TEST_CASE(test_birefnet_cpu) {
-    test_birefnet(backend_type::cpu);
-}
-TEST_CASE(test_birefnet_gpu) {
-    test_birefnet(backend_type::gpu);
-}
-
-void test_migan(backend_type bt) {
+VISP_BACKEND_TEST(test_migan)(backend_type bt) {
     path model_path = test_dir().models / "MIGAN-512-places2-F16.gguf";
     path image_path = test_dir().input / "bench-image.jpg";
     path mask_path = test_dir().input / "bench-mask.png";
@@ -82,14 +68,7 @@ void test_migan(backend_type bt) {
     compare_images(name, composited);
 }
 
-TEST_CASE(test_migan_cpu) {
-    test_migan(backend_type::cpu);
-}
-TEST_CASE(test_migan_gpu) {
-    test_migan(backend_type::gpu);
-}
-
-void test_esrgan(backend_type bt) {
+VISP_BACKEND_TEST(test_esrgan)(backend_type bt) {
     path model_path = test_dir().models / "RealESRGAN_x4plus_anime_6Bh.gguf";
     path input_path = test_dir().input / "vase-and-bowl.jpg";
     std::string name = "esrgan";
@@ -101,13 +80,6 @@ void test_esrgan(backend_type bt) {
     image_data output = esrgan_compute(model, input);
 
     compare_images(name, output);
-}
-
-TEST_CASE(test_esrgan_cpu) {
-    test_esrgan(backend_type::cpu);
-}
-TEST_CASE(test_esrgan_gpu) {
-    test_esrgan(backend_type::gpu);
 }
 
 } // namespace visp

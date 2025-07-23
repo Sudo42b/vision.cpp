@@ -52,7 +52,7 @@ backend_device backend_init(backend_type type) {
     backend_device b;
     b.handle.reset(ggml_backend_init_by_type(convert(type), nullptr));
     if (!b.handle) {
-        throw error("Failed to initialize backend, no suitable device available");
+        throw except("Failed to initialize backend, no suitable device available");
     }
     b.device = ggml_backend_get_device(b.handle.get());
 
@@ -305,7 +305,7 @@ tensor model_ref::weights(char const* name) const {
     if (tensor result = find(name)) {
         return result;
     }
-    throw error("tensor not found: {}.{}", prefix.view(), name);
+    throw except("tensor not found: {}.{}", prefix.view(), name);
 }
 
 model_ref model_ref::with_prefix(tensor_name new_prefix) const {
@@ -360,13 +360,13 @@ tensor_data tensor_alloc(tensor x) {
 tensor_data tensor_load(tensor x, char const* filepath) {
     FILE* file = fopen(filepath, "rb");
     if (!file) {
-        throw error("Failed to open file: {}", filepath);
+        throw except("Failed to open file: {}", filepath);
     }
     tensor_data result = tensor_alloc(x);
     size_t read = fread(result.data.get(), 1, ggml_nbytes(x), file);
     fclose(file);
     if (read != ggml_nbytes(x)) {
-        throw error("Failed to read data from file: {}", filepath);
+        throw except("Failed to read data from file: {}", filepath);
     }
     return result;
 }

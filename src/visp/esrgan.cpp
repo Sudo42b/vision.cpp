@@ -102,10 +102,10 @@ esrgan_params esrgan_detect_params(model_ref m) {
     // 3 layers per upscale block, each upscales x2, 5 blocks for the rest of the model
     p.scale = 1 << ((model_len - 5) / 3);
     if (p.scale < 2 || p.scale > 4) {
-        throw error("Unsupported scale: {}", p.scale);
+        throw except("Unsupported scale: {}", p.scale);
     }
     if (p.n_blocks < 1 || p.n_blocks > 23) {
-        throw error("Invalid number of blocks: {}", p.n_blocks);
+        throw except("Invalid number of blocks: {}", p.n_blocks);
     }
     return p;
 }

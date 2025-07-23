@@ -427,7 +427,7 @@ param_dict build_dict(span<raw_param const> raw_params) {
             param.type = param_type::string;
             param.value.s = raw.value;
             break;
-        default: throw error("Unknown parameter type");
+        default: throw except("Unknown parameter type");
         }
         dict.params.push_back(param);
     }
@@ -509,7 +509,7 @@ test_case const& workbench_find_test(std::string_view name) {
     if (it != w.tests.end()) {
         return *it;
     }
-    throw error("Test case not found: {}", name);
+    throw except("Test case not found: {}", name);
 }
 
 void workbench_run(

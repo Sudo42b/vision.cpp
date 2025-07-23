@@ -35,7 +35,7 @@ char const* next_arg(int argc, char** argv, int& i) {
     if (++i < argc) {
         return argv[i];
     } else {
-        throw error("Missing argument after {}", argv[i - 1]);
+        throw except("Missing argument after {}", argv[i - 1]);
     }
 }
 
@@ -45,7 +45,7 @@ std::vector<char const*> collect_args(int argc, char** argv, int& i, char delim 
         r.push_back(next_arg(argc, argv, i));
     } while (i + 1 < argc && argv[i + 1][0] != delim);
     if (r.empty()) {
-        throw error("Missing argument after {}", argv[i - 1]);
+        throw except("Missing argument after {}", argv[i - 1]);
     }
     return r;
 }
@@ -54,21 +54,21 @@ int parse_int(std::string_view arg) {
     int value = 0;
     auto [ptr, ec] = std::from_chars(arg.data(), arg.data() + arg.size(), value);
     if (ec != std::errc()) {
-        throw error("Invalid integer argument: {}", arg);
+        throw except("Invalid integer argument: {}", arg);
     }
     return value;
 }
 
 char const* validate_path(char const* arg) {
     if (!exists(path(arg))) {
-        throw error("File not found: {}", arg);
+        throw except("File not found: {}", arg);
     }
     return arg;
 }
 
 void require_inputs(std::span<char const* const> inputs, int n_required, char const* names) {
     if (inputs.size() != size_t(n_required)) {
-        throw error(
+        throw except(
             "Expected -i to be followed by {} inputs: {} - but found {}.", n_required, names,
             inputs.size());
     }
@@ -77,7 +77,7 @@ void require_inputs(std::span<char const* const> inputs, int n_required, char co
 cli_args cli_parse(int argc, char** argv) {
     cli_args r;
     if (argc < 2) {
-        throw error("Missing command.\nUsage: {} <command> [options]", argv[0]);
+        throw except("Missing command.\nUsage: {} <command> [options]", argv[0]);
     }
 
     std::string_view arg1 = argv[1];
@@ -90,7 +90,7 @@ cli_args cli_parse(int argc, char** argv) {
     } else if (arg1 == "esrgan") {
         r.command = cli_command::esrgan;
     } else {
-        throw error("Unknown command: {}", arg1);
+        throw except("Unknown command: {}", arg1);
     }
 
     for (int i = 2; i < argc; ++i) {
@@ -111,14 +111,14 @@ cli_args cli_parse(int argc, char** argv) {
             } else if (backend_arg == "gpu") {
                 r.bknd_type = backend_type::gpu;
             } else {
-                throw error("Unknown backend type '{}', must be one of: cpu, gpu", backend_arg);
+                throw except("Unknown backend type '{}', must be one of: cpu, gpu", backend_arg);
             }
         } else if (arg == "--composite") {
             r.composite = next_arg(argc, argv, i);
         } else if (arg == "--tile") {
             r.tile_size = parse_int(next_arg(argc, argv, i));
         } else if (arg.starts_with("-")) {
-            throw error("Unknown argument: {}", arg);
+            throw except("Unknown argument: {}", arg);
         }
     }
     return r;
@@ -255,12 +255,12 @@ struct sam_prompt {
 
 sam_prompt sam_parse_prompt(std::span<char const* const> args, i32x2 extent) {
     if (args.empty()) {
-        throw error(
+        throw except(
             "SAM requires a prompt with coordinates for a point or box"
             "eg. '--prompt 100 200' to pick the point at pixel (x=100, y=200)");
     }
     if (args.size() < 2 || args.size() > 4) {
-        throw error(
+        throw except(
             "Invalid number of arguments for SAM prompt. Expected 2 (point) or 4 (box) numbers, "
             "got {}",
             args.size());
@@ -269,17 +269,17 @@ sam_prompt sam_parse_prompt(std::span<char const* const> args, i32x2 extent) {
     if (args.size() >= 2) {
         a = {parse_int(args[0]), parse_int(args[1])};
         if (a[0] < 0 || a[1] < 0 || a[0] >= extent[0] || a[1] >= extent[1]) {
-            throw error("Invalid image coordinates: ({}, {})", a[0], a[1]);
+            throw except("Invalid image coordinates: ({}, {})", a[0], a[1]);
         }
     }
     i32x2 b{-1, -1};
     if (args.size() == 4) {
         b = {parse_int(args[2]), parse_int(args[3])};
         if (b[0] < 0 || b[1] < 0 || b[0] >= extent[0] || b[1] >= extent[1]) {
-            throw error("Invalid image coordinates: ({}, {})", b[0], b[1]);
+            throw except("Invalid image coordinates: ({}, {})", b[0], b[1]);
         }
         if (a[0] >= b[0] || a[1] >= b[1]) {
-            throw error("Invalid box coordinates: ({}, {}) to ({}, {})", a[0], a[1], b[0], b[1]);
+            throw except("Invalid box coordinates: ({}, {}) to ({}, {})", a[0], a[1], b[0], b[1]);
         }
     }
     return sam_prompt{a, b};

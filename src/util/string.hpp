@@ -66,8 +66,8 @@ template <size_t N, typename... Args>
 char const* format(fixed_string<N>& dst, char const* fmt, Args&&... args) {
     auto it = truncating_iterator(dst.data, N);
     auto out = fmt::vformat_to(it, fmt, fmt::make_format_args(args...));
-    dst.data[N - 1] = 0;
     dst.length = std::min(size_t(out - it), N - 1);
+    dst.data[dst.length] = 0;
     return dst.c_str();
 }
 
@@ -79,7 +79,7 @@ String format(char const* fmt, Args&&... args) {
 }
 
 template <typename... Args>
-exception error(char const* fmt, Args&&... args) {
+exception except(char const* fmt, Args&&... args) {
     return exception(format<fixed_string<128>>(fmt, std::forward<Args>(args)...));
 }
 

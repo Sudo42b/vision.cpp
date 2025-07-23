@@ -6,6 +6,7 @@
 #include <vector>
 
 namespace visp {
+enum class backend_type;
 
 struct test_failure {
     char const* file;
@@ -18,12 +19,17 @@ struct test_failure {
 };
 
 using test_function = void (*)();
+using test_backend_function = void (*)(backend_type);
 
 struct test_case {
     char const* name;
-    test_function func;
     char const* file;
     int line;
+    bool is_backend_test;
+    union {
+        test_function func;
+        test_backend_function backend_func;
+    };
 };
 
 struct test_registry {
@@ -34,6 +40,7 @@ test_registry& test_registry_instance();
 
 struct test_registration {
     test_registration(char const* name, test_function f, char const* file, int line);
+    test_registration(char const* name, test_backend_function f, char const* file, int line);
 };
 
 using std::filesystem::path;
@@ -87,10 +94,15 @@ test_failure test_failure_image_mismatch(char const* file, int line, char const*
 
 } // namespace visp
 
-#define TEST_CASE(name)                                                                            \
+#define VISP_TEST(name)                                                                            \
     void test_func_##name();                                                                       \
     const visp::test_registration test_reg_##name(#name, test_func_##name, __FILE__, __LINE__);    \
     void test_func_##name()
+
+#define VISP_BACKEND_TEST(name)                                                                    \
+    void test_func_##name(visp::backend_type);                                                     \
+    const visp::test_registration test_reg_##name(#name, test_func_##name, __FILE__, __LINE__);    \
+    void test_func_##name
 
 #define CHECK(...)                                                                                 \
     if (!(__VA_ARGS__)) {                                                                          \

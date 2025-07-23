@@ -146,8 +146,16 @@ struct flags {
         return (lhs.value & uint32_t(rhs)) != 0;
     }
 
+    friend constexpr bool operator&(flags<E> lhs, flags<E> rhs) {
+        return (lhs.value & rhs.value) != 0;
+    }
+
     friend constexpr flags<E> operator|(flags<E> lhs, E rhs) {
         return flags<E>(lhs.value | uint32_t(rhs));
+    }
+
+    friend constexpr flags<E> operator|(flags<E> lhs, flags<E> rhs) {
+        return flags<E>(lhs.value | rhs.value);
     }
 };
 

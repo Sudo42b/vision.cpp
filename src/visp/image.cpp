@@ -184,7 +184,7 @@ image_data image_load(char const* filepath) {
     int channels = 0;
     uint8_t* pixels = stbi_load(filepath, &extent[0], &extent[1], &channels, 0);
     if (!pixels) {
-        throw error("Failed to load image {}: {}", filepath, stbi_failure_reason());
+        throw except("Failed to load image {}: {}", filepath, stbi_failure_reason());
     }
     image_format format = image_format_from_channels(channels);
     return image_data(extent, format, std::unique_ptr<uint8_t[]>(pixels));
@@ -195,12 +195,12 @@ void image_save(image_view const& img, char const* filepath) {
     
     if (!(img.format == image_format::alpha_u8 || img.format == image_format::rgb_u8 ||
           img.format == image_format::rgba_u8)) {
-        throw error("Unsupported image format [{}]", int(img.format));
+        throw except("Unsupported image format [{}]", int(img.format));
     }
     int comp = n_channels(img.format);
     if (!stbi_write_png(
             filepath, img.extent[0], img.extent[1], comp, img.data, img.extent[0] * comp)) {
-        throw error("Failed to save image {}", filepath);
+        throw except("Failed to save image {}", filepath);
     }
 }
 
@@ -338,7 +338,7 @@ void image_scale(image_view const& img, i32x2 target, image_span const& dst) {
             STBIR_COLORSPACE_SRGB, nullptr);
     }
     if (result == 0) {
-        throw error(
+        throw except(
             "Failed to resize image {}x{} to {}x{}", img.extent[0], img.extent[1], target[0],
             target[1]);
     }
