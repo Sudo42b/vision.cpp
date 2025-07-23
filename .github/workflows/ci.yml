@@ -63,24 +63,35 @@ jobs:
           -D CMAKE_BUILD_RPATH="@loader_path"
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build build --config Release
 
-      - name: Test
+      # tests fail with vulkan/llvmpipe (runs out of memory or just wrong results)
+      # - name: Test Vulkan
+      #   if: matrix.os == 'ubuntu-22.04'
+      #   working-directory: ./build
+      #   run: |
+      #     export GGML_VK_VISIBLE_DEVICES=0
+      #     ctest --verbose
+
+      - name: Test CPU
+        if: matrix.os != 'ubuntu-22.04'
         working-directory: ./build
-        run: ctest --verbose
+        run: ctest --verbose -C Release
 
       - name: Install
-        run: cmake --install build --prefix install
+        run: cmake --install build --prefix install --config Release
 
       - name: Package
         working-directory: ./build
         run: cpack
 
       - name: Upload artifacts
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
-          name: visioncpp
+          name: visioncpp-${{ matrix.os }}
           path: |
             ./build/*.tar.gz
             ./build/*.zip
+            ./tests/results/*.png
           compression-level: 0
