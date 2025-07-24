@@ -4,7 +4,7 @@ message(STATUS "Checking for models/MobileSAM-F16.gguf")
 file(DOWNLOAD
   "https://huggingface.co/Acly/MobileSAM-GGUF/resolve/main/MobileSAM-F16.gguf"
   ${CMAKE_CURRENT_LIST_DIR}/MobileSAM-F16.gguf
-  EXPECTED_HASH "SHA256=e556f62189f632608090fbe5a6979ce79ce9dcaa2418a28660a31b87cc674584"
+  EXPECTED_HASH "SHA256=0d1e1bcaeed9c9024ea0bb4a8b10fc46d9d2e0fe07d4fbe1d43efadf263fdddc"
   SHOW_PROGRESS
 )
 message(STATUS "Checking for models/BiRefNet-lite-F16.gguf")
