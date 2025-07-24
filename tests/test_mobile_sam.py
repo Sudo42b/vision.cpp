@@ -30,10 +30,30 @@ class Conv2d_BN(torch.nn.Sequential):
         self.add_module("bn", bn)
 
 
-def add_variance_epsilon(state: dict[str, torch.Tensor], epsilon=1e-5):
-    for k in state:
-        if k.endswith("running_var"):
-            state[k] = torch.sqrt(state[k] + 1e-5).contiguous()
+def fuse_conv_2d_batch_norm(model: dict[str, Tensor], key: str, epsilon=1e-5):
+    conv_weight = model[f"{key}c.weight"]
+    bn_weight = model[f"{key}bn.weight"]
+    bn_bias = model[f"{key}bn.bias"]
+    bn_mean = model[f"{key}bn.running_mean"]
+    bn_var = model[f"{key}bn.running_var"]
+
+    bn_weight = bn_weight / torch.sqrt(bn_var + epsilon)
+    fused_weight = conv_weight * bn_weight[:, None, None, None]
+    fused_bias = bn_bias - bn_mean * bn_weight
+    return fused_weight, fused_bias
+
+
+def fuse_all_conv_2d_batch_norm(model: dict[str, Tensor]):
+    fused_weights = {}
+    for k in model:
+        if k.endswith("c.weight"):
+            key = k.removesuffix("c.weight")
+            weight, bias = fuse_conv_2d_batch_norm(model, key)
+            fused_weights[f"{key}weight"] = weight
+            fused_weights[f"{key}bias"] = bias
+        elif not k.endswith("num_batches_tracked"):
+            fused_weights[k] = model[k]
+    return fused_weights
 
 
 def test_conv_2d_batch_norm():
@@ -45,8 +65,8 @@ def test_conv_2d_batch_norm():
     x = torch.rand(1, 4, 8, 8)
     expected = conv2dbn(x)
 
-    add_variance_epsilon(state)
-    convert_to_nhwc(state)
+    state = fuse_all_conv_2d_batch_norm(state)
+    state = convert_to_nhwc(state)
     x = to_nhwc(x)
     result = workbench.invoke_test("sam_conv_2d_batch_norm", x, state)
     result = to_nchw(result)
@@ -89,7 +109,7 @@ def test_patch_embed():
     x = torch.rand(1, 3, 8, 8)
     expected = patch_embed(x)
 
-    add_variance_epsilon(state)
+    state = fuse_all_conv_2d_batch_norm(state)
     convert_to_nhwc(state)
     x = to_nhwc(x)
     result = to_nhwc(torch.zeros_like(expected))
@@ -184,7 +204,7 @@ def test_mb_conv():
     x = torch.rand(1, 4, 8, 8)
     expected = mb_conv(x)
 
-    add_variance_epsilon(state)
+    state = fuse_all_conv_2d_batch_norm(state)
     convert_to_nhwc(state)
     x = to_nhwc(x)
     result = workbench.invoke_test("sam_mb_conv", x, state)
@@ -235,10 +255,10 @@ def test_patch_merging():
     x = torch.rand(1, 8, 32, 32)
     expected = patch_merging(x)
 
-    add_variance_epsilon(state)
+    state = fuse_all_conv_2d_batch_norm(state)
     convert_to_nhwc(state)
     x = to_nhwc(x)
-    result = result = workbench.invoke_test("sam_patch_merging", x, state)
+    result = workbench.invoke_test("sam_patch_merging", x, state)
     result = result.transpose(1, 2).reshape_as(expected)
 
     # precision: ggml_gelu uses fp16 look-up table & tanh approximation
@@ -497,9 +517,9 @@ def test_tiny_vit_block():
     state["attn.attention_biases_indexed"] = state["attn.attention_biases"][
         :, tiny_vit_block.attn.attention_bias_idxs
     ]
-    add_variance_epsilon(state)
-    convert_to_nhwc(state)
-    result = result = workbench.invoke_test("sam_tiny_vit_block", x, state)
+    state = fuse_all_conv_2d_batch_norm(state)
+    state = convert_to_nhwc(state)
+    result = workbench.invoke_test("sam_tiny_vit_block", x, state)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
 

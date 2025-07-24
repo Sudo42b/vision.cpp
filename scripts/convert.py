@@ -79,7 +79,8 @@ def convert_sam(
         input_filepath, map_location="cpu", weights_only=True
     )
 
-    for name, tensor in model.items():
+    for key, tensor in model.items():
+        name = key
         name = name.replace("image_encoder.", "enc.")
         name = name.replace("mask_decoder.", "dec.")
         name = name.replace("_image_to_token.", "_i2t.")
@@ -92,14 +93,17 @@ def convert_sam(
             name = name + "_indexed"
             tensor = tensor[:, attention_bias_idxs]
 
-        if name.endswith("running_var"):
-            tensor = torch.sqrt(tensor + batch_norm_eps)
+        if name.endswith("c.weight"):
+            name = name.removesuffix(".c.weight")
+            weight, bias = fuse_conv_2d_batch_norm(model, key.removesuffix(".c.weight"))
+            weight = conv_2d_to_nhwc(weight)
+            add_tensor(writer, f"{name}.weight", weight, quantize, verbose)
+            add_tensor(writer, f"{name}.bias", bias, quantize, verbose)
+            continue
+        if ".bn." in name:
+            continue  # batch norm is fused above
 
-        if (
-            name.endswith("c.weight")
-            or name.endswith("neck.0.weight")
-            or name.endswith("neck.2.weight")
-        ):
+        if name.endswith("neck.0.weight") or name.endswith("neck.2.weight"):
             assert tensor.shape[2] == tensor.shape[3] and tensor.shape[2] <= 3
             tensor = conv_2d_to_nhwc(tensor)
 
@@ -113,6 +117,19 @@ def convert_sam(
             data_type = None
 
         add_tensor(writer, name, tensor, data_type, verbose)
+
+
+def fuse_conv_2d_batch_norm(model: dict[str, Tensor], key: str):
+    conv_weight = model[f"{key}.c.weight"]
+    bn_weight = model[f"{key}.bn.weight"]
+    bn_bias = model[f"{key}.bn.bias"]
+    bn_mean = model[f"{key}.bn.running_mean"]
+    bn_var = model[f"{key}.bn.running_var"]
+
+    bn_weight = bn_weight / torch.sqrt(bn_var + batch_norm_eps)
+    fused_weight = conv_weight * bn_weight[:, None, None, None]
+    fused_bias = bn_bias - bn_mean * bn_weight
+    return fused_weight, fused_bias
 
 
 def build_attention_bias_indices(resolution: int):
@@ -238,11 +255,7 @@ arch_names = {
     "esrgan": "esrgan",
 }
 
-file_types = {
-    None: 0,
-    "f32": 0,
-    "f16": 1
-}
+file_types = {None: 0, "f32": 0, "f16": 1}
 
 if __name__ == "__main__":
     # fmt: off
@@ -269,7 +282,9 @@ if __name__ == "__main__":
 
     try:
         writer = GGUFWriter(output_path, arch_names.get(args.arch, args.arch))
-        metadata = Metadata.load(args.metadata, input_path.with_suffix(""), args.model_name)
+        metadata = Metadata.load(
+            args.metadata, input_path.with_suffix(""), args.model_name
+        )
 
         match args.arch:
             case "sam":

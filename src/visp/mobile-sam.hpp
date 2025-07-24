@@ -39,7 +39,6 @@ struct tiny_vit_params {
 
 float resize_longest_side(i32x2 extent, int target_longest_side);
 
-tensor conv_2d_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0, int groups = 1);
 tensor patch_embed(model_ref m, tensor x);
 tensor mb_conv(model_ref m, tensor x);
 tensor patch_merging(model_ref m, tensor x, int input_resolution);

@@ -118,7 +118,7 @@ DEF(linear)(model_ref m, span<tensor> input, param_dict const& p) {
 // Mobile SAM
 
 DEF(sam_conv_2d_batch_norm)(model_ref m, span<tensor> input, param_dict const& p) {
-    return {sam::conv_2d_batch_norm(m, input[0], 2, 1)};
+    return {conv_2d(m, input[0], 2, 1)}; // fused conv_2d + batch_norm
 }
 
 DEF(sam_patch_embed)(model_ref m, span<tensor> input, param_dict const& p) {

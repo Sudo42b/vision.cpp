@@ -90,7 +90,9 @@ def encode_params(params: dict[str, str | int | float]):
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 root_dir = Path(__file__).parent.parent
-lib = ctypes.CDLL(str(root_dir / "build" / "bin" / "vision-workbench.dll"))
+bin_dir = root_dir / "build" / "bin"
+
+lib = ctypes.CDLL(str(bin_dir / "vision-workbench.dll"))
 lib.visp_workbench.argtypes = [
     ctypes.c_char_p,
     ctypes.POINTER(RawTensor),
@@ -174,7 +176,7 @@ def to_nchw(tensor: torch.Tensor):
     return tensor.permute(0, 3, 1, 2).contiguous()
 
 
-def convert_to_nhwc(state: dict[str, torch.Tensor], key="c."):
+def convert_to_nhwc(state: dict[str, torch.Tensor], key=""):
     for k, v in state.items():
         is_conv = (
             v.ndim == 4
@@ -182,7 +184,7 @@ def convert_to_nhwc(state: dict[str, torch.Tensor], key="c."):
             and v.shape[2] in (1, 3, 4, 7)
             and k.endswith("weight")
         )
-        if key in k and is_conv:
+        if is_conv and (key == "" or key in k):
             if v.shape[1] == 1:  # depthwise
                 state[k] = v.permute(2, 3, 1, 0).contiguous()
             else:
