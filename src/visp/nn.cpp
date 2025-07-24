@@ -3,11 +3,16 @@
 
 namespace visp {
 
-tensor linear(model_ref m, tensor x) {
-    x = ggml_mul_mat(m, m.weights("weight"), x);
+tensor add_bias(model_ref m, tensor x) {
     if (tensor bias = m.find("bias")) {
         x = ggml_add_inplace(m, x, bias);
     }
+    return x;
+}
+
+tensor linear(model_ref m, tensor x) {
+    x = ggml_mul_mat(m, m.weights("weight"), x);
+    x = add_bias(m, x);
     return x;
 }
 
@@ -19,25 +24,11 @@ tensor layer_norm(model_ref m, tensor x, float eps) {
 }
 
 tensor permute_cwhn_to_whcn(model_ref m, tensor x) {
-    return ggml_permute(m, x, 2, 0, 1, 3); // cwhn -> whcn
+    return ggml_permute(m, x, 2, 0, 1, 3);
 }
 
 tensor permute_whcn_to_cwhn(model_ref m, tensor x) {
-    return ggml_permute(m, x, 1, 2, 0, 3); // whcn -> cwhn
-}
-
-tensor cwhn_to_contiguous(model_ref m, tensor x) {
-    if (m.flags & model_build_flag::cwhn) {
-        return x;
-    }
-    return ggml_cont(m, permute_cwhn_to_whcn(m, x));
-}
-
-tensor whcn_to_contiguous(model_ref m, tensor x) {
-    if (m.flags & model_build_flag::cwhn) {
-        return ggml_cont(m, permute_whcn_to_cwhn(m, x));
-    }
-    return x;
+    return ggml_permute(m, x, 1, 2, 0, 3);
 }
 
 tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
@@ -45,9 +36,7 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
 
     tensor weight = m.weights("weight");
     if (weight->ne[1] == 1 && weight->ne[2] == 1 && stride == 1) {
-        int64_t w = x->ne[1];
-        int64_t h = x->ne[2];
-        int64_t b = x->ne[3];
+        auto [c, w, h, b] = nelements(x);
         weight = ggml_reshape_2d(m, weight, weight->ne[0], weight->ne[3]);
         x = ggml_reshape_2d(m, x, x->ne[0], w * h * b);
         x = ggml_mul_mat(m, weight, x);
@@ -70,10 +59,7 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
         x = ggml_mul_mat(m, b, a);
         x = ggml_reshape_4d(m, x, weight->ne[3], cols->ne[1], cols->ne[2], cols->ne[3]);
     }
-    if (tensor bias = m.find("bias")) {
-        bias = ggml_reshape_4d(m, bias, bias->ne[0], 1, 1, 1);
-        x = ggml_add_inplace(m, x, bias);
-    }
+    x = add_bias(m, x);
     return x;
 }
 
@@ -85,10 +71,7 @@ tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
     x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
     x = permute_whcn_to_cwhn(m, x);
 
-    if (tensor bias = m.find("bias")) {
-        bias = ggml_reshape_4d(m, bias, bias->ne[0], 1, 1, 1);
-        x = ggml_add_inplace(m, x, bias);
-    }
+    x = add_bias(m, x);
     return x;
 }
 
@@ -103,9 +86,7 @@ tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
     x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
     x = ggml_conv_transpose_2d_p0(m, weight, x, stride);
     x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
-    if (tensor bias = m.find("bias")) {
-        x = ggml_add_inplace(m, x, bias);
-    }
+    x = add_bias(m, x);
     return x;
 }
 

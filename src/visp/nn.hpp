@@ -14,10 +14,6 @@ tensor layer_norm(model_ref, tensor x, float eps = 1e-5f);
 tensor permute_cwhn_to_whcn(model_ref m, tensor x);
 tensor permute_whcn_to_cwhn(model_ref m, tensor x);
 
-// Convert to the format used by the model (matching weights) and make contiguous in memory.
-tensor cwhn_to_contiguous(model_ref m, tensor x);
-tensor whcn_to_contiguous(model_ref m, tensor x);
-
 tensor conv_2d(model_ref, tensor x, int stride = 1, int pad = 0);
 tensor conv_2d_depthwise(model_ref, tensor x, int stride = 1, int pad = 0);
 tensor conv_2d_deform(
