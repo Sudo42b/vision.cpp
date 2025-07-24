@@ -1,4 +1,5 @@
 #include "visp/ml.hpp"
+#include "visp/platform.hpp"
 #include "util/string.hpp"
 
 #include <algorithm>
@@ -27,6 +28,12 @@ bool load_ggml_backends() {
             return true; // already loaded
         }
         ggml_backend_load_all();
+        if (ggml_backend_reg_count() == 0) {
+            if (path dir = current_library_path(); !dir.empty()) {
+                auto str = dir.parent_path().u8string();
+                ggml_backend_load_all_from_path((char const*)str.c_str());
+            }
+        }                
         return true;
     }();
     return loaded;
