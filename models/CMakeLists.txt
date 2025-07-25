@@ -4,14 +4,14 @@ message(STATUS "Checking for models/MobileSAM-F16.gguf")
 file(DOWNLOAD
   "https://huggingface.co/Acly/MobileSAM-GGUF/resolve/main/MobileSAM-F16.gguf"
   ${CMAKE_CURRENT_LIST_DIR}/MobileSAM-F16.gguf
-  EXPECTED_HASH "SHA256=0d1e1bcaeed9c9024ea0bb4a8b10fc46d9d2e0fe07d4fbe1d43efadf263fdddc"
+  EXPECTED_HASH "SHA256=1E392F58A0E518B7E1E9E5A43403FF0C6D001AEEFA6F4E4D2BDF60F7BBE6E4F2"
   SHOW_PROGRESS
 )
 message(STATUS "Checking for models/BiRefNet-lite-F16.gguf")
 file(DOWNLOAD
   "https://huggingface.co/Acly/BiRefNet-GGUF/resolve/main/BiRefNet-lite-F16.gguf"
   ${CMAKE_CURRENT_LIST_DIR}/BiRefNet-lite-F16.gguf
-  EXPECTED_HASH "SHA256=33eb4c4b045f4cbb179afe261e5ba2c0e5b28b5ca6033aa68ca00f050dd027e6"
+  EXPECTED_HASH "SHA256=F038843EA7C44A859491DF96C7B36815143F7DE77B13CBFC0DAE5F6EAE863FB5"
   SHOW_PROGRESS
 )
 message(STATUS "Checking for models/MIGAN-512-places2-F16.gguf")

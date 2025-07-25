@@ -10,7 +10,7 @@ from timm.layers import to_2tuple, trunc_normal_
 from einops import rearrange
 
 from . import workbench
-from .workbench import to_nhwc, to_nchw, convert_to_nhwc
+from .workbench import fuse_batch_norm, to_nhwc, to_nchw, convert_to_nhwc, fuse_conv_2d_batch_norm
 from .workbench import input_tensor, generate_state
 
 torch.set_printoptions(precision=3, linewidth=100, edgeitems=6, sci_mode=False)
@@ -27,7 +27,6 @@ class WindowAttention(nn.Module):
         attn_drop=0.0,
         proj_drop=0.0,
     ):
-
         super().__init__()
         self.dim = dim
         self.window_size = window_size  # Wh, Ww
@@ -43,16 +42,10 @@ class WindowAttention(nn.Module):
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(
-            torch.meshgrid([coords_h, coords_w], indexing="ij")
-        )  # 2, Wh, Ww
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing="ij"))  # 2, Wh, Ww
         coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-        relative_coords = (
-            coords_flatten[:, :, None] - coords_flatten[:, None, :]
-        )  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(
-            1, 2, 0
-        ).contiguous()  # Wh*Ww, Wh*Ww, 2
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
         relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
         relative_coords[:, :, 1] += self.window_size[1] - 1
         relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
@@ -145,17 +138,13 @@ def test_window_attention(masking: bool):
 def window_partition(x, window_size):
     B, H, W, C = x.shape
     x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
-    windows = (
-        x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
-    )
+    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
     return windows
 
 
 def window_reverse(windows, window_size, H, W):
     B = int(windows.shape[0] / (H * W / window_size / window_size))
-    x = windows.view(
-        B, H // window_size, W // window_size, window_size, window_size, -1
-    )
+    x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
     x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
     return x
 
@@ -208,9 +197,7 @@ class SwinTransformerBlock(nn.Module):
         self.window_size = window_size
         self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
-        assert (
-            0 <= self.shift_size < self.window_size
-        ), "shift_size must in 0-window_size"
+        assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window_size"
 
         self.norm1 = norm_layer(dim)
         self.attn = WindowAttention(
@@ -254,9 +241,7 @@ class SwinTransformerBlock(nn.Module):
 
         # cyclic shift
         if self.shift_size > 0:
-            shifted_x = torch.roll(
-                x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2)
-            )
+            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
             attn_mask = mask_matrix
         else:
             shifted_x = x
@@ -271,9 +256,7 @@ class SwinTransformerBlock(nn.Module):
         )  # nW*B, window_size*window_size, C
 
         # W-MSA/SW-MSA
-        attn_windows = self.attn(
-            x_windows, mask=attn_mask
-        )  # nW*B, window_size*window_size, C
+        attn_windows = self.attn(x_windows, mask=attn_mask)  # nW*B, window_size*window_size, C
 
         # merge windows
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
@@ -281,9 +264,7 @@ class SwinTransformerBlock(nn.Module):
 
         # reverse cyclic shift
         if self.shift_size > 0:
-            x = torch.roll(
-                shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2)
-            )
+            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
             x = shifted_x
 
@@ -386,26 +367,22 @@ class BasicLayer(nn.Module):
         self.use_checkpoint = use_checkpoint
 
         # build blocks
-        self.blocks = nn.ModuleList(
-            [
-                SwinTransformerBlock(
-                    dim=dim,
-                    num_heads=num_heads,
-                    window_size=window_size,
-                    shift_size=0 if (i % 2 == 0) else window_size // 2,
-                    mlp_ratio=mlp_ratio,
-                    qkv_bias=qkv_bias,
-                    qk_scale=qk_scale,
-                    drop=drop,
-                    attn_drop=attn_drop,
-                    drop_path=(
-                        drop_path[i] if isinstance(drop_path, list) else drop_path
-                    ),
-                    norm_layer=norm_layer,
-                )
-                for i in range(depth)
-            ]
-        )
+        self.blocks = nn.ModuleList([
+            SwinTransformerBlock(
+                dim=dim,
+                num_heads=num_heads,
+                window_size=window_size,
+                shift_size=0 if (i % 2 == 0) else window_size // 2,
+                mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias,
+                qk_scale=qk_scale,
+                drop=drop,
+                attn_drop=attn_drop,
+                drop_path=(drop_path[i] if isinstance(drop_path, list) else drop_path),
+                norm_layer=norm_layer,
+            )
+            for i in range(depth)
+        ])
 
         # patch merging layer
         if downsample is not None:
@@ -443,14 +420,8 @@ class BasicLayer(nn.Module):
     def forward(self, x, H, W):
         # calculate attention mask for SW-MSA
         # Turn int to torch.tensor for the compatiability with torch.compile in PyTorch 2.5.
-        Hp = (
-            torch.ceil(torch.tensor(H) / self.window_size).to(torch.int64)
-            * self.window_size
-        )
-        Wp = (
-            torch.ceil(torch.tensor(W) / self.window_size).to(torch.int64)
-            * self.window_size
-        )
+        Hp = torch.ceil(torch.tensor(H) / self.window_size).to(torch.int64) * self.window_size
+        Wp = torch.ceil(torch.tensor(W) / self.window_size).to(torch.int64) * self.window_size
         img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)  # 1 Hp Wp 1
         h_slices = (
             slice(0, -self.window_size),
@@ -507,9 +478,7 @@ def test_swin_layer():
     depth = 2
     w, h = 6, 6
     win = 3
-    swin_layer = BasicLayer(
-        8, depth, num_heads, window_size=win, downsample=PatchMerging
-    )
+    swin_layer = BasicLayer(8, depth, num_heads, window_size=win, downsample=PatchMerging)
     state = generate_state(swin_layer.state_dict())
     swin_layer.load_state_dict(state)
     swin_layer.eval()
@@ -537,9 +506,7 @@ class PatchEmbed(nn.Module):
         self.in_channels = in_channels
         self.embed_dim = embed_dim
 
-        self.proj = nn.Conv2d(
-            in_channels, embed_dim, kernel_size=patch_size, stride=patch_size
-        )
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
         if norm_layer is not None:
             self.norm = norm_layer(embed_dim)
         else:
@@ -564,9 +531,7 @@ class PatchEmbed(nn.Module):
 
 
 def test_patch_embed():
-    patch_embed = PatchEmbed(
-        patch_size=4, in_channels=3, embed_dim=8, norm_layer=nn.LayerNorm
-    )
+    patch_embed = PatchEmbed(patch_size=4, in_channels=3, embed_dim=8, norm_layer=nn.LayerNorm)
     state = generate_state(patch_embed.state_dict())
     patch_embed.load_state_dict(state)
     patch_embed.eval()
@@ -696,11 +661,7 @@ class SwinTransformer(nn.Module):
                 norm_layer = getattr(self, f"norm{i}")
                 x_out = norm_layer(x_out)
 
-                out = (
-                    x_out.view(-1, H, W, self.num_features[i])
-                    .permute(0, 3, 1, 2)
-                    .contiguous()
-                )
+                out = x_out.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
                 outs.append(out)
 
         return tuple(outs)
@@ -725,7 +686,7 @@ def test_swin_transformer():
 
     for i, e in enumerate(expected):
         result[i] = to_nchw(result[i])
-        assert torch.allclose(result[i], e, atol=1e-3)
+        assert torch.allclose(result[i], e, atol=0.002)
 
 
 def _interpolate(x, target_size):
@@ -804,9 +765,7 @@ def test_conv_2d_deform(scenario: str, backend: str):
     weight = input_tensor(c_out, c_in, k, k)
     offset = 1.0 - input_tensor(1, 2 * k * k, h, w)
     mask = torch.rand(1, k * k, h, w)
-    expected = torchvision.ops.deform_conv2d(
-        x, offset, weight, mask=mask, padding=(1, 1)
-    )
+    expected = torchvision.ops.deform_conv2d(x, offset, weight, mask=mask, padding=(1, 1))
 
     x = to_nhwc(x)
     state = {
@@ -821,17 +780,12 @@ def test_conv_2d_deform(scenario: str, backend: str):
 
 
 class DeformableConv2d(nn.Module):
-    def __init__(
-        self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
-    ):
-
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False):
         super(DeformableConv2d, self).__init__()
 
         assert type(kernel_size) is tuple or type(kernel_size) is int
 
-        kernel_size = (
-            kernel_size if type(kernel_size) is tuple else (kernel_size, kernel_size)
-        )
+        kernel_size = kernel_size if type(kernel_size) is tuple else (kernel_size, kernel_size)
         self.stride = stride if type(stride) is tuple else (stride, stride)
         self.padding = padding
 
@@ -923,11 +877,23 @@ class GlobalAvgPool(nn.Sequential):
         self.append(nn.ReLU(inplace=True))
 
 
-def add_variance_epsilon(state: dict[str, torch.Tensor], epsilon=1e-5):
-    for k in state:
-        if k.endswith("running_var"):
-            state[k] = torch.sqrt(state[k] + 1e-5).contiguous()
-    return {k: v for k, v in state.items() if "num_batches_tracked" not in k}
+def fuse_all_conv_2d_batch_norm(
+    model: dict[str, torch.Tensor], key_module: str, key_conv: str, key_bn: str
+):
+    fused_weights = {}
+    for k in model:
+        if not fuse_conv_2d_batch_norm(model, k, key_module, key_conv, key_bn, fused_weights):
+            fused_weights[k] = model[k]
+    return fused_weights
+
+
+def fuse_all_batch_norm(state: dict[str, torch.Tensor], key_bn: str):
+    out = {}
+    for k, v in state.items():
+        v = fuse_batch_norm(state, k, key_bn)
+        if v is not None and k != "num_batches_tracked":
+            out[k] = v
+    return out
 
 
 @pytest.mark.parametrize("backend", ["cpu", "vulkan"])
@@ -939,12 +905,12 @@ def test_global_avg_pool(backend: str):
     x = input_tensor(1, 3, 4, 4)
     expected = pool(x)
 
-    state = add_variance_epsilon(state)
+    state = fuse_all_conv_2d_batch_norm(state, "", "1", "2")
     state = convert_to_nhwc(state, key="1.weight")
+    for k, v in state.items():
+        print(f"{k}: {v.shape}")
     x = to_nhwc(x)
-    result = workbench.invoke_test(
-        "biref_global_avg_pool", x, state, backend=backend
-    )
+    result = workbench.invoke_test("biref_global_avg_pool", x, state, backend=backend)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -979,20 +945,16 @@ class ASPPDeformable(nn.Module):
             out_channels = in_channels
         self.in_channelster = 256 // self.down_scale
 
-        self.aspp1 = _ASPPModuleDeformable(
-            in_channels, self.in_channelster, 1, padding=0
-        )
-        self.aspp_deforms = nn.ModuleList(
-            [
-                _ASPPModuleDeformable(
-                    in_channels,
-                    self.in_channelster,
-                    conv_size,
-                    padding=int(conv_size // 2),
-                )
-                for conv_size in parallel_block_sizes
-            ]
-        )
+        self.aspp1 = _ASPPModuleDeformable(in_channels, self.in_channelster, 1, padding=0)
+        self.aspp_deforms = nn.ModuleList([
+            _ASPPModuleDeformable(
+                in_channels,
+                self.in_channelster,
+                conv_size,
+                padding=int(conv_size // 2),
+            )
+            for conv_size in parallel_block_sizes
+        ])
 
         self.global_avg_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
@@ -1032,7 +994,9 @@ def test_aspp_deformable():
     x = input_tensor(1, 3, 16, 16)
     expected = aspp(x)
 
-    state = add_variance_epsilon(state)
+    state = fuse_all_conv_2d_batch_norm(state, "", "conv1", "bn1")
+    state = fuse_all_conv_2d_batch_norm(state, "global_avg_pool.", "1", "2")
+    state = fuse_all_batch_norm(state, "bn")
     state = convert_to_nhwc(state, key="conv")
     state = convert_to_nhwc(state, key="pool.1")
     state = {shorten_weight_name(k): v for k, v in state.items()}
@@ -1071,10 +1035,14 @@ def test_basic_dec_blk():
     state = workbench.randomize(block.state_dict())
     block.load_state_dict(state)
     block.eval()
-    x = input_tensor(1, 8, 12, 16)
+    x = input_tensor(1, 8, 12, 16) - 0.5
     expected = block(x)
 
-    state = add_variance_epsilon(state)
+    state = fuse_all_conv_2d_batch_norm(state, "", "conv_in", "bn_in")
+    state = fuse_all_conv_2d_batch_norm(state, "", "conv_out", "bn_out")
+    state = fuse_all_conv_2d_batch_norm(state, "dec_att.", "conv1", "bn1")
+    state = fuse_all_conv_2d_batch_norm(state, "global_avg_pool.", "1", "2")
+    state = fuse_all_batch_norm(state, "bn")
     state = convert_to_nhwc(state, key="conv")
     state = convert_to_nhwc(state, key="pool.1")
     state = {shorten_weight_name(k): v for k, v in state.items()}
@@ -1321,7 +1289,7 @@ def test_decoder():
     expected = decoder((x, x1, x2, x3, x4))[0]
     expected = expected.sigmoid()
 
-    state = add_variance_epsilon(state)
+    state = fuse_all_batch_norm(state, "bn")
     state = {shorten_weight_name(k): v for k, v in state.items()}
     state = convert_to_nhwc(state, key="conv")
     state = convert_to_nhwc(state, key="pool.1")

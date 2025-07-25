@@ -6,7 +6,7 @@ import pytest
 from torch import Tensor
 
 from . import workbench
-from .workbench import to_nhwc, to_nchw, convert_to_nhwc
+from .workbench import to_nhwc, to_nchw, convert_to_nhwc, fuse_conv_2d_batch_norm
 
 torch.set_printoptions(precision=2, linewidth=100, sci_mode=False)
 
@@ -18,51 +18,32 @@ torch.set_printoptions(precision=2, linewidth=100, sci_mode=False)
 
 class Conv2d_BN(torch.nn.Sequential):
     def __init__(
-        self, a, b, ks=1, stride=1, pad=0, dilation=1, groups=1, bn_weight_init=1
+        self, a, b, ks=1, stride=1, pad=0, dilation=1, groups=1, bn_weight_init=1, bias=False
     ):
         super().__init__()
-        self.add_module(
-            "c", torch.nn.Conv2d(a, b, ks, stride, pad, dilation, groups, bias=False)
-        )
+        self.add_module("c", torch.nn.Conv2d(a, b, ks, stride, pad, dilation, groups, bias=bias))
         bn = torch.nn.BatchNorm2d(b)
         torch.nn.init.constant_(bn.weight, bn_weight_init)
         torch.nn.init.constant_(bn.bias, 0)
         self.add_module("bn", bn)
 
 
-def fuse_conv_2d_batch_norm(model: dict[str, Tensor], key: str, epsilon=1e-5):
-    conv_weight = model[f"{key}c.weight"]
-    bn_weight = model[f"{key}bn.weight"]
-    bn_bias = model[f"{key}bn.bias"]
-    bn_mean = model[f"{key}bn.running_mean"]
-    bn_var = model[f"{key}bn.running_var"]
-
-    bn_weight = bn_weight / torch.sqrt(bn_var + epsilon)
-    fused_weight = conv_weight * bn_weight[:, None, None, None]
-    fused_bias = bn_bias - bn_mean * bn_weight
-    return fused_weight, fused_bias
-
-
 def fuse_all_conv_2d_batch_norm(model: dict[str, Tensor]):
     fused_weights = {}
     for k in model:
-        if k.endswith("c.weight"):
-            key = k.removesuffix("c.weight")
-            weight, bias = fuse_conv_2d_batch_norm(model, key)
-            fused_weights[f"{key}weight"] = weight
-            fused_weights[f"{key}bias"] = bias
-        elif not k.endswith("num_batches_tracked"):
+        if not fuse_conv_2d_batch_norm(model, k, "", "c", "bn", fused_weights):
             fused_weights[k] = model[k]
     return fused_weights
 
 
-def test_conv_2d_batch_norm():
-    conv2dbn = Conv2d_BN(4, 6, ks=3, stride=2, pad=1)
+@pytest.mark.parametrize("bias", [False, True])
+def test_conv_2d_batch_norm(bias: bool):
+    conv2dbn = Conv2d_BN(4, 6, ks=3, stride=2, pad=1, bias=bias)
     state = workbench.randomize(conv2dbn.state_dict())
     conv2dbn.load_state_dict(state)
     conv2dbn.eval()
 
-    x = torch.rand(1, 4, 8, 8)
+    x = workbench.input_tensor(1, 4, 8, 8)
     expected = conv2dbn(x)
 
     state = fuse_all_conv_2d_batch_norm(state)
@@ -344,9 +325,7 @@ class AttentionRelBias(torch.nn.Module):
                 if offset not in attention_offsets:
                     attention_offsets[offset] = len(attention_offsets)
                 idxs.append(attention_offsets[offset])
-        self.attention_biases = torch.nn.Parameter(
-            torch.zeros(num_heads, len(attention_offsets))
-        )
+        self.attention_biases = torch.nn.Parameter(torch.zeros(num_heads, len(attention_offsets)))
         self.register_buffer(
             "attention_bias_idxs", torch.LongTensor(idxs).view(N, N), persistent=False
         )
@@ -381,9 +360,7 @@ class AttentionRelBias(torch.nn.Module):
         attn = q @ k.transpose(-2, -1)
         attn = attn * self.scale
         attn = attn + (
-            self.attention_biases[:, self.attention_bias_idxs]
-            if self.training
-            else self.ab
+            self.attention_biases[:, self.attention_bias_idxs] if self.training else self.ab
         )
         attn = attn.softmax(dim=-1)
 
@@ -402,9 +379,7 @@ def test_attention_rel_bias():
     x = torch.rand(4, 9, 4)
     expected = attention(x)
 
-    state["attention_biases_indexed"] = state["attention_biases"][
-        :, attention.attention_bias_idxs
-    ]
+    state["attention_biases_indexed"] = state["attention_biases"][:, attention.attention_bias_idxs]
     result = workbench.invoke_test("sam_attention_rel_bias", x, state)
 
     assert torch.allclose(result, expected, atol=0.001)
@@ -451,9 +426,7 @@ class TinyViTBlock(torch.nn.Module):
         )
 
         pad = local_conv_size // 2
-        self.local_conv = Conv2d_BN(
-            dim, dim, ks=local_conv_size, stride=1, pad=pad, groups=dim
-        )
+        self.local_conv = Conv2d_BN(dim, dim, ks=local_conv_size, stride=1, pad=pad, groups=dim)
 
     def forward(self, x):
         H, W = self.input_resolution
@@ -537,7 +510,6 @@ class ConvLayer(torch.nn.Module):
         out_dim=None,
         conv_expand_ratio=4.0,
     ):
-
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
@@ -545,18 +517,16 @@ class ConvLayer(torch.nn.Module):
         self.use_checkpoint = use_checkpoint
 
         # build blocks
-        self.blocks = torch.nn.ModuleList(
-            [
-                MBConv(
-                    dim,
-                    dim,
-                    conv_expand_ratio,
-                    activation,
-                    drop_path[i] if isinstance(drop_path, list) else drop_path,
-                )
-                for i in range(depth)
-            ]
-        )
+        self.blocks = torch.nn.ModuleList([
+            MBConv(
+                dim,
+                dim,
+                conv_expand_ratio,
+                activation,
+                drop_path[i] if isinstance(drop_path, list) else drop_path,
+            )
+            for i in range(depth)
+        ])
 
         # patch merging layer
         if downsample is not None:
@@ -568,7 +538,6 @@ class ConvLayer(torch.nn.Module):
 
     def forward(self, x):
         for blk in self.blocks:
-
             x = blk(x)
         if self.downsample is not None:
             x = self.downsample(x)
@@ -576,7 +545,6 @@ class ConvLayer(torch.nn.Module):
 
 
 class BasicLayer(torch.nn.Module):
-
     def __init__(
         self,
         dim,
@@ -593,7 +561,6 @@ class BasicLayer(torch.nn.Module):
         activation=torch.nn.GELU,
         out_dim=None,
     ):
-
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
@@ -601,24 +568,20 @@ class BasicLayer(torch.nn.Module):
         self.use_checkpoint = use_checkpoint
 
         # build blocks
-        self.blocks = torch.nn.ModuleList(
-            [
-                TinyViTBlock(
-                    dim=dim,
-                    input_resolution=input_resolution,
-                    num_heads=num_heads,
-                    window_size=window_size,
-                    mlp_ratio=mlp_ratio,
-                    drop=drop,
-                    drop_path=(
-                        drop_path[i] if isinstance(drop_path, list) else drop_path
-                    ),
-                    local_conv_size=local_conv_size,
-                    activation=activation,
-                )
-                for i in range(depth)
-            ]
-        )
+        self.blocks = torch.nn.ModuleList([
+            TinyViTBlock(
+                dim=dim,
+                input_resolution=input_resolution,
+                num_heads=num_heads,
+                window_size=window_size,
+                mlp_ratio=mlp_ratio,
+                drop=drop,
+                drop_path=(drop_path[i] if isinstance(drop_path, list) else drop_path),
+                local_conv_size=local_conv_size,
+                activation=activation,
+            )
+            for i in range(depth)
+        ])
 
         # patch merging layer
         if downsample is not None:
@@ -630,7 +593,6 @@ class BasicLayer(torch.nn.Module):
 
     def forward(self, x):
         for blk in self.blocks:
-
             x = blk(x)
         if self.downsample is not None:
             x = self.downsample(x)
@@ -688,10 +650,8 @@ class TinyViT(torch.nn.Module):
             kwargs = dict(
                 dim=embed_dims[i_layer],
                 input_resolution=(
-                    patches_resolution[0]
-                    // (2 ** (i_layer - 1 if i_layer == 3 else i_layer)),
-                    patches_resolution[1]
-                    // (2 ** (i_layer - 1 if i_layer == 3 else i_layer)),
+                    patches_resolution[0] // (2 ** (i_layer - 1 if i_layer == 3 else i_layer)),
+                    patches_resolution[1] // (2 ** (i_layer - 1 if i_layer == 3 else i_layer)),
                 ),
                 #   input_resolution=(patches_resolution[0] // (2 ** i_layer),
                 #                     patches_resolution[1] // (2 ** i_layer)),
@@ -721,9 +681,7 @@ class TinyViT(torch.nn.Module):
         # Classifier head
         self.norm_head = torch.nn.LayerNorm(embed_dims[-1])
         self.head = (
-            torch.nn.Linear(embed_dims[-1], num_classes)
-            if num_classes > 0
-            else torch.nn.Identity()
+            torch.nn.Linear(embed_dims[-1], num_classes) if num_classes > 0 else torch.nn.Identity()
         )
 
         # init weights
@@ -926,9 +884,7 @@ class PromptEncoder(torch.nn.Module):
             padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
             points = torch.cat([points, padding_point], dim=1)
             labels = torch.cat([labels, padding_label], dim=1)
-        point_embedding = self.pe_layer.forward_with_coords(
-            points, self.input_image_size
-        )
+        point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
         point_embedding[labels == -1] = 0.0
         point_embedding[labels == -1] += self.not_a_point_embed.weight
         point_embedding[labels == 0] += self.point_embeddings[0].weight
@@ -938,9 +894,7 @@ class PromptEncoder(torch.nn.Module):
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
         boxes = boxes + 0.5  # Shift to center of pixel
         coords = boxes.reshape(-1, 2, 2)
-        corner_embedding = self.pe_layer.forward_with_coords(
-            coords, self.input_image_size
-        )
+        corner_embedding = self.pe_layer.forward_with_coords(coords, self.input_image_size)
         corner_embedding[:, 0, :] += self.point_embeddings[2].weight
         corner_embedding[:, 1, :] += self.point_embeddings[3].weight
         return corner_embedding
@@ -959,9 +913,7 @@ class PromptEncoder(torch.nn.Module):
         masks: torch.Tensor | None,
     ):
         bs = 1  # batch size
-        sparse_embeddings = torch.empty(
-            (bs, 0, self.embed_dim), device=self._get_device()
-        )
+        sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self._get_device())
         if points is not None:
             coords, labels = points
             point_embeddings = self._embed_points(coords, labels, pad=(boxes is None))
@@ -993,9 +945,7 @@ def test_prompt_encoder_points():
 
     points = torch.tensor([[[63.0, 55.0], [32.0, 0.0]]])
     labels = torch.tensor([[1, 1]])
-    expected, expected_dense = prompt_encoder(
-        points=(points, labels), boxes=None, masks=None
-    )
+    expected, expected_dense = prompt_encoder(points=(points, labels), boxes=None, masks=None)
 
     points = torch.cat([points, -torch.ones(1, 1, 2)], dim=1)
     result = workbench.invoke_test("sam_embed_points", points, state)
@@ -1038,9 +988,7 @@ class Attention(torch.nn.Module):
         self.embedding_dim = embedding_dim
         self.internal_dim = embedding_dim // downsample_rate
         self.num_heads = num_heads
-        assert (
-            self.internal_dim % num_heads == 0
-        ), "num_heads must divide embedding_dim."
+        assert self.internal_dim % num_heads == 0, "num_heads must divide embedding_dim."
 
         self.q_proj = torch.nn.Linear(embedding_dim, self.internal_dim)
         self.k_proj = torch.nn.Linear(embedding_dim, self.internal_dim)
@@ -1179,7 +1127,6 @@ class TwoWayAttentionBlock(torch.nn.Module):
 
 @pytest.mark.parametrize("mode", ["skip_first_layer_pe", "default"])
 def test_two_way_attention_block(mode):
-
     torch.manual_seed(330896961738400)
 
     two_way_attention = TwoWayAttentionBlock(
@@ -1332,11 +1279,7 @@ class HypernetworkMLP(torch.nn.Module):
 
     def forward(self, x):
         for i, layer in enumerate(self.layers):
-            x = (
-                torch.nn.functional.relu(layer(x))
-                if i < self.num_layers - 1
-                else layer(x)
-            )
+            x = torch.nn.functional.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         if self.sigmoid_output:
             x = torch.nn.functional.sigmoid(x)
         return x
@@ -1358,9 +1301,7 @@ def test_hypernetwork_mlp():
 
 def output_upscaling(transformer_dim: int, activation=torch.nn.GELU):
     return torch.nn.Sequential(
-        torch.nn.ConvTranspose2d(
-            transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
-        ),
+        torch.nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
         LayerNorm2d(transformer_dim // 4),
         activation(),
         torch.nn.ConvTranspose2d(
@@ -1408,14 +1349,10 @@ class MaskDecoder(torch.nn.Module):
         self.mask_tokens = torch.nn.Embedding(self.num_mask_tokens, transformer_dim)
 
         self.output_upscaling = output_upscaling(transformer_dim, activation)
-        self.output_hypernetworks_mlps = torch.nn.ModuleList(
-            [
-                HypernetworkMLP(
-                    transformer_dim, transformer_dim, transformer_dim // 8, 3
-                )
-                for i in range(self.num_mask_tokens)
-            ]
-        )
+        self.output_hypernetworks_mlps = torch.nn.ModuleList([
+            HypernetworkMLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+            for i in range(self.num_mask_tokens)
+        ])
 
         self.iou_prediction_head = HypernetworkMLP(
             transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth
@@ -1455,12 +1392,8 @@ class MaskDecoder(torch.nn.Module):
         dense_prompt_embeddings: torch.Tensor,
     ):
         # Concatenate output tokens
-        output_tokens = torch.cat(
-            [self.iou_token.weight, self.mask_tokens.weight], dim=0
-        )
-        output_tokens = output_tokens.unsqueeze(0).expand(
-            sparse_prompt_embeddings.size(0), -1, -1
-        )
+        output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
+        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
         # Expand per-image data in batch direction to be per-mask
@@ -1479,9 +1412,7 @@ class MaskDecoder(torch.nn.Module):
         upscaled_embedding = self.output_upscaling(src)
         hyper_in_list = []
         for i in range(self.num_mask_tokens):
-            hyper_in_list.append(
-                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :])
-            )
+            hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]))
         hyper_in = torch.stack(hyper_in_list, dim=1)
         b, c, h, w = upscaled_embedding.shape
         masks = hyper_in @ upscaled_embedding.view(b, c, h * w)

@@ -349,6 +349,10 @@ swin_result encode(model_ref m, tensor x, swin_params const& p) {
 // Decoder
 //
 
+tensor conv_2d_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0) {
+    return conv_2d(m, x, stride, pad); // batch_norm is fused into conv_2d at model conversion
+}
+
 tensor deformable_conv_2d(model_ref m, tensor x, int stride, int pad) {
     tensor offset = conv_2d(m["offset"], x, stride, pad);
     tensor modulator = conv_2d(m["modulator"], x, stride, pad);
@@ -370,9 +374,8 @@ tensor mean_2d(model_ref m, tensor x) {
 }
 
 tensor global_avg_pool(model_ref m, tensor x) {
-    x = mean_2d(m[0], x);
-    x = conv_2d(m[1], x);
-    x = batch_norm_2d(m[2], x);
+    x = mean_2d(m, x);
+    x = conv_2d_batch_norm(m[1], x);
     x = ggml_relu_inplace(m, x);
     return named(m, x);
 }
@@ -400,19 +403,16 @@ tensor aspp_deformable(model_ref m, tensor x) {
     x5 = ggml_cont(m, permute_whcn_to_cwhn(m, x5));
     x = concat(m, {x1, x_deforms[0], x_deforms[1], x_deforms[2], x5}, 0);
 
-    x = conv_2d(m["conv1"], x);
-    x = batch_norm_2d(m["bn1"], x);
+    x = conv_2d_batch_norm(m["conv1"], x);
     x = ggml_relu_inplace(m, x);
     return named(m, x);
 }
 
 tensor basic_decoder_block(model_ref m, tensor x) {
-    x = conv_2d(m["conv_in"], x, 1, 1);
-    x = batch_norm_2d(m["bn_in"], x);
+    x = conv_2d_batch_norm(m["conv_in"], x, 1, 1);
     x = ggml_relu_inplace(m, x);
     x = aspp_deformable(m["dec_att"], x);
-    x = conv_2d(m["conv_out"], x, 1, 1);
-    x = batch_norm_2d(m["bn_out"], x);
+    x = conv_2d_batch_norm(m["conv_out"], x, 1, 1);
     return named(m, x);
 }
 
@@ -434,8 +434,7 @@ tensor image_to_patches(model_ref m, tensor x, int64_t out_w, int64_t out_h) {
 }
 
 tensor gdt_conv(model_ref m, tensor x) {
-    x = conv_2d(m[0], x, 1, 1);
-    x = batch_norm_2d(m[1], x);
+    x = conv_2d_batch_norm(m[0], x, 1, 1);
     x = ggml_relu_inplace(m, x);
     return x;
 }

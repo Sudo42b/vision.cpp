@@ -36,9 +36,7 @@ def torch_to_raw_tensor(name: str, tensor: torch.Tensor):
     }
     t = tensor.contiguous()
     if tensor.dtype not in tensor_types:
-        print(
-            f"Warning: tensor {name} has unsupported dtype {tensor.dtype}, converting to float"
-        )
+        print(f"Warning: tensor {name} has unsupported dtype {tensor.dtype}, converting to float")
         t = t.to(torch.float32)
     while t.dim() < 4:
         t = t.unsqueeze(0)
@@ -155,16 +153,12 @@ def input_like(tensor: torch.Tensor):
 
 
 def generate_state(state_dict: dict[str, torch.Tensor]):
-    return {
-        k: input_like(v) if v.dtype.is_floating_point else v
-        for k, v in state_dict.items()
-    }
+    return {k: input_like(v) if v.dtype.is_floating_point else v for k, v in state_dict.items()}
 
 
 def randomize(state_dict: dict[str, torch.Tensor]):
     return {
-        k: torch.rand_like(v) if v.dtype.is_floating_point else v
-        for k, v in state_dict.items()
+        k: torch.rand_like(v) if v.dtype.is_floating_point else v for k, v in state_dict.items()
     }
 
 
@@ -190,6 +184,68 @@ def convert_to_nhwc(state: dict[str, torch.Tensor], key=""):
             else:
                 state[k] = v.permute(0, 2, 3, 1).contiguous()
     return state
+
+
+def fuse_batch_norm(model: dict[str, torch.Tensor], key: str, key_bn: str):
+    suffix_weight = f"{key_bn}.weight"
+    suffix_bias = f"{key_bn}.bias"
+
+    if key.endswith(suffix_weight):
+        base = key.removesuffix(suffix_weight)
+        weight = model[key]
+        var = model[f"{base}{key_bn}.running_var"]
+        return weight / torch.sqrt(var + 1e-5)
+
+    elif key.endswith(suffix_bias):
+        base = key.removesuffix(suffix_bias)
+        bias = model[key]
+        weight = model[f"{base}{key_bn}.weight"]
+        mean = model[f"{base}{key_bn}.running_mean"]
+        var = model[f"{base}{key_bn}.running_var"]
+        return bias - mean * weight / torch.sqrt(var + 1e-5)
+
+    elif key.endswith(f"{key_bn}.running_mean") or key.endswith(f"{key_bn}.running_var"):
+        return None
+
+    return model[key]
+
+
+def fuse_conv_2d_batch_norm(
+    model: dict[str, torch.Tensor],
+    key: str,
+    key_module: str,
+    key_conv: str,
+    key_norm: str,
+    out: dict[str, torch.Tensor],
+):
+    suffix_conv = f"{key_module}{key_conv}.weight"
+    suffix_norm = f"{key_module}{key_norm}."
+
+    if key.endswith(suffix_conv):
+        base = key.removesuffix(suffix_conv)
+        conv_weight = model[key]
+        bn_weight = model[f"{base}{suffix_norm}weight"]
+        bn_bias = model[f"{base}{suffix_norm}bias"]
+        bn_mean = model[f"{base}{suffix_norm}running_mean"]
+        bn_var = model[f"{base}{suffix_norm}running_var"]
+        conv_bias = model.get(f"{base}{key_module}{key_conv}.bias", torch.zeros_like(bn_bias))
+
+        bn_weight_var = bn_weight / torch.sqrt(bn_var + 1e-5)
+        fused_weight = conv_weight * bn_weight_var[:, None, None, None]
+        fused_bias = conv_bias
+        fused_bias -= bn_mean
+        fused_bias *= bn_weight_var
+        fused_bias += bn_bias
+        # fused_bias = (conv_bias - bn_mean) * bn_weight_var + bn_bias
+
+        out[key] = fused_weight
+        out[key.replace("weight", "bias")] = fused_bias
+        return True
+
+    elif suffix_norm in key:
+        return True  # batch norm was fused above
+
+    return False  # no match
 
 
 def print_results(result: torch.Tensor, expected: torch.Tensor):

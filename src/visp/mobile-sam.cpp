@@ -12,6 +12,16 @@
 namespace visp {
 namespace sam {
 
+tensor conv_2d_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0) {
+     // batch_norm is fused into conv_2d when converting the model
+    return conv_2d(m["c"], x, stride, pad);
+}
+
+tensor conv_2d_depthwise_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0) {
+    // batch_norm is fused into conv_2d_depthwise when converting the model
+    return conv_2d_depthwise(m["c"], x, stride, pad);
+}
+
 tensor window_partition(model_ref m, tensor x, int window) {
     int64_t c = x->ne[0];
     int64_t b = x->ne[3];
@@ -61,22 +71,22 @@ tensor window_reverse(model_ref m, tensor x, int w, int h, int window) {
 
 
 tensor patch_embed(model_ref m, tensor x) {
-    x = conv_2d(m["seq.0"], x, 2, 1);
+    x = conv_2d_batch_norm(m["seq.0"], x, 2, 1);
     x = ggml_gelu_inplace(m, x);
-    x = conv_2d(m["seq.2"], x, 2, 1);
+    x = conv_2d_batch_norm(m["seq.2"], x, 2, 1);
     return named(m, x);
 }
 
 tensor mb_conv(model_ref m, tensor x) {
     tensor shortcut = x;
 
-    x = conv_2d(m["conv1"], x);
+    x = conv_2d_batch_norm(m["conv1"], x);
     x = ggml_gelu_inplace(m, x);
 
-    x = conv_2d_depthwise(m["conv2"], x, 1, 1);
+    x = conv_2d_depthwise_batch_norm(m["conv2"], x, 1, 1);
     x = ggml_gelu_inplace(m, x);
 
-    x = conv_2d(m["conv3"], x);
+    x = conv_2d_batch_norm(m["conv3"], x);
     x = ggml_add_inplace(m, x, shortcut);
     x = ggml_gelu_inplace(m, x);
 
@@ -87,16 +97,16 @@ tensor patch_merging(model_ref m, tensor x, int input_resolution) {
     if (x->ne[2] == 1) {
         x = ggml_reshape_4d(m, x, x->ne[0], input_resolution, input_resolution, x->ne[3]);
     }
-    x = conv_2d(m["conv1"], x);
+    x = conv_2d_batch_norm(m["conv1"], x);
     x = ggml_gelu_inplace(m, x);
 
-    int c_out = int(m.weights("conv2.weight")->ne[0]);
+    int c_out = int(m.weights("conv2.c.weight")->ne[0]);
     int stride = (c_out == 320 || c_out == 448 || c_out == 576) ? 1 : 2;
-    x = conv_2d_depthwise(m["conv2"], x, stride, 1);
+    x = conv_2d_depthwise_batch_norm(m["conv2"], x, stride, 1);
     x = ggml_gelu_inplace(m, x);
 
     auto [c, h, w, b] = nelements(x);
-    x = conv_2d(m["conv3"], x);
+    x = conv_2d_batch_norm(m["conv3"], x);
     x = ggml_reshape_3d(m, x, c, w * h, b);
     return named(m, x);
 }
@@ -166,7 +176,7 @@ tensor tiny_vit_block(
     x = ggml_add_inplace(m, x, res_x);
 
     x = ggml_reshape_4d(m, x, c, w, h, b);
-    x = conv_2d_depthwise(m["local_conv"], x, 1, 1);
+    x = conv_2d_depthwise_batch_norm(m["local_conv"], x, 1, 1);
     x = ggml_reshape_3d(m, x, c, spatial, b);
 
     tensor x_mlp = mlp(m["mlp"], x);

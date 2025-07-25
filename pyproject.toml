@@ -25,5 +25,8 @@ preview = true
 [tool.ruff.lint]
 ignore = ["E741"]
 
+[tool.black]
+line-length = 100
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

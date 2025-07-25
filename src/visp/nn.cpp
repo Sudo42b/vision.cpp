@@ -107,19 +107,11 @@ tensor conv_2d_deform(
 
 tensor batch_norm_2d(model_ref m, tensor x) {
     ASSERT(m.flags & model_build_flag::cwhn);
+    ASSERT(m.find("running_mean") == nullptr, "Batch norm was not fused");
+    ASSERT(m.find("running_var") == nullptr, "Batch norm was not fused");
 
-    tensor var = m.weights("running_var"); // = sqrt(var + eps)
-    tensor mean = m.weights("running_mean");
-    tensor weight = m.weights("weight");
-    tensor bias = m.weights("bias");
-    if (m.flags & model_build_flag::fused_batch_norm) {
-        x = ggml_batch_norm_2d_inplace(m, x, mean, var, weight, bias);
-    } else {
-        x = ggml_sub_inplace(m, x, mean);
-        x = ggml_div_inplace(m, x, var);
-        x = ggml_mul_inplace(m, x, weight);
-        x = ggml_add_inplace(m, x, bias);
-    }
+    x = ggml_mul_inplace(m, x, m.weights("weight"));
+    x = ggml_add_inplace(m, x, m.weights("bias"));
     return named(m, x);
 }
 

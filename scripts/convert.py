@@ -26,6 +26,27 @@ from torch import Tensor
 #
 # Common
 
+
+class Writer(GGUFWriter):
+    def __init__(self, path: Path, arch_name: str, float_type: str, verbose: bool):
+        super().__init__(path, arch_name)
+        self.float_type = float_type
+        self.verbose = verbose
+
+    def add_tensor(self, name: str, tensor: Tensor, float_type: str | None = None):
+        if len(name) >= 64:
+            print("Warning: name too long", len(name), name)
+
+        float_type = float_type or self.float_type
+        if float_type == "f16" and tensor.dtype == torch.float32:
+            tensor = tensor.to(torch.float16)
+
+        tensor_data = tensor.numpy()
+        if self.verbose:
+            print(name, tensor.shape, tensor_data.dtype)
+        super().add_tensor(name, tensor_data)
+
+
 batch_norm_eps = 1e-5
 
 
@@ -51,33 +72,80 @@ def conv_transpose_2d_to_nhwc(kernel: Tensor):
     return kernel.permute(1, 2, 3, 0)
 
 
-def add_tensor(
-    writer: GGUFWriter, name: str, tensor: Tensor, quantize: str, verbose: bool
+def fuse_batch_norm(model: dict[str, Tensor], key: str, key_bn: str):
+    suffix_weight = f"{key_bn}.weight"
+    suffix_bias = f"{key_bn}.bias"
+
+    if key.endswith(suffix_weight):
+        base = key.removesuffix(suffix_weight)
+        weight = model[key]
+        var = model[f"{base}{key_bn}.running_var"]
+        return weight / torch.sqrt(var + batch_norm_eps)
+
+    elif key.endswith(suffix_bias):
+        base = key.removesuffix(suffix_bias)
+        bias = model[key]
+        weight = model[f"{base}{key_bn}.weight"]
+        mean = model[f"{base}{key_bn}.running_mean"]
+        var = model[f"{base}{key_bn}.running_var"]
+        return bias - mean * weight / torch.sqrt(var + batch_norm_eps)
+
+    elif key.endswith(f"{key_bn}.running_mean") or key.endswith(f"{key_bn}.running_var"):
+        return None
+
+    return model[key]
+
+
+def fuse_conv_2d_batch_norm(
+    model: dict[str, Tensor],
+    key: str,
+    name: str,
+    key_module: str,
+    key_conv: str,
+    key_norm: str,
+    writer: Writer,
 ):
-    if len(name) >= 64:
-        print("Warning: name too long", len(name), name)
+    suffix_conv = f"{key_module}{key_conv}.weight"
+    suffix_bias = f"{key_module}{key_conv}.bias"
+    suffix_norm = f"{key_module}{key_norm}."
 
-    if quantize == "f16" and tensor.dtype == torch.float32:
-        tensor = tensor.to(torch.float16)
+    if key.endswith(suffix_conv):
+        conv_weight = model[key]
+        base = key.removesuffix(suffix_conv)
+        bn_weight = model.get(f"{base}{suffix_norm}weight")
+        if bn_weight is None:
+            return False
+        bn_bias = model[f"{base}{suffix_norm}bias"]
+        bn_mean = model[f"{base}{suffix_norm}running_mean"]
+        bn_var = model[f"{base}{suffix_norm}running_var"]
+        conv_bias = model.get(f"{base}{suffix_bias}", torch.zeros_like(bn_bias))
 
-    tensor_data = tensor.numpy()
-    if verbose:
-        print(name, tensor.shape, tensor_data.dtype)
-    writer.add_tensor(name, tensor_data)
+        bn_weight = bn_weight / torch.sqrt(bn_var + batch_norm_eps)
+        fused_weight = conv_weight * bn_weight[:, None, None, None]
+        fused_bias = (conv_bias - bn_mean) * bn_weight + bn_bias
+
+        writer.add_tensor(name, conv_2d_to_nhwc(fused_weight))
+        writer.add_tensor(name.replace("weight", "bias"), fused_bias)
+        return True
+
+    elif key.endswith(suffix_bias):
+        base = key.removesuffix(suffix_bias)
+        return f"{base}{suffix_norm}weight" in model
+
+    elif suffix_norm in key:
+        return True  # batch norm was fused above
+
+    return False  # no match
 
 
 #
 # MobileSAM
 
 
-def convert_sam(
-    input_filepath: Path, writer: GGUFWriter, quantize: str | None, verbose: bool
-):
+def convert_sam(input_filepath: Path, writer: Writer):
     writer.add_license("apache-2.0")
 
-    model: dict[str, Tensor] = torch.load(
-        input_filepath, map_location="cpu", weights_only=True
-    )
+    model: dict[str, Tensor] = torch.load(input_filepath, map_location="cpu", weights_only=True)
 
     for key, tensor in model.items():
         name = key
@@ -93,15 +161,8 @@ def convert_sam(
             name = name + "_indexed"
             tensor = tensor[:, attention_bias_idxs]
 
-        if name.endswith("c.weight"):
-            name = name.removesuffix(".c.weight")
-            weight, bias = fuse_conv_2d_batch_norm(model, key.removesuffix(".c.weight"))
-            weight = conv_2d_to_nhwc(weight)
-            add_tensor(writer, f"{name}.weight", weight, quantize, verbose)
-            add_tensor(writer, f"{name}.bias", bias, quantize, verbose)
+        if fuse_conv_2d_batch_norm(model, key, name, "", "c", "bn", writer):
             continue
-        if ".bn." in name:
-            continue  # batch norm is fused above
 
         if name.endswith("neck.0.weight") or name.endswith("neck.2.weight"):
             assert tensor.shape[2] == tensor.shape[3] and tensor.shape[2] <= 3
@@ -110,26 +171,12 @@ def convert_sam(
         # Precompute dense positional embeddings from random matrix stored in the model
         if name == "prompt_encoder.pe_layer.positional_encoding_gaussian_matrix":
             pe = build_dense_positional_embeddings(tensor)
-            writer.add_tensor("dec.dense_positional_embedding", pe.numpy())
+            writer.add_tensor("dec.dense_positional_embedding", pe, "f32")
 
-        data_type = quantize
         if name in ["dec.iou_token.weight", "dec.mask_tokens.weight"]:
-            data_type = None
+            writer.add_tensor(name, tensor, "f32")
 
-        add_tensor(writer, name, tensor, data_type, verbose)
-
-
-def fuse_conv_2d_batch_norm(model: dict[str, Tensor], key: str):
-    conv_weight = model[f"{key}.c.weight"]
-    bn_weight = model[f"{key}.bn.weight"]
-    bn_bias = model[f"{key}.bn.bias"]
-    bn_mean = model[f"{key}.bn.running_mean"]
-    bn_var = model[f"{key}.bn.running_var"]
-
-    bn_weight = bn_weight / torch.sqrt(bn_var + batch_norm_eps)
-    fused_weight = conv_weight * bn_weight[:, None, None, None]
-    fused_bias = bn_bias - bn_mean * bn_weight
-    return fused_weight, fused_bias
+        writer.add_tensor(name, tensor)
 
 
 def build_attention_bias_indices(resolution: int):
@@ -171,17 +218,15 @@ def build_dense_positional_embeddings(
 # BirefNet
 
 
-def convert_birefnet(
-    input_filepath: Path, writer: GGUFWriter, quantize: str | None, verbose: bool
-):
+def convert_birefnet(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
 
-    model: dict[str, Tensor] = safetensors.safe_open(input_filepath, "pt")
+    weights = safetensors.safe_open(input_filepath, "pt")
+    model: dict[str, Tensor] = {k: weights.get_tensor(k) for k in weights.keys()}
 
-    for name in model.keys():
-        tensor = model.get_tensor(name)
-
+    for key, tensor in model.items():
         # Shorten some names to fit into 64 chars
+        name = key
         name = name.replace("decoder_block", "block")
         name = name.replace("atrous_conv", "conv")
         name = name.replace("modulator_conv", "modulator")
@@ -191,23 +236,38 @@ def convert_birefnet(
         if name.endswith("relative_position_index"):
             continue  # precomputed in c++ code
 
-        # BatchNorm2d: precompute sqrt(var + eps)
-        if name.endswith("running_var"):
-            tensor = torch.sqrt(tensor + batch_norm_eps)
+        # Fuse all regular conv + batch norm pairs into a single conv with bias
+        if fuse_conv_2d_batch_norm(model, key, name, "global_avg_pool.", "1", "2", writer):
+            continue
+        if fuse_conv_2d_batch_norm(model, key, name, "dec_att.", "conv1", "bn1", writer):
+            continue
+        if fuse_conv_2d_batch_norm(model, key, name, "", "conv_in", "bn_in", writer):
+            continue
+        if fuse_conv_2d_batch_norm(model, key, name, "", "conv_out", "bn_out", writer):
+            continue
+        if fuse_conv_2d_batch_norm(model, key, name, "gdt_convs_4.", "0", "1", writer):
+            continue
+        if fuse_conv_2d_batch_norm(model, key, name, "gdt_convs_3.", "0", "1", writer):
+            continue
+        if fuse_conv_2d_batch_norm(model, key, name, "gdt_convs_2.", "0", "1", writer):
+            continue
+
+        # Fuse batch norm into multiply+add for deformable conv
+        tensor = fuse_batch_norm(model, key, "bn")
+        if tensor is None:
+            continue  # batch norm was fused
 
         if is_conv_2d(name, tensor):
             tensor = conv_2d_to_nhwc(tensor)
 
-        add_tensor(writer, name, tensor, quantize, verbose)
+        writer.add_tensor(name, tensor)
 
 
 #
 # MI-GAN
 
 
-def convert_migan(
-    input_filepath: Path, writer: GGUFWriter, quantize: str | None, verbose: bool
-):
+def convert_migan(input_filepath: Path, writer: Writer, quantize: str | None, verbose: bool):
     writer.add_license("mit")
 
     model: dict[str, Tensor] = torch.load(input_filepath, weights_only=True)
@@ -216,16 +276,14 @@ def convert_migan(
         if is_conv_2d(name, tensor):
             tensor = conv_2d_to_nhwc(tensor)
 
-        add_tensor(writer, name, tensor, quantize, verbose)
+        writer.add_tensor(name, tensor)
 
 
 #
 # ESRGAN
 
 
-def convert_esrgan(
-    input_filepath: Path, writer: GGUFWriter, quantize: str | None, verbose: bool
-):
+def convert_esrgan(input_filepath: Path, writer: Writer, quantize: str | None, verbose: bool):
     from spandrel import ModelLoader
 
     # Load the model using spandrel
@@ -241,7 +299,7 @@ def convert_esrgan(
         if is_conv_2d(name, tensor):
             tensor = conv_2d_to_nhwc(tensor)
 
-        add_tensor(writer, name, tensor, quantize, verbose)
+        writer.add_tensor(name, tensor)
 
 
 #
@@ -281,20 +339,23 @@ if __name__ == "__main__":
     print("* output:", output_path)
 
     try:
-        writer = GGUFWriter(output_path, arch_names.get(args.arch, args.arch))
-        metadata = Metadata.load(
-            args.metadata, input_path.with_suffix(""), args.model_name
+        writer = Writer(
+            output_path,
+            arch_names.get(args.arch, args.arch),
+            args.quantize,
+            args.verbose,
         )
+        metadata = Metadata.load(args.metadata, input_path.with_suffix(""), args.model_name)
 
         match args.arch:
             case "sam":
-                convert_sam(input_path, writer, args.quantize, args.verbose)
+                convert_sam(input_path, writer)
             case "birefnet":
-                convert_birefnet(input_path, writer, args.quantize, args.verbose)
+                convert_birefnet(input_path, writer)
             case "migan":
-                convert_migan(input_path, writer, args.quantize, args.verbose)
+                convert_migan(input_path, writer)
             case "esrgan":
-                convert_esrgan(input_path, writer, args.quantize, args.verbose)
+                convert_esrgan(input_path, writer)
             case _:
                 raise ValueError(f"Unknown architecture: {args.arch}")
 
