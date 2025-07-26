@@ -15,6 +15,7 @@ jobs:
         os: [ubuntu-22.04, windows-latest, macos-14]
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
 
     name: Build & Test on ${{ matrix.os }}
 
