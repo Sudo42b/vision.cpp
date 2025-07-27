@@ -3,6 +3,7 @@ install
 .vscode
 .vtune
 .debug
+.dev
 .env
 .install
 tests/results

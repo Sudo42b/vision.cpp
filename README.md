@@ -3,14 +3,12 @@
 Computer Vision ML inference in C++
 
 * Self-contained C++ library
-* Efficient inference on consumer CPU and GPUs
-* Lightweight deployment on many platforms (Windows, Linux,)
-* Modular design for experimentation and extension
+* Efficient inference on consumer CPU and GPUs (NVIDIA, AMD, Intel)
+* Lightweight deployment on many platforms (Windows, Linux, MacOS)
+* Growing number of supported models behind a simple API
+* Modular design for full control and implementing your own models
 
-Inspired by the [llama.cpp]() project and based on the same [infrastructure]().
-
-> [!NOTE]
-> The API is not considered stable at the moment and may change without notice.
+Based on [GGML](https://github.com/ggml-org/ggml) which also powers the [llama.cpp](https://github.com/ggml-org/llama.cpp) project.
 
 ### Features
 
@@ -20,22 +18,30 @@ Inspired by the [llama.cpp]() project and based on the same [infrastructure]().
 | [**BiRefNet**](#birefnet)                    | Segmentation     | CPU, Vulkan |
 | [**MI-GAN**](#mi-gan)                        | Inpainting       | CPU, Vulkan |
 | [**ESRGAN**](#esrgan)                        | Super-resolution | CPU, Vulkan |
+| [_Implement a model [**Guide**]_]()          |                  |             |
 
 ## Get Started
 
-See [Building](#building) to build from source. Binaries can be found in `build/bin` afterwards.
+Get the library and executables:
+* Download a [release package]() _(TODO)_ and extract it,
+* or [build from source](#building).
 
 ### Example: Select an object in an image
 
-Let's use MobileSAM to generate a segmentation mask for the <object>
-at pixel position (320, 240).
+Let's use MobileSAM to generate a segmentation mask.
 
-You can download the required model from huggingface: [MobileSAM-F16.gguf](https://huggingface.co/Acly/MobileSAM-GGUF/resolve/main/MobileSAM-F16.gguf).
+<img alt="Example image showing box prompt and mask output" src="docs/media/example-sam.jpg" width="400">
+
+We target the  plushy on the right by passing a box at pixel position (420, 120) → (650, 430).
+Download the model [MobileSAM-F16.gguf](https://huggingface.co/Acly/MobileSAM-GGUF/resolve/main/MobileSAM-F16.gguf) and the [input image](docs/media/input.jpg).
+
 
 #### CLI
 
+Find the `vision-cli` executable in the `bin` folder and run it to generate the mask:
+
 ```sh
-vision-cli -m MobileSAM-F16.gguf -i input.png -p 320 240 -o mask.png
+vision-cli -m MobileSAM-F16.gguf -i input.png -p 420 120 650 430 -o mask.png
 ```
 
 #### API
@@ -48,17 +54,17 @@ void main() {
   backend   cpu = backend_init(backend_type::cpu);
   sam_model sam = sam_load_model("MobileSAM-F16.gguf", cpu);
   
-  image_data input_image = image_load("input.png");
-  sam_encode(sam, input_image, cpu);
+  image_data input_image = image_load("input.jpg");
+  sam_encode(sam, input_image);
 
-  image_data object_mask = sam_compute(sam, {320, 240}, cpu);
+  image_data object_mask = sam_compute(sam, box_2d{{420, 120}, {650, 320}});
   image_save(object_mask, "mask.png");
 }
 ```
 This shows the high-level API. Internally it is composed of multiple smaller
 functions that handle model loading, pre-processing inputs, transferring
 data to backend devices, post-processing output, etc. 
-These can be used as building blocks for flexible pipelines which integrate
+These can be used as building blocks for flexible functions which integrate
 with your existing data sources and infrastructure.
 
 #### UI
@@ -66,28 +72,36 @@ with your existing data sources and infrastructure.
 
 ## Models
 
-### Segment Anything Model (SAM)
+### MobileSAM
+
+[Model download](https://huggingface.co/Acly/MobileSAM-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/pdf/2306.14289.pdf) | [Repository (GitHub)](https://github.com/ChaoningZhang/MobileSAM) | [Segment-Anything-Model](https://segment-anything.com/) | License: Apache-2
 
 ```sh
-vision-cli sam -m models/MobileSAM.gguf -i input.png -p 300 200 -o mask.png --composite comp.png
+vision-cli sam -m MobileSAM-F16.gguf -i input.png -p 300 200 -o mask.png --composite comp.png
 ```
 
 ### BiRefNet
 
+[Model download](https://huggingface.co/Acly/BiRefNet-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/pdf/2401.03407) | [Repository (GitHub)](https://github.com/ZhengPeng7/BiRefNet) | License: MIT
+
 ```sh
-vision-cli birefnet -m models/BiRefNet_lite-F16.gguf -i input.png -o mask.png --composite comp.png
+vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composite comp.png
 ```
 
 ### MI-GAN
 
+[Model download](https://huggingface.co/Acly/MIGAN-GGUF/tree/main) | [Paper (thecvf.com)](https://openaccess.thecvf.com/content/ICCV2023/papers/Sargsyan_MI-GAN_A_Simple_Baseline_for_Image_Inpainting_on_Mobile_Devices_ICCV_2023_paper.pdf) | [Repository (GitHub)](https://github.com/Picsart-AI-Research/MI-GAN) | License: MIT
+
 ```sh
-vision-cli migan -m models/migan_places2_512-F16.gguf -i image.png mask.png -o output.png
+vision-cli migan -m MIGAN-512-places2-F16.gguf -i image.png mask.png -o output.png
 ```
 
-### ESRGAN
+### Real-ESRGAN
+
+[Model download](https://huggingface.co/Acly/Real-ESRGAN-GGUF) | [Paper (arXiv)](https://arxiv.org/abs/2107.10833) | [Repository (GitHub)](https://github.com/xinntao/Real-ESRGAN) | License: BSD-3-Clause
 
 ```sh
-vision-cli esrgan -m models/4x_foolhardy_Remacrih-F16.gguf -i input.png -o output.png
+vision-cli esrgan -m ESRGAN-4x_foolhardy_Remacrih-F16.gguf -i input.png -o output.png
 ```
 
 
@@ -98,11 +112,11 @@ rearrange or precompute tensors for more optimal inference.
 
 To convert a model, install [uv](https://docs.astral.sh/uv/) and run:
 ```sh
-uv run scripts/convert.py <arch> MyModel.pth -q f16
+uv run scripts/convert.py <arch> MyModel.pth
 ```
-where `<arch>` is one of `sam, birefnet, esrgan, ...`. This will create `models/MyModel-F16.gguf`.
+where `<arch>` is one of `sam, birefnet, esrgan, ...`.
 
-See `convert.py --help` for more options.
+This will create `models/MyModel.gguf`. See `convert.py --help` for more options.
 
 ## Building
 
@@ -117,24 +131,23 @@ cd vision.cpp
 **Configure and build**
 ```sh
 cmake . -B build -D CMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build --config Release
 ```
 
-### _(Optional)_ Vulkan
+### Vulkan _(Optional)_
 
-Vulkan GPU support requires the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) to be installed.
+Building with Vulkan GPU support requires the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) to be installed.
 
 ```sh
 cmake . -B build -D CMAKE_BUILD_TYPE=Release -D VISP_VULKAN=ON
-cmake --build build
 ```
 
-### _(Optional)_ Tests
+### Tests _(Optional)_
 
 Run all C++ tests with the following command:
 ```sh
 cd build
-ctest
+ctest -C Release
 ```
 
 Some tests require a Python environment. It can be set up with [uv](https://docs.astral.sh/uv/):
@@ -142,6 +155,6 @@ Some tests require a Python environment. It can be set up with [uv](https://docs
 # Setup venv and install dependencies (once only)
 uv sync
 
-# Run only python tests
+# Run python tests
 uv run pytest
 ```
