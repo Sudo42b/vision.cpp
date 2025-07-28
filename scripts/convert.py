@@ -175,6 +175,7 @@ def convert_sam(input_filepath: Path, writer: Writer):
 
         if name in ["dec.iou_token.weight", "dec.mask_tokens.weight"]:
             writer.add_tensor(name, tensor, "f32")
+            continue
 
         writer.add_tensor(name, tensor)
 
@@ -267,7 +268,7 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
 # MI-GAN
 
 
-def convert_migan(input_filepath: Path, writer: Writer, quantize: str | None, verbose: bool):
+def convert_migan(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
 
     model: dict[str, Tensor] = torch.load(input_filepath, weights_only=True)
@@ -283,7 +284,7 @@ def convert_migan(input_filepath: Path, writer: Writer, quantize: str | None, ve
 # ESRGAN
 
 
-def convert_esrgan(input_filepath: Path, writer: Writer, quantize: str | None, verbose: bool):
+def convert_esrgan(input_filepath: Path, writer: Writer):
     from spandrel import ModelLoader
 
     # Load the model using spandrel
@@ -368,10 +369,10 @@ if __name__ == "__main__":
         writer.write_tensors_to_file(progress=True)
         writer.close()
     except ValueError as e:
-        print(e)
+        print("\033[31mError:\033[0m", e)
         exit(1)
     except Exception as e:
-        print(f"Error during conversion: {e}")
+        print("\033[31mError:\033[0m", e)
         exit(-1)
 
     print("")
