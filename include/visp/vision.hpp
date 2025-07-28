@@ -26,8 +26,8 @@
 //
 //   Provides a high-level API to run inference on various vision models for
 //   common tasks. These operations are built for simplicity and don't provide
-//   a lot of options. Rather, you will find below each operation it is split into
-//   several steps, which can be used to build more flexible pipelines.
+//   a lot of options. If you need more control, you will find each operation
+//   split into several steps below, which can be combined in a modular fashion.
 //
 // Basic Use
 // ---------
@@ -49,17 +49,16 @@
 //
 // Internally running the model is split into several steps:
 // 1. Load the model weights from a GGUF file.
-// 2. Allocate storage on the backend device and transfer the weights.
-// 3. Detect model hyperparameters and precompute required buffers.
+// 2. Detect model hyperparameters and precompute required buffers.
+// 3. Allocate storage on the backend device and transfer the weights.
 // 4. Build a compute graph for the model architecture.
 // 5. Allocate storage for input, output and intermediate tensors on the backend device.
-// 6. Pre-process the image and transfer it to the backend device.
+// 6. Pre-process the input and transfer it to the backend device.
 // 7. Run the compute graph.
 // 8. Transfer the output to the host and post-process it.
 //
-// You can run all steps individually in order to customize the pipeline. Check the
-// implementation of the high-level API functions to get started.
-//
+// Custom pipelines are simply functions which call the individual steps and extend them
+// where needed. The implementation of the high-level API functions is a good starting point.
 // This allows to:
 // * load model weights from a different source
 // * control exactly when allocation happens

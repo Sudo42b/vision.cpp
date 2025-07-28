@@ -8,7 +8,7 @@ Computer Vision ML inference in C++
 * Growing number of supported models behind a simple API
 * Modular design for full control and implementing your own models
 
-Based on [GGML](https://github.com/ggml-org/ggml) which also powers the [llama.cpp](https://github.com/ggml-org/llama.cpp) project.
+Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](https://github.com/ggml-org/llama.cpp) project.
 
 ### Features
 
@@ -28,12 +28,11 @@ Get the library and executables:
 
 ### Example: Select an object in an image
 
-Let's use MobileSAM to generate a segmentation mask.
+Let's use MobileSAM to generate a segmentation mask of the plushy on the right by passing in a box describing its approximate location.
 
-<img alt="Example image showing box prompt and mask output" src="docs/media/example-sam.jpg" width="400">
+<img alt="Example image showing box prompt at pixel location (420, 120) -> (650, 430), and the output mask" src="docs/media/example-sam-coords.jpg" width="400">
 
-We target the  plushy on the right by passing a box at pixel position (420, 120) → (650, 430).
-Download the model [MobileSAM-F16.gguf](https://huggingface.co/Acly/MobileSAM-GGUF/resolve/main/MobileSAM-F16.gguf) and the [input image](docs/media/input.jpg).
+You can download the model and input image here: [MobileSAM-F16.gguf](https://huggingface.co/Acly/MobileSAM-GGUF/resolve/main/MobileSAM-F16.gguf) | [input.jpg](docs/media/input.jpg)
 
 
 #### CLI
@@ -43,6 +42,7 @@ Find the `vision-cli` executable in the `bin` folder and run it to generate the 
 ```sh
 vision-cli -m MobileSAM-F16.gguf -i input.png -p 420 120 650 430 -o mask.png
 ```
+Pass `--composite output.png` to composite input and mask. Use `--help` for more options.
 
 #### API
 
@@ -67,12 +67,13 @@ data to backend devices, post-processing output, etc.
 These can be used as building blocks for flexible functions which integrate
 with your existing data sources and infrastructure.
 
-#### UI
 
 
 ## Models
 
 ### MobileSAM
+
+<img src="docs/media/example-sam.jpg" width="400">
 
 [Model download](https://huggingface.co/Acly/MobileSAM-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/pdf/2306.14289.pdf) | [Repository (GitHub)](https://github.com/ChaoningZhang/MobileSAM) | [Segment-Anything-Model](https://segment-anything.com/) | License: Apache-2
 
@@ -82,6 +83,8 @@ vision-cli sam -m MobileSAM-F16.gguf -i input.png -p 300 200 -o mask.png --compo
 
 ### BiRefNet
 
+<img src="docs/media/example-birefnet.png" width="400">
+
 [Model download](https://huggingface.co/Acly/BiRefNet-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/pdf/2401.03407) | [Repository (GitHub)](https://github.com/ZhengPeng7/BiRefNet) | License: MIT
 
 ```sh
@@ -90,6 +93,8 @@ vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composi
 
 ### MI-GAN
 
+<img src="docs/media/example-migan.jpg" width="400">
+
 [Model download](https://huggingface.co/Acly/MIGAN-GGUF/tree/main) | [Paper (thecvf.com)](https://openaccess.thecvf.com/content/ICCV2023/papers/Sargsyan_MI-GAN_A_Simple_Baseline_for_Image_Inpainting_on_Mobile_Devices_ICCV_2023_paper.pdf) | [Repository (GitHub)](https://github.com/Picsart-AI-Research/MI-GAN) | License: MIT
 
 ```sh
@@ -97,6 +102,8 @@ vision-cli migan -m MIGAN-512-places2-F16.gguf -i image.png mask.png -o output.p
 ```
 
 ### Real-ESRGAN
+
+<img src="docs/media/example-esrgan.jpg" width="400">
 
 [Model download](https://huggingface.co/Acly/Real-ESRGAN-GGUF) | [Paper (arXiv)](https://arxiv.org/abs/2107.10833) | [Repository (GitHub)](https://github.com/xinntao/Real-ESRGAN) | License: BSD-3-Clause
 
@@ -158,3 +165,9 @@ uv sync
 # Run python tests
 uv run pytest
 ```
+
+## Acknowledgements
+
+* [ggml](https://github.com/ggml-org/ggml) - ML inference library | MIT
+* [stb-image](https://github.com/nothings/stb) - Image load/save/resize | Public Domain
+* [fmt](https://github.com/fmtlib/fmt) - String formatting _(only if compiler doesn't support &lt;format&gt;)_ | MIT
