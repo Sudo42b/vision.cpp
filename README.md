@@ -14,10 +14,10 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 
 | Model                                        | Task             | Backends    |
 | :------------------------------------------- | :--------------- | :---------- |
-| [**MobileSAM**](#segment-anything-model-sam) | Segmentation     | CPU, Vulkan |
+| [**MobileSAM**](#mobilesam) | Segmentation     | CPU, Vulkan |
 | [**BiRefNet**](#birefnet)                    | Segmentation     | CPU, Vulkan |
 | [**MI-GAN**](#mi-gan)                        | Inpainting       | CPU, Vulkan |
-| [**ESRGAN**](#esrgan)                        | Super-resolution | CPU, Vulkan |
+| [**ESRGAN**](#real-esrgan)                        | Super-resolution | CPU, Vulkan |
 | [_Implement a model [**Guide**]_]()          |                  |             |
 
 ## Get Started
@@ -30,7 +30,7 @@ Get the library and executables:
 
 Let's use MobileSAM to generate a segmentation mask of the plushy on the right by passing in a box describing its approximate location.
 
-<img alt="Example image showing box prompt at pixel location (420, 120) -> (650, 430), and the output mask" src="docs/media/example-sam-coords.jpg" width="400">
+<img width="400" height="256" alt="Example image showing box prompt at pixel location (420, 120) - (650, 430), and the output mask" src="https://github.com/user-attachments/assets/0b90ad96-c7d2-4c4c-b028-699433cef704" />
 
 You can download the model and input image here: [MobileSAM-F16.gguf](https://huggingface.co/Acly/MobileSAM-GGUF/resolve/main/MobileSAM-F16.gguf) | [input.jpg](docs/media/input.jpg)
 
@@ -71,9 +71,9 @@ with your existing data sources and infrastructure.
 
 ## Models
 
-### MobileSAM
+#### MobileSAM
 
-<img src="docs/media/example-sam.jpg" width="400">
+<img width="400" height="256" alt="example-sam" src="https://github.com/user-attachments/assets/9c0fe151-9990-4bb1-b954-7caff560b110" />
 
 [Model download](https://huggingface.co/Acly/MobileSAM-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/pdf/2306.14289.pdf) | [Repository (GitHub)](https://github.com/ChaoningZhang/MobileSAM) | [Segment-Anything-Model](https://segment-anything.com/) | License: Apache-2
 
@@ -81,9 +81,9 @@ with your existing data sources and infrastructure.
 vision-cli sam -m MobileSAM-F16.gguf -i input.png -p 300 200 -o mask.png --composite comp.png
 ```
 
-### BiRefNet
+#### BiRefNet
 
-<img src="docs/media/example-birefnet.png" width="400">
+<img width="400" height="256" alt="example-birefnet" src="https://github.com/user-attachments/assets/6fce086d-cb89-4717-92a6-9f4a20532b3c" />
 
 [Model download](https://huggingface.co/Acly/BiRefNet-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/pdf/2401.03407) | [Repository (GitHub)](https://github.com/ZhengPeng7/BiRefNet) | License: MIT
 
@@ -91,9 +91,9 @@ vision-cli sam -m MobileSAM-F16.gguf -i input.png -p 300 200 -o mask.png --compo
 vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composite comp.png
 ```
 
-### MI-GAN
+#### MI-GAN
 
-<img src="docs/media/example-migan.jpg" width="400">
+<img width="400" height="256" alt="example-migan" src="https://github.com/user-attachments/assets/cadf1994-7677-4822-94e5-a2ee6c07621f" />
 
 [Model download](https://huggingface.co/Acly/MIGAN-GGUF/tree/main) | [Paper (thecvf.com)](https://openaccess.thecvf.com/content/ICCV2023/papers/Sargsyan_MI-GAN_A_Simple_Baseline_for_Image_Inpainting_on_Mobile_Devices_ICCV_2023_paper.pdf) | [Repository (GitHub)](https://github.com/Picsart-AI-Research/MI-GAN) | License: MIT
 
@@ -101,9 +101,9 @@ vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composi
 vision-cli migan -m MIGAN-512-places2-F16.gguf -i image.png mask.png -o output.png
 ```
 
-### Real-ESRGAN
+#### Real-ESRGAN
 
-<img src="docs/media/example-esrgan.jpg" width="400">
+<img width="400" height="256" alt="example-esrgan" src="https://github.com/user-attachments/assets/a41312d6-836c-4b11-ab5d-2e299ffee10c" />
 
 [Model download](https://huggingface.co/Acly/Real-ESRGAN-GGUF) | [Paper (arXiv)](https://arxiv.org/abs/2107.10833) | [Repository (GitHub)](https://github.com/xinntao/Real-ESRGAN) | License: BSD-3-Clause
 
