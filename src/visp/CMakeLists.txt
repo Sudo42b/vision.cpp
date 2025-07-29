@@ -1,12 +1,12 @@
 add_library(visioncpp SHARED)
 
 target_sources(visioncpp PRIVATE
-  birefnet.cpp
-  esrgan.cpp
+  arch/birefnet.cpp
+  arch/esrgan.cpp
+  arch/migan.cpp
+  arch/mobile-sam.cpp
   image.cpp
-  migan.cpp
   ml.cpp
-  mobile-sam.cpp
   nn.cpp
   platform.cpp
   vision.cpp

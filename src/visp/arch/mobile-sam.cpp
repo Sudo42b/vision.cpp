@@ -1,8 +1,8 @@
-#include "mobile-sam.hpp"
-#include "nn.hpp"
+#include "visp/arch/mobile-sam.hpp"
+#include "visp/nn.hpp"
+#include "visp/vision.hpp"
 #include "util/math.hpp"
 #include "util/string.hpp"
-#include "visp/vision.hpp"
 
 #include <ggml.h>
 

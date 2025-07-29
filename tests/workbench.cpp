@@ -1,8 +1,8 @@
 #include "util/string.hpp"
-#include "visp/birefnet.hpp"
-#include "visp/esrgan.hpp"
-#include "visp/migan.hpp"
-#include "visp/mobile-sam.hpp"
+#include "visp/arch/birefnet.hpp"
+#include "visp/arch/esrgan.hpp"
+#include "visp/arch/migan.hpp"
+#include "visp/arch/mobile-sam.hpp"
 #include "visp/nn.hpp"
 
 #include <ggml-blas.h>

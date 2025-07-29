@@ -1,9 +1,9 @@
-#include "migan.hpp"
-#include "image-impl.hpp"
-#include "nn.hpp"
+#include "visp/arch/migan.hpp"
+#include "visp/image-impl.hpp"
+#include "visp/nn.hpp"
+#include "visp/vision.hpp"
 #include "util/math.hpp"
 #include "util/string.hpp"
-#include "visp/vision.hpp"
 
 #include <array>
 #include <cmath>
