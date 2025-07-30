@@ -39,3 +39,13 @@ add_library(vision-workbench workbench.cpp)
 target_include_directories(vision-workbench PRIVATE ../src)
 target_compile_definitions(vision-workbench PRIVATE ${VISP_ASSERT} ${VISP_FMT_DEFS})
 target_link_libraries(vision-workbench PRIVATE visioncpp ggml ${VISP_FMT_LINK})
+
+#
+# Benchmarks
+
+add_executable(vision-bench)
+target_sources(vision-bench PRIVATE benchmark.cpp testing.cpp)
+target_include_directories(vision-bench PRIVATE . ../src)
+target_compile_definitions(vision-bench PRIVATE VISP_TEST_NO_MAIN ${VISP_ASSERT} ${VISP_FMT_DEFS})
+target_compile_options(vision-bench PRIVATE ${VISP_WARNINGS})
+target_link_libraries(vision-bench PRIVATE visioncpp ${VISP_FMT_LINK})

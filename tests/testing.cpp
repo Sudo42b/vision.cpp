@@ -13,6 +13,8 @@ float tolerance = 1e-5f;
 std::string extra_info;
 } // namespace visp
 
+#ifndef VISP_TEST_NO_MAIN
+
 int main(int argc, char** argv) {
     using namespace visp;
 
@@ -109,6 +111,8 @@ int main(int argc, char** argv) {
 
     return (failed > 0 || errors > 0) ? 1 : 0;
 }
+
+#endif // VISP_TEST_NO_MAIN
 
 namespace visp {
 
