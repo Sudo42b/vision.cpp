@@ -12,13 +12,13 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 
 ### Features
 
-| Model                                        | Task             | Backends    |
-| :------------------------------------------- | :--------------- | :---------- |
-| [**MobileSAM**](#mobilesam) | Segmentation     | CPU, Vulkan |
-| [**BiRefNet**](#birefnet)                    | Segmentation     | CPU, Vulkan |
-| [**MI-GAN**](#mi-gan)                        | Inpainting       | CPU, Vulkan |
-| [**ESRGAN**](#real-esrgan)                        | Super-resolution | CPU, Vulkan |
-| [_Implement a model [**Guide**]_]()          |                  |             |
+| Model                               | Task             | Backends    |
+| :---------------------------------- | :--------------- | :---------- |
+| [**MobileSAM**](#mobilesam)         | Segmentation     | CPU, Vulkan |
+| [**BiRefNet**](#birefnet)           | Segmentation     | CPU, Vulkan |
+| [**MI-GAN**](#mi-gan)               | Inpainting       | CPU, Vulkan |
+| [**ESRGAN**](#real-esrgan)          | Super-resolution | CPU, Vulkan |
+| [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 ## Get Started
 
@@ -28,7 +28,8 @@ Get the library and executables:
 
 ### Example: Select an object in an image
 
-Let's use MobileSAM to generate a segmentation mask of the plushy on the right by passing in a box describing its approximate location.
+Let's use MobileSAM to generate a segmentation mask of the plushy on the right
+by passing in a box describing its approximate location.
 
 <img width="400" height="256" alt="Example image showing box prompt at pixel location (420, 120) - (650, 430), and the output mask" src="https://github.com/user-attachments/assets/0b90ad96-c7d2-4c4c-b028-699433cef704" />
 
@@ -62,10 +63,10 @@ void main() {
 }
 ```
 This shows the high-level API. Internally it is composed of multiple smaller
-functions that handle model loading, pre-processing inputs, transferring
-data to backend devices, post-processing output, etc. 
-These can be used as building blocks for flexible functions which integrate
-with your existing data sources and infrastructure.
+functions that handle model loading, pre-processing inputs, transferring data to
+backend devices, post-processing output, etc. These can be used as building
+blocks for flexible functions which integrate with your existing data sources
+and infrastructure.
 
 
 
