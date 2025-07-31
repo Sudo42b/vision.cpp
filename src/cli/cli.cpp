@@ -13,10 +13,10 @@
 namespace visp {
 using std::filesystem::path;
 
-enum class cli_command { sam, birefnet, migan, esrgan };
+enum class cli_command { none, sam, birefnet, migan, esrgan };
 
 struct cli_args {
-    cli_command command;
+    cli_command command = cli_command::none;
     std::vector<char const*> inputs;   // -i --input
     char const* output = "output.png"; // -o --output
     char const* model = nullptr;       // -m --model
@@ -30,6 +30,40 @@ struct cli_args {
     char const* composite = nullptr; // --composite
     int tile_size = -1;              // --tile
 };
+
+void print_usage() {
+char const* const usage = R"(
+Usage: vision-cli <command> [options]
+
+Commands:
+    sam       - MobileSAM image segmentation
+    birefnet  - BirefNet background removal
+    migan     - MI-GAN inpainting
+    esrgan    - ESRGAN/Real-ESRGAN upscaling
+
+Options:
+    -i, --input <image1> [<image2> ...]  Input image(s)
+    -o, --output <file>                  Output file (default: output.png)
+    -m, --model <file>                   Model file (.gguf)
+    -p, --prompt <x> [<y> ...]           Prompt (eg. pixel coordinates)
+    -b, --backend <cpu|gpu>              Backend type (default: auto)
+    -h, --help                           Print usage and exit
+    --composite <file>                   Composite input image with mask
+    --tile <size>                        Tile size to split large images
+
+Examples:
+    vision-cli sam -m MobileSAM-F16.gguf -i image.jpg -p 100 200 -o mask.png
+    vision-cli birefnet -m BiRefNet-F16.gguf -i image.jpg -o mask.png --composite output.png
+    vision-cli migan -m MIGAN-F16.gguf -i image.jpg mask.png -o output.png
+    vision-cli esrgan -m ESRGAN-x4-F16.gguf -i image.jpg -o upscaled.png
+)";
+    printf("%s", usage);
+}
+
+char const* const short_usage = R"(
+Usage: vision-cli <command> [options]
+See 'vision-cli --help' for more details.
+)";
 
 char const* next_arg(int argc, char** argv, int& i) {
     if (++i < argc) {
@@ -77,7 +111,7 @@ void require_inputs(std::span<char const* const> inputs, int n_required, char co
 cli_args cli_parse(int argc, char** argv) {
     cli_args r;
     if (argc < 2) {
-        throw except("Missing command.\nUsage: {} <command> [options]", argv[0]);
+        throw except("Missing command.\n{}", short_usage);
     }
 
     std::string_view arg1 = argv[1];
@@ -89,8 +123,10 @@ cli_args cli_parse(int argc, char** argv) {
         r.command = cli_command::migan;
     } else if (arg1 == "esrgan") {
         r.command = cli_command::esrgan;
+    } else if (arg1 == "-h" || arg1 == "--help") {
+        print_usage();
     } else {
-        throw except("Unknown command: {}", arg1);
+        throw except("Unknown command: '{}'\n{}", arg1, short_usage);
     }
 
     for (int i = 2; i < argc; ++i) {
@@ -118,7 +154,7 @@ cli_args cli_parse(int argc, char** argv) {
         } else if (arg == "--tile") {
             r.tile_size = parse_int(next_arg(argc, argv, i));
         } else if (arg.starts_with("-")) {
-            throw except("Unknown argument: {}", arg);
+            throw except("Unknown argument: {}\n{}", arg, short_usage);
         }
     }
     return r;
