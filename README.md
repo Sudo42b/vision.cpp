@@ -12,12 +12,12 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 
 ### Features
 
-| Model                               | Task             | Backends    |
-| :---------------------------------- | :--------------- | :---------- |
-| [**MobileSAM**](#mobilesam)         | Segmentation     | CPU, Vulkan |
-| [**BiRefNet**](#birefnet)           | Segmentation     | CPU, Vulkan |
-| [**MI-GAN**](#mi-gan)               | Inpainting       | CPU, Vulkan |
-| [**ESRGAN**](#real-esrgan)          | Super-resolution | CPU, Vulkan |
+| Model                       | Task             | Backends    |
+| :-------------------------- | :--------------- | :---------- |
+| [**MobileSAM**](#mobilesam) | Segmentation     | CPU, Vulkan |
+| [**BiRefNet**](#birefnet)   | Segmentation     | CPU, Vulkan |
+| [**MI-GAN**](#mi-gan)       | Inpainting       | CPU, Vulkan |
+| [**ESRGAN**](#real-esrgan)  | Super-resolution | CPU, Vulkan |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 ## Get Started
@@ -167,7 +167,48 @@ uv sync
 uv run pytest
 ```
 
-## Acknowledgements
+## Performance
+
+Performance optimization is an ongoing process. The aim is to be in the same ballpark
+as other frameworks for inference speed, but with:
+* much faster initialization and model loading time (<100 ms)
+* lower memory overhead
+* tiny deployment size (<5 MB for CPU, +30 MB for GPU)
+
+### Inference speed
+
+* CPU: AMD Ryzen 5 5600X (6 cores)
+* GPU: NVIDIA GeForce RTX 4070
+
+#### MobileSAM, 1024x1024, encode + decode
+
+|      |      | _vision.cpp_ |     PyTorch | ONNX Runtime |
+| :--- | :--- | -----------: | ----------: | -----------: |
+| cpu  | f32  |  632 + 37 ms | 559 + 42 ms |  728 + 87 ms |
+| gpu  | f16  |   18 +  3 ms |  10 +  6 ms |              |
+
+#### BiRefNet, 1024x1024
+
+| Model |      |      | _vision.cpp_ |  PyTorch | ONNX Runtime |
+| :---- | :--- | :--- | -----------: | -------: | -----------: |
+| Full  | cpu  | f32  |     16333 ms | 18800 ms |              |
+| Full  | gpu  | f16  |       380 ms |   140 ms |              |
+| Lite  | cpu  | f32  |      4505 ms | 10900 ms |      6978 ms |
+| Lite  | gpu  | f16  |       204 ms |    59 ms |       967 ms |
+
+#### MI-GAN, 512x512
+
+| Model       |      |      | _vision.cpp_ | PyTorch |
+| :---------- | :--- | :--- | -----------: | ------: |
+| 512-places2 | cpu  | f32  |       523 ms |  637 ms |
+| 512-places2 | gpu  | f16  |        24 ms |   17 ms |
+
+#### Setup
+
+* vision.cpp: using vision-bench, GPU via Vulkan, eg. `vision-bench sam cpu`
+* PyTorch: v2.7.1+cu128, eager eval, GPU via CUDA, average n iterations after warm-up
+
+## Dependencies (integrated)
 
 * [ggml](https://github.com/ggml-org/ggml) - ML inference library | MIT
 * [stb-image](https://github.com/nothings/stb) - Image load/save/resize | Public Domain
