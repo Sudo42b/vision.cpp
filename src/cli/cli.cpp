@@ -181,6 +181,7 @@ int main(int argc, char** argv) {
             case cli_command::birefnet: run_birefnet(args); break;
             case cli_command::migan: run_migan(args); break;
             case cli_command::esrgan: run_esrgan(args); break;
+            case cli_command::none: break;
         }
 
     } catch (std::exception const& e) {
