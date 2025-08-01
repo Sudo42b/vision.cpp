@@ -8,21 +8,21 @@
 //
 // Vision.cpp comes in 3 main headers:
 //
-// visp/image.hpp
+// visp/image.h
 //
 //   Defines structures to store and reference pixel data. Supports loading, saving and
 //   common processing of images. Most tasks take an `image_view` as input, which
 //   is a non-owning reference to external pixel data. Output is returned as
 //   `image_data` (allocated by the library) or written to an `image_span`.
 //
-// visp/ml.hpp
+// visp/ml.h
 //
 //   Contains ML infrastructure shared between all models: loading weights,
 //   transferring data between backend devices (eg. GPU), and executing
 //   compute graphs. Most of these are thin convenience wrappers around GGML.
 //   Alternatively you can use GGML directly for greater flexibility.
 //
-// visp/vision.hpp (this file)
+// visp/vision.h (this file)
 //
 //   Provides a high-level API to run inference on various vision models for
 //   common tasks. These operations are built for simplicity and don't provide
@@ -70,9 +70,9 @@
 
 #pragma once
 
-#include "visp/image.hpp"
-#include "visp/ml.hpp"
-#include "visp/util.hpp"
+#include "visp/image.h"
+#include "visp/ml.h"
+#include "visp/util.h"
 
 #include <array>
 #include <span>

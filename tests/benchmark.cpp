@@ -1,8 +1,8 @@
-#include "testing.hpp"
-#include "visp/image.hpp"
-#include "visp/ml.hpp"
-#include "visp/util.hpp"
-#include "visp/vision.hpp"
+#include "testing.h"
+#include "visp/image.h"
+#include "visp/ml.h"
+#include "visp/util.h"
+#include "visp/vision.h"
 
 #include <chrono>
 #include <cmath>

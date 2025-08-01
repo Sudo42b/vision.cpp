@@ -1,6 +1,6 @@
-#include "visp/ml.hpp"
-#include "visp/platform.hpp"
-#include "util/string.hpp"
+#include "visp/ml.h"
+#include "visp/platform.h"
+#include "util/string.h"
 
 #include <algorithm>
 #include <array>

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "util/math.hpp"
-#include "util/string.hpp"
-#include "visp/image.hpp"
+#include "util/math.h"
+#include "util/string.h"
+#include "visp/image.h"
 
 #include <algorithm>
 #include <array>

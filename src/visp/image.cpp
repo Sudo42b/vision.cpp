@@ -1,7 +1,7 @@
-#include "visp/image.hpp"
-#include "image-impl.hpp"
-#include "util/math.hpp"
-#include "util/string.hpp"
+#include "visp/image.h"
+#include "image-impl.h"
+#include "util/math.h"
+#include "util/string.h"
 
 #include <stb_image.h>
 #include <stb_image_resize.h>

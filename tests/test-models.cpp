@@ -1,7 +1,7 @@
-#include "util/string.hpp"
-#include "visp/vision.hpp"
+#include "util/string.h"
+#include "visp/vision.h"
 
-#include "testing.hpp"
+#include "testing.h"
 
 namespace visp {
 

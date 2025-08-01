@@ -1,6 +1,6 @@
 #pragma once
 
-#include "visp/ml.hpp"
+#include "visp/ml.h"
 
 namespace visp::esrgan {
 

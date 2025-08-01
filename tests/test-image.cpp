@@ -1,7 +1,7 @@
-#include "testing.hpp"
-#include "visp/image-impl.hpp"
-#include "visp/image.hpp"
-#include "visp/util.hpp"
+#include "testing.h"
+#include "visp/image-impl.h"
+#include "visp/image.h"
+#include "visp/util.h"
 
 #include <array>
 #include <filesystem>

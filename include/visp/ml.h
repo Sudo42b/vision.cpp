@@ -1,7 +1,7 @@
 #pragma once
 
-#include "visp/image.hpp"
-#include "visp/util.hpp"
+#include "visp/image.h"
+#include "visp/util.h"
 
 #include <ggml-alloc.h>
 #include <ggml-backend.h>

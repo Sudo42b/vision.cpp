@@ -1,8 +1,8 @@
-#include "visp/arch/birefnet.hpp"
-#include "visp/nn.hpp"
-#include "visp/vision.hpp"
-#include "util/math.hpp"
-#include "util/string.hpp"
+#include "visp/arch/birefnet.h"
+#include "visp/nn.h"
+#include "visp/vision.h"
+#include "util/math.h"
+#include "util/string.h"
 
 #include <ggml.h>
 

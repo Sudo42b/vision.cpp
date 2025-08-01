@@ -1,6 +1,6 @@
 #pragma once
 
-#include "visp/util.hpp"
+#include "visp/util.h"
 
 #include <memory>
 #include <span>

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "visp/image.hpp"
-#include "visp/ml.hpp"
-#include "visp/vision.hpp"
+#include "visp/image.h"
+#include "visp/ml.h"
+#include "visp/vision.h"
 
 #include <array>
 #include <span>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "visp/ml.hpp"
-#include "visp/util.hpp"
+#include "visp/ml.h"
+#include "visp/util.h"
 
 // Common neural network building blocks
 

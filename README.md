@@ -48,7 +48,7 @@ Pass `--composite output.png` to composite input and mask. Use `--help` for more
 #### API
 
 ```c++
-#include <visp/vision.hpp>
+#include <visp/vision.h>
 using namespace visp;
 
 void main() {

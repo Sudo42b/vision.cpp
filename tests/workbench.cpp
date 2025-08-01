@@ -1,9 +1,9 @@
-#include "util/string.hpp"
-#include "visp/arch/birefnet.hpp"
-#include "visp/arch/esrgan.hpp"
-#include "visp/arch/migan.hpp"
-#include "visp/arch/mobile-sam.hpp"
-#include "visp/nn.hpp"
+#include "util/string.h"
+#include "visp/arch/birefnet.h"
+#include "visp/arch/esrgan.h"
+#include "visp/arch/migan.h"
+#include "visp/arch/mobile-sam.h"
+#include "visp/nn.h"
 
 #include <ggml-blas.h>
 #include <ggml-cpu.h>

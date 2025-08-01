@@ -1,7 +1,7 @@
 #pragma once
 
-#include "visp/ml.hpp"
-#include "visp/image.hpp"
+#include "visp/ml.h"
+#include "visp/image.h"
 
 #include <array>
 

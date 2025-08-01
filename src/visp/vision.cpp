@@ -1,6 +1,6 @@
-#include "visp/vision.hpp"
-#include "util/math.hpp"
-#include "util/string.hpp"
+#include "visp/vision.h"
+#include "util/math.h"
+#include "util/string.h"
 
 namespace visp {
 

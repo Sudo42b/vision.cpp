@@ -1,7 +1,7 @@
-#include "visp/arch/esrgan.hpp"
-#include "visp/nn.hpp"
-#include "visp/vision.hpp"
-#include "util/string.hpp"
+#include "visp/arch/esrgan.h"
+#include "visp/nn.h"
+#include "visp/vision.h"
+#include "util/string.h"
 
 #include <charconv>
 #include <string_view>
