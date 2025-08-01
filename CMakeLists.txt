@@ -16,6 +16,8 @@ if(PROJECT_IS_TOP_LEVEL)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 
+# Configure assertions
+
 if(VISP_DEV)
   set(VISP_ASSERT "VISP_ASSERT_BREAK")
 elseif(VISP_CI)
@@ -28,6 +30,8 @@ elseif(CMAKE_BUILD_TYPE)
   endif()
 endif()
 
+# Configure address sanitizer (Clang only)
+
 if(VISP_ASAN)
   if(MSVC)
     add_compile_options(/fsanitize=address)
@@ -38,11 +42,19 @@ if(VISP_ASAN)
   endif()
 endif()
 
-if(MSVC)  
-  add_compile_options(/Zi /utf-8)
-  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-  add_link_options(/DEBUG) # Enable debug symbols also in release builds
+# Windows/MSVC specific defaults
+
+if(MSVC)
+  list(APPEND VISP_COMP_OPTIONS /utf-8)
+  list(APPEND VISP_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
+  if(PROJECT_IS_TOP_LEVEL)
+    # Enable debug symbols also in release builds
+    list(APPEND VISP_COMP_OPTIONS /Zi)
+    list(APPEND VISP_LINK_OPTIONS /DEBUG)
+  endif()
 endif()
+
+# Configure warnings
 
 if(VISP_DEV OR VISP_CI)
   if(MSVC)
@@ -59,7 +71,7 @@ add_subdirectory(depend/stb)
 if(VISP_FMT_LIB)
   add_subdirectory(depend/fmt)
   set(VISP_FMT_LINK fmt::fmt)
-  set(VISP_FMT_DEFS VISP_FMT_LIB)
+  list(APPEND VISP_DEFINITIONS VISP_FMT_LIB)
 endif()
 
 set(GGML_VULKAN ${VISP_VULKAN})

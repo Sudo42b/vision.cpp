@@ -51,7 +51,7 @@ PyTorch code.
 The great thing about ggml is, you can always follow-reference in your IDE and
 see almost immediately how things are implemented. It is small enough to be
 compiled along-side, so you can step into functions, add prints, etc. If some
-functionality is missing, you can quickly hack it in. Make sure to use.
+functionality is missing, you can quickly hack it in. Make sure to use that.
 
 ### vision.cpp
 
@@ -68,7 +68,7 @@ tensor some_module(model_ref m, tensor x, ...)
 Here `tensor` is short for `ggml_tensor *`, which can be a weight or the result
 of an operation. The `model_ref` is used to build a compute graph by passing it
 to ggml functions as replacement for `ggml_context *`. It keeps track of parent
-modules and provides a way to access model weights. 
+modules and provides a way to access model weights by name. 
 
 `some_module` typically represents the forward function of a PyTorch
 `nn.Module`. The whole model can be defined with reusable functions.
@@ -108,7 +108,8 @@ be converted. It's usually a good opportunity to optimize for inference, throw
 away training-only stuff, maybe fuse some operations, or convert to a faster
 memory layout.
 
-If you haven't already, setup a Python environment (just running `uv sync` will do).
+If you haven't already, setup a Python environment (I use
+[uv](https://docs.astral.sh/uv/) and simply run `uv sync`).
 
 Open `scripts/convert.py` and add a conversion function similar to the existing
 ones. A 1:1 conversion is very simple:

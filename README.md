@@ -52,7 +52,7 @@ Pass `--composite output.png` to composite input and mask. Use `--help` for more
 using namespace visp;
 
 void main() {
-  backend   cpu = backend_init(backend_type::cpu);
+  backend_device cpu = backend_init(backend_type::cpu);
   sam_model sam = sam_load_model("MobileSAM-F16.gguf", cpu);
   
   image_data input_image = image_load("input.jpg");
