@@ -37,6 +37,13 @@ jobs:
         if: matrix.os == 'windows-latest'
         uses: microsoft/setup-msbuild@v2
 
+      - name: Vulkan SDK (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
+
       - name: Configure (Linux)
         if: matrix.os == 'ubuntu-22.04'
         run: >
@@ -52,6 +59,7 @@ jobs:
           cmake . -B build -A x64
           -D CMAKE_BUILD_TYPE=Release
           -D VISP_CI=ON
+          -D VISP_VULKAN=ON
 
       - name: Configure (MacOS)
         if: matrix.os == 'macos-14'
@@ -74,8 +82,7 @@ jobs:
       #     export GGML_VK_VISIBLE_DEVICES=0
       #     ctest --verbose
 
-      - name: Test CPU
-        if: matrix.os != 'ubuntu-22.04'
+      - name: Test
         working-directory: ./build
         run: ctest --verbose -C Release
 
