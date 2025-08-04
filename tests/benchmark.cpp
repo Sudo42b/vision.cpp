@@ -114,7 +114,7 @@ bench_timings benchmark_esrgan(path model_path, backend_device& backend) {
     image_data input_data = image_u8_to_f32(input, image_format::rgb_f32);
 
     compute_graph graph = compute_graph_init(esrgan_estimate_graph_size(model.params));
-    model_ref m(model.weights, model.graph);
+    model_ref m(model.weights, graph);
     i64x4 input_shape = {3, input.extent[0], input.extent[1], 1};
     model.input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
     model.output = esrgan_generate(m, model.input, model.params);
@@ -259,7 +259,7 @@ int main(int argc, char** argv) {
             line, "| {: <10} | {: <30} | {: <6} | {: >11} | {: >6} |\n", "Arch", "Model", "Device", "Avg", "Dev"));
         printf("|:-----------|:-------------------------------|:-------|------------:|-------:|\n");
         for (const auto& result : results) {
-            auto model = result.model.substr(std::max(int(result.model.length()) - 32, 0));
+            auto model = result.model.substr(std::max(int(result.model.length()) - 30, 0));
             print(format(
                 line, "| {: <10} | {: <30} | {: <6} | {:8.1f} ms | {:6.1f} |\n", result.arch, model,
                 result.backend, result.time.mean, result.time.stdev));
