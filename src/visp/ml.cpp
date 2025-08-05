@@ -1,6 +1,7 @@
 #include "visp/ml.h"
-#include "visp/platform.h"
 #include "util/string.h"
+#include "visp/platform.h"
+
 
 #include <algorithm>
 #include <array>
@@ -519,8 +520,11 @@ tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim)
 }
 
 tensor interpolate(model_ref const& m, tensor x, i64x2 target, int32_t mode) {
-    return ggml_interpolate(
-        m, x, int(target[0]), int(target[1]), int(x->ne[2]), int(x->ne[3]), mode);
+    if ((m.flags & model_build_flag::cwhn) && mode == GGML_SCALE_MODE_NEAREST) {
+        return ggml_interpolate(m, x, x->ne[0], target[0], target[1], x->ne[2], mode);
+    }
+    // Bilinear interpolation requires WHCN layout!
+    return ggml_interpolate(m, x, target[0], target[1], x->ne[2], x->ne[3], mode);
 }
 
 } // namespace visp

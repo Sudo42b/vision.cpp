@@ -229,6 +229,11 @@ inline std::array<int64_t, 4> nelements(tensor t) {
     return {t->ne[0], t->ne[1], t->ne[2], t->ne[3]};
 }
 
+inline std::array<int64_t, 2> tensor_extent_2d(model_ref const& m, tensor t) {
+    return (m.flags & model_build_flag::cwhn) ? std::array{t->ne[1], t->ne[2]}
+                                              : std::array{t->ne[0], t->ne[1]};
+}
+
 struct slice_t {
     int64_t begin;
     int64_t end;

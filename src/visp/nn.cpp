@@ -34,6 +34,20 @@ tensor permute_whcn_to_cwhn(model_ref m, tensor x) {
     return ggml_permute(m, x, 1, 2, 0, 3);
 }
 
+tensor to_contiguous_2d(model_ref m, tensor x) {
+    if (m.flags & model_build_flag::cwhn) {
+        return x; // 2D layout is CWHN too
+    }
+    return ggml_cont(m, permute_cwhn_to_whcn(m, x));
+}
+
+tensor to_contiguous_channels(model_ref m, tensor x) {
+    if (m.flags & model_build_flag::cwhn) {
+        return x; // x is already CWHN
+    }
+    return ggml_cont(m, permute_whcn_to_cwhn(m, x));
+}
+
 tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
     tensor weight = m.weights("weight");
 
