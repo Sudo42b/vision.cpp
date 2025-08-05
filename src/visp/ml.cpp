@@ -114,6 +114,34 @@ void backend_set_n_threads(backend_device& b, int n_threads) {
     set_n_threads(b.handle.get(), n_threads);
 }
 
+
+//
+// model_build_flags
+
+model_build_flags backend_default_flags(backend_type type) {
+    using enum model_build_flag;
+    switch (type) {
+        case backend_type::cpu: return conv_2d_direct | f16_conv_transpose | window_partition;
+        case backend_type::gpu: return {};
+    }
+    return {};
+}
+
+model_build_flags model_get_build_flags(model_file const& file) {
+    fixed_string<64> str;
+    std::string_view arch = file.arch();
+    model_build_flags flags;
+
+    int64_t key = gguf_find_key(file.gguf.get(), format(str, "{}.tensor_data_layout", arch));
+    if (key != -1) {
+        std::string_view layout = gguf_get_val_str(file.gguf.get(), key);
+        if (layout == "cwhn") {
+            flags |= model_build_flag::cwhn;
+        }
+    }
+    return flags;
+}
+
 //
 // model_file
 
@@ -247,6 +275,7 @@ void model_transfer(
     ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(dst_ctx, device);
     weights.weights_buffer = ggml_backend_buffer_ptr(buffer);
     weights.buffer_type = device.type();
+    weights.flags = model_get_build_flags(file);
 
     for (ggml_tensor* t = ggml_get_first_tensor(dst_ctx); t; t = ggml_get_next_tensor(dst_ctx, t)) {
         tensor data_tensor = ggml_get_tensor(src_ctx, ggml_get_name(t));
@@ -293,47 +322,21 @@ void compute(compute_graph const& g, backend_device const& b) {
     ggml_backend_graph_compute(b, g.graph);
 }
 
-//
-// model_build_flags
-
-model_build_flags model_get_backend_flags(backend_type type) {
-    using enum model_build_flag;
-    switch (type) {
-        case backend_type::cpu: return conv_2d_direct | f16_conv_transpose | window_partition;
-        case backend_type::gpu: return {};
-    }
-    return {};
-}
-
-model_build_flags model_get_build_flags(model_file const& file) {
-    fixed_string<64> str;
-    std::string_view arch = file.arch();
-    model_build_flags flags;
-
-    int64_t key = gguf_find_key(file.gguf.get(), format(str, "{}.tensor_data_layout", arch));
-    if (key != -1) {
-        std::string_view layout = gguf_get_val_str(file.gguf.get(), key);
-        if (layout == "cwhn" || layout == "nhwc") {
-            flags |= model_build_flag::cwhn;
-        }
-    }
-    return flags;
-}
 
 //
 // model_ref
 
-model_ref::model_ref(model_weights& m, model_build_flags flags)
+model_ref::model_ref(model_weights& m)
     : weights_context(m.context.get()),
       graph_context(m.context.get()),
       graph(nullptr),
-      flags(flags | model_get_backend_flags(m.buffer_type)) {}
+      flags(m.flags | backend_default_flags(m.buffer_type)) {}
 
-model_ref::model_ref(model_weights& m, compute_graph& g, model_build_flags flags)
+model_ref::model_ref(model_weights& m, compute_graph& g)
     : weights_context(m.context.get()),
       graph_context(g.context.get()),
       graph(g.graph),
-      flags(flags | model_get_backend_flags(m.buffer_type)) {}
+      flags(m.flags | backend_default_flags(m.buffer_type)) {}
 
 model_ref::model_ref(
     ggml_context* weights_context,
@@ -521,7 +524,7 @@ tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim)
 
 tensor interpolate(model_ref const& m, tensor x, i64x2 target, int32_t mode) {
     if ((m.flags & model_build_flag::cwhn) && mode == GGML_SCALE_MODE_NEAREST) {
-        return ggml_interpolate(m, x, x->ne[0], target[0], target[1], x->ne[2], mode);
+        return ggml_interpolate(m, x, x->ne[0], target[0], target[1], x->ne[3], mode);
     }
     // Bilinear interpolation requires WHCN layout!
     return ggml_interpolate(m, x, target[0], target[1], x->ne[2], x->ne[3], mode);

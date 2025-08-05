@@ -1,9 +1,9 @@
 #include "visp/arch/migan.h"
+#include "util/math.h"
+#include "util/string.h"
 #include "visp/image-impl.h"
 #include "visp/nn.h"
 #include "visp/vision.h"
-#include "util/math.h"
-#include "util/string.h"
 
 #include <array>
 #include <cmath>
@@ -30,20 +30,30 @@ tensor downsample_2d(model_ref m, tensor x) {
 }
 
 tensor upsample_2d(model_ref m, tensor x) {
-    tensor filter_const = m.weights("filter_const");
-    filter_const = ggml_reshape_4d(m, filter_const, 1, filter_const->ne[0], filter_const->ne[1], 1);
+    tensor filter = m.weights("filter_const");
+    if (m.flags & model_build_flag::cwhn) {
+        filter = ggml_reshape_4d(m, filter, 1, filter->ne[0], filter->ne[1], 1);
+    }
 
-    auto [c, w, h, b] = nelements(x);
-    x = ggml_interpolate(m, x, int(c), int(w * 2), int(h * 2), int(b), GGML_SCALE_MODE_NEAREST);
-    x = ggml_mul_inplace(m, x, filter_const);
+    auto [w, h] = tensor_extent_2d(m, x);
+    x = interpolate(m, x, {w * 2, h * 2}, GGML_SCALE_MODE_NEAREST);
+    x = ggml_mul_inplace(m, x, filter);
     x = conv_2d_depthwise(m["filter"], x, 1, 2); // 4x4 filter
-    x = slice(m, x, {}, {0, -1}, {0, -1}, {});   // remove padding from right and bottom
+
+    // remove padding from right and bottom
+    if (m.flags & model_build_flag::cwhn) {
+        x = slice(m, x, {}, {0, -1}, {0, -1}, {});
+    } else {
+        x = slice(m, x, {0, -1}, {0, -1}, {}, {});
+    }
     x = ggml_cont(m, x); // required by subsequent ggml_scale for some reason
     return named(m, x);
 }
 
 tensor separable_conv_2d(model_ref m, tensor x, flags<conv> flags) {
-    int pad = int(m["conv1"].weights("weight")->ne[2] / 2);
+    int kdim = (m.flags & model_build_flag::cwhn) ? 2 : 0; // to get kernel size
+    int pad = int(m["conv1"].weights("weight")->ne[kdim] / 2);
+
     x = conv_2d_depthwise(m["conv1"], x, 1, pad);
     if (flags & conv::activation) {
         x = lrelu_agc(m, x, 0.2f, sqrt2, 256);
@@ -60,7 +70,9 @@ tensor separable_conv_2d(model_ref m, tensor x, flags<conv> flags) {
     if (flags & conv::noise) {
         tensor noise = m.weights("noise_const");
         noise = ggml_mul_inplace(m, noise, m.weights("noise_strength"));
-        noise = ggml_reshape_4d(m, noise, 1, noise->ne[0], noise->ne[1], 1);
+        if (m.flags & model_build_flag::cwhn) {
+            noise = ggml_reshape_4d(m, noise, 1, noise->ne[0], noise->ne[1], 1);
+        }
         x = ggml_add_inplace(m, x, noise);
     }
     if (flags & conv::activation) {
@@ -70,6 +82,7 @@ tensor separable_conv_2d(model_ref m, tensor x, flags<conv> flags) {
 }
 
 tensor from_rgb(model_ref m, tensor x) {
+    x = to_contiguous_2d(m, x);
     x = conv_2d(m["fromrgb"], x);
     x = lrelu_agc(m, x, 0.2f, sqrt2, 256);
     return named(m, x);
@@ -122,6 +135,7 @@ tensor synthesis(model_ref m, tensor x_in, Features feats, int res) {
         model_ref block = m[format<tensor_name>("b{}", res >> i)];
         std::tie(x, img) = synthesis_block(block, x, feats[i], img, conv::upsample, conv::noise);
     }
+    img = to_contiguous_channels(m, img);
     return img;
 }
 
@@ -154,7 +168,9 @@ migan_params migan_detect_params(model_file const& f) {
     if (std::string_view arch = f.arch(); arch != "migan") {
         throw except("Architecture expected to be 'migan', but was '{}' ({})", arch, f.path);
     }
-    return migan_params{f.get_int("migan.image_size")};
+    migan_params p;
+    p.resolution = f.get_int("migan.image_size");
+    return p;
 }
 
 image_data migan_process_input(image_view image, image_view mask, migan_params const& p) {
@@ -179,7 +195,7 @@ image_data migan_process_input(image_view image, image_view mask, migan_params c
 }
 
 image_data migan_process_output(std::span<float const> data, i32x2 extent, migan_params const& p) {
-    i32x2 model_extent = {p.resolution,p.resolution};
+    i32x2 model_extent = {p.resolution, p.resolution};
     image_view image(model_extent, image_format::rgb_f32, data.data());
     image_data resized;
     if (model_extent != extent) {

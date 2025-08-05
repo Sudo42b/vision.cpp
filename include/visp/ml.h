@@ -52,6 +52,22 @@ VISP_API backend_device backend_init(backend_type);
 VISP_API void backend_set_n_threads(backend_device&, int n_threads);
 
 //
+// Model build flags - backend capabilities, model configuration and optimization
+
+enum class model_build_flag {
+    // clang-format off
+    cwhn                = 1 << 0,
+    conv_2d_direct      = 1 << 1,
+    concat_n            = 1 << 2,
+    f16_conv_transpose  = 1 << 3,
+    window_partition    = 1 << 4
+}; // clang-format on
+
+using model_build_flags = flags<model_build_flag>;
+
+VISP_API model_build_flags backend_default_flags(backend_type);
+
+//
 // Model file - holds the contents of a GGUF file
 
 struct model_file {
@@ -82,6 +98,7 @@ struct model_weights {
     backend_type buffer_type = backend_type::cpu;
     ggml_backend_buffer_ptr weights_buffer;
     std::vector<ggml_backend_buffer_ptr> extra_buffers;
+    model_build_flags flags;
 
     VISP_API ggml_type float_type() const;
 
@@ -126,23 +143,6 @@ VISP_API bool compute_graph_allocate(compute_graph&, backend_device const&);
 VISP_API void compute(compute_graph const&, backend_device const&);
 
 //
-// Model build flags - backend capabilities, model configuration and optimization
-
-enum class model_build_flag {
-    // clang-format off
-    cwhn                = 1 << 0,
-    conv_2d_direct      = 1 << 1,
-    concat_n            = 1 << 2,
-    f16_conv_transpose  = 1 << 3,
-    window_partition    = 1 << 4
-}; // clang-format on
-
-using model_build_flags = flags<model_build_flag>;
-
-VISP_API model_build_flags model_get_backend_flags(backend_type);
-VISP_API model_build_flags model_get_build_flags(model_file const&);
-
-//
 // Model ref - represents a ML model
 //
 // * helper for building compute graphs
@@ -158,8 +158,8 @@ struct VISP_API model_ref {
     tensor_name prefix;
 
     model_ref() = default;
-    model_ref(model_weights&, model_build_flags = {});
-    model_ref(model_weights&, compute_graph&, model_build_flags = {});
+    model_ref(model_weights&);
+    model_ref(model_weights&, compute_graph&);
 
     explicit model_ref(
         ggml_context* weights_context,

@@ -335,7 +335,7 @@ void run_sam(cli_args const& args) {
         : sam_process_box({prompt.point1, prompt.point2}, image.extent, params);
 
     compute_graph graph = compute_graph_init();
-    model_ref m(weights, graph, params.flags);
+    model_ref m(weights, graph);
 
     tensor image_tensor = compute_graph_input(m, GGML_TYPE_F32, {3, 1024, 1024, 1}, "image");
     tensor point_tensor = compute_graph_input(m, GGML_TYPE_F32, {2, 2, 1, 1}, "points");
@@ -390,7 +390,7 @@ void run_birefnet(cli_args const& args) {
     }
 
     compute_graph graph = compute_graph_init(6 * 1024);
-    model_ref m(weights, graph, params.flags);
+    model_ref m(weights, graph);
 
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, img_size, img_size, 1});
     tensor output = birefnet_predict(m, input, params);
@@ -428,7 +428,7 @@ void run_migan(cli_args const& args) {
     image_data input_data = migan_process_input(image, mask, params);
 
     compute_graph graph = compute_graph_init();
-    model_ref m(weights, graph, params.flags);
+    model_ref m(weights, graph);
 
     i64x4 input_shape = {4, params.resolution, params.resolution, 1};
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
@@ -454,7 +454,6 @@ void run_esrgan(cli_args const& args) {
     backend_device backend = backend_init(args);
     auto [file, weights] = load_model_weights(args, backend, "models/RealESRGAN-x4.gguf");
     esrgan_params params = esrgan_detect_params(file);
-    params.flags |= model_get_backend_flags(backend.type());
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
@@ -467,7 +466,7 @@ void run_esrgan(cli_args const& args) {
     image_data output_image = image_alloc(image.extent * params.scale, image_format::rgb_f32);
 
     compute_graph graph = compute_graph_init(esrgan_estimate_graph_size(params));
-    model_ref m(weights, graph, params.flags);
+    model_ref m(weights, graph);
 
     i64x4 input_shape = {3, tiles.tile_size[0], tiles.tile_size[1], 1};
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);

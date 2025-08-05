@@ -62,7 +62,7 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
         } else if (m.flags & model_build_flag::conv_2d_direct) {
             weight = permute_cwhn_to_whcn(m, weight);
             x = permute_cwhn_to_whcn(m, x);
-            x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, 1, 1);
+            x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
             x = permute_whcn_to_cwhn(m, x);
 
         } else {
@@ -89,28 +89,34 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
 }
 
 tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
-    ASSERT(m.flags & model_build_flag::cwhn);
+    tensor weight = m.weights("weight");
 
-    tensor weight = ggml_permute(m, m.weights("weight"), 3, 2, 0, 1);
-    x = permute_cwhn_to_whcn(m, x);
-    x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
-    x = permute_whcn_to_cwhn(m, x);
-
+    if (m.flags & model_build_flag::cwhn) {
+        weight = ggml_permute(m, weight, 3, 2, 0, 1);
+        x = permute_cwhn_to_whcn(m, x);
+        x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
+        x = permute_whcn_to_cwhn(m, x);
+    } else {
+        x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
+    }
     x = add_bias(m, x);
     return x;
 }
 
 tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
-    ASSERT(m.flags & model_build_flag::cwhn);
-
     tensor weight = m.weights("weight");
     if (m.flags & model_build_flag::f16_conv_transpose) {
         // TODO: ggml_conv_transpose_2d_p0 expects fp16 weights (cpu backend)
         weight = ggml_cast(m, weight, GGML_TYPE_F16);
     }
-    x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
+    if (m.flags & model_build_flag::cwhn) {
+        x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
+    }
     x = ggml_conv_transpose_2d_p0(m, weight, x, stride);
-    x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
+
+    if (m.flags & model_build_flag::cwhn) {
+        x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
+    }
     x = add_bias(m, x);
     return x;
 }
@@ -131,12 +137,18 @@ tensor conv_2d_deform(
 }
 
 tensor batch_norm_2d(model_ref m, tensor x) {
-    ASSERT(m.flags & model_build_flag::cwhn);
+    // Batch norm is expected to be have been fused into mul+add. See convert.py
     ASSERT(m.find("running_mean") == nullptr, "Batch norm was not fused");
     ASSERT(m.find("running_var") == nullptr, "Batch norm was not fused");
 
-    x = ggml_mul_inplace(m, x, m.weights("weight"));
-    x = ggml_add_inplace(m, x, m.weights("bias"));
+    tensor weight = m.weights("weight");
+    tensor bias = m.weights("bias");
+    if (!(m.flags & model_build_flag::cwhn)) { // WHCN layout
+        weight = ggml_reshape_4d(m, weight, 1, 1, weight->ne[0], 1);
+        bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
+    }
+    x = ggml_mul_inplace(m, x, weight);
+    x = ggml_add_inplace(m, x, bias);
     return named(m, x);
 }
 

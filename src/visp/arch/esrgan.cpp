@@ -82,7 +82,6 @@ esrgan_params esrgan_detect_params(model_file const& f) {
         throw except("Architecture expected to be 'esrgan', but was '{}' ({})", arch, f.path);
     }
     esrgan_params p;
-    p.flags = model_get_build_flags(f);
     p.scale = f.get_int("esrgan.scale");
     p.n_blocks = f.get_int("esrgan.block_count");
     
