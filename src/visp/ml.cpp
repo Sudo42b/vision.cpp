@@ -33,7 +33,7 @@ bool load_ggml_backends() {
                 auto str = dir.parent_path().u8string();
                 ggml_backend_load_all_from_path((char const*)str.c_str());
             }
-        }                
+        }
         return true;
     }();
     return loaded;
@@ -114,7 +114,66 @@ void backend_set_n_threads(backend_device& b, int n_threads) {
 }
 
 //
+// model_file
+
+model_file model_load(char const* filepath) {
+    ggml_context* data_ctx;
+    gguf_init_params params;
+    params.no_alloc = false;
+    params.ctx = &data_ctx;
+
+    gguf_context_ptr gguf_ctx(gguf_init_from_file(filepath, params));
+    if (!gguf_ctx) {
+        throw except("Failed to load GGUF model: {}", filepath);
+    }
+    return model_file{std::move(gguf_ctx), ggml_context_ptr(data_ctx), filepath};
+}
+
+int64_t model_file::n_tensors() const {
+    return gguf_get_n_tensors(gguf.get());
+}
+
+int64_t model_file::key(char const* name) const {
+    int64_t key_id = gguf_find_key(gguf.get(), name);
+    if (key_id == -1) {
+        throw except("Can't find key '{}' in model file {}", name, path);
+    }
+    return key_id;
+}
+
+std::string_view model_file::get_string(char const* key_name) const {
+    return gguf_get_val_str(gguf.get(), key(key_name));
+}
+
+int model_file::get_int(char const* key_name) const {
+    return gguf_get_val_i32(gguf.get(), key(key_name));
+}
+
+std::string_view model_file::arch() const {
+    return get_string("general.architecture");
+}
+
+//
 // model_weights
+
+model_weights model_init(size_t size) {
+    ggml_init_params params{};
+    params.mem_size = size * ggml_tensor_overhead();
+    params.no_alloc = true;
+    ggml_context_ptr ctx(ggml_init(params));
+
+    return model_weights{std::move(ctx), backend_type::cpu, {}, {}};
+}
+
+bool model_allocate(model_weights& m, backend_device const& b) {
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(m.context.get(), b.handle.get()));
+    if (!buffer) {
+        return false; // context contains nothing to allocate
+    }
+    m.buffer_type = b.type();
+    m.extra_buffers.push_back(std::move(buffer));
+    return true;
+}
 
 bool is_float_type(ggml_type t) {
     return t != GGML_TYPE_I8 && t != GGML_TYPE_I16 && t != GGML_TYPE_I32 && t != GGML_TYPE_I64;
@@ -166,63 +225,33 @@ struct float_converter {
     }
 };
 
-model_weights model_init(backend_device const& be, size_t size) {
-    ggml_init_params params{};
-    params.mem_size = size * ggml_tensor_overhead();
-    params.no_alloc = true;
-    ggml_context_ptr ctx(ggml_init(params));
+void model_transfer(
+    model_file const& file,
+    model_weights& weights,
+    backend_device const& device,
+    ggml_type float_type) {
 
-    return model_weights{std::move(ctx), be.type(), {}, {}};
-}
+    gguf_context* gguf = file.gguf.get();
+    ggml_context* src_ctx = file.data.get();
+    ggml_context* dst_ctx = weights.context.get();
+    float_converter convert(float_type);
 
-model_weights model_load(char const* filepath, backend_device const& backend, model_load_params p) {
-
-    ggml_context* data_ctx;
-    gguf_init_params params;
-    params.no_alloc = false;
-    params.ctx = &data_ctx;
-
-    gguf_context_ptr gguf_ctx(gguf_init_from_file(filepath, params));
-    if (!gguf_ctx) {
-        throw std::runtime_error("Failed to load GGUF model");
-    }
-    ggml_context_ptr data_ctx_ptr(data_ctx);
-    int64_t n_weights = gguf_get_n_tensors(gguf_ctx.get());
-
-    ggml_init_params model_ctx_params{};
-    model_ctx_params.mem_size = (n_weights + p.n_extra_tensors) * ggml_tensor_overhead();
-    model_ctx_params.no_alloc = true;
-    ggml_context_ptr model_ctx(ggml_init(model_ctx_params));
-
-    float_converter convert(p.float_type);
-    for (int64_t i = 0; i < gguf_get_n_tensors(gguf_ctx.get()); ++i) {
-        auto name = gguf_get_tensor_name(gguf_ctx.get(), i);
-        tensor orig = ggml_get_tensor(data_ctx, name);
-        tensor dup = ggml_new_tensor(
-            model_ctx.get(), convert.target_type(orig), GGML_MAX_DIMS, orig->ne);
+    for (int64_t i = 0; i < gguf_get_n_tensors(gguf); ++i) {
+        auto name = gguf_get_tensor_name(gguf, i);
+        tensor orig = ggml_get_tensor(src_ctx, name);
+        tensor dup = ggml_new_tensor(dst_ctx, convert.target_type(orig), GGML_MAX_DIMS, orig->ne);
         ggml_set_name(dup, name);
     }
 
-    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(model_ctx.get(), backend));
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(dst_ctx, device);
+    weights.weights_buffer = ggml_backend_buffer_ptr(buffer);
+    weights.buffer_type = device.type();
 
-    for (ggml_tensor* t = ggml_get_first_tensor(model_ctx.get()); t != nullptr;
-         t = ggml_get_next_tensor(model_ctx.get(), t)) {
-        tensor data_tensor = ggml_get_tensor(data_ctx, ggml_get_name(t));
+    for (ggml_tensor* t = ggml_get_first_tensor(dst_ctx); t; t = ggml_get_next_tensor(dst_ctx, t)) {
+        tensor data_tensor = ggml_get_tensor(src_ctx, ggml_get_name(t));
         void const* data = convert(data_tensor, t);
         ggml_backend_tensor_set(t, data, 0, ggml_nbytes(t));
     }
-    return model_weights{std::move(model_ctx), backend.type(), std::move(buffer), {}};
-}
-
-bool model_allocate(model_weights& m, backend_device const& b) {
-    ASSERT(m.buffer_type == b.type(), "Model weights must all be on the same backend");
-
-    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(m.context.get(), b.handle.get()));
-    if (!buffer) {
-        return false; // context contains nothing to allocate
-    }
-    m.extra_buffers.push_back(std::move(buffer));
-    return true;
 }
 
 ggml_type model_weights::float_type() const {
@@ -264,29 +293,46 @@ void compute(compute_graph const& g, backend_device const& b) {
 }
 
 //
-// model_ref
+// model_build_flags
 
-model_build_flags default_backend_flags(backend_type type) {
+model_build_flags model_get_backend_flags(backend_type type) {
     using enum model_build_flag;
     switch (type) {
-        case backend_type::cpu:
-            return cwhn | conv_2d_direct | fused_batch_norm | f16_conv_transpose | window_partition;
-        case backend_type::gpu: return cwhn;
+        case backend_type::cpu: return conv_2d_direct | f16_conv_transpose | window_partition;
+        case backend_type::gpu: return {};
     }
     return {};
 }
 
-model_ref::model_ref(model_weights& m)
+model_build_flags model_get_build_flags(model_file const& file) {
+    fixed_string<64> str;
+    std::string_view arch = file.arch();
+    model_build_flags flags;
+
+    int64_t key = gguf_find_key(file.gguf.get(), format(str, "{}.tensor_data_layout", arch));
+    if (key != -1) {
+        std::string_view layout = gguf_get_val_str(file.gguf.get(), key);
+        if (layout == "cwhn" || layout == "nhwc") {
+            flags |= model_build_flag::cwhn;
+        }
+    }
+    return flags;
+}
+
+//
+// model_ref
+
+model_ref::model_ref(model_weights& m, model_build_flags flags)
     : weights_context(m.context.get()),
       graph_context(m.context.get()),
       graph(nullptr),
-      flags(default_backend_flags(m.buffer_type)) {}
+      flags(flags | model_get_backend_flags(m.buffer_type)) {}
 
-model_ref::model_ref(model_weights& m, compute_graph& g)
+model_ref::model_ref(model_weights& m, compute_graph& g, model_build_flags flags)
     : weights_context(m.context.get()),
       graph_context(g.context.get()),
       graph(g.graph),
-      flags(default_backend_flags(m.buffer_type)) {}
+      flags(flags | model_get_backend_flags(m.buffer_type)) {}
 
 model_ref::model_ref(
     ggml_context* weights_context,

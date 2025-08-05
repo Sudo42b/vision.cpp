@@ -13,6 +13,8 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace visp {
@@ -22,28 +24,51 @@ using tensor_name = fixed_string<GGML_MAX_NAME>;
 using tensor = ggml_tensor*;
 
 //
-// Backend
+// Backend device - represents the compute hardware
 
 enum class backend_type { cpu = 1, gpu = 2 };
 
 // True if the backend library is loaded and has at least one supported device.
 VISP_API bool backend_is_available(backend_type);
 
-struct VISP_API backend_device {
+struct backend_device {
     ggml_backend_ptr handle;
     ggml_backend_dev_t device;
 
-    backend_type type() const;
-    ggml_type preferred_float_type() const;
-    size_t total_memory() const;
+    VISP_API backend_type type() const;
+    VISP_API ggml_type preferred_float_type() const;
+    VISP_API size_t total_memory() const;
 
     operator ggml_backend_t() const { return handle.get(); }
 };
 
+// Initialize a backend device, automatically tries to pick the "best" available.
 VISP_API backend_device backend_init();
+
+// Initialize the most suited device that matches the specified backend type.
 VISP_API backend_device backend_init(backend_type);
 
+// Set number of threads used by the backend (CPU only).
 VISP_API void backend_set_n_threads(backend_device&, int n_threads);
+
+//
+// Model file - holds the contents of a GGUF file
+
+struct model_file {
+    gguf_context_ptr gguf;
+    ggml_context_ptr data;
+    std::string path;
+
+    VISP_API int64_t n_tensors() const;
+    VISP_API int64_t key(char const* name) const;
+    VISP_API std::string_view arch() const;
+
+    VISP_API int get_int(char const* name) const;
+    VISP_API std::string_view get_string(char const* name) const;
+};
+
+// Opens a .gguf file and reads its contents into memory.
+VISP_API model_file model_load(char const* filepath);
 
 //
 // Model weights
@@ -52,32 +77,33 @@ VISP_API void backend_set_n_threads(backend_device&, int n_threads);
 // * holds the backend buffers for model weight data
 // * holds buffers for extra tensors such as pre-computed lookup tables
 
-struct VISP_API model_weights {
+struct model_weights {
     ggml_context_ptr context;
     backend_type buffer_type = backend_type::cpu;
     ggml_backend_buffer_ptr weights_buffer;
     std::vector<ggml_backend_buffer_ptr> extra_buffers;
 
-    ggml_type float_type() const;
+    VISP_API ggml_type float_type() const;
 
     operator ggml_context*() const { return context.get(); }
 };
 
 // Creates a GGML context with storage for a fixed number of tensors.
 // Does not allocate any backend buffers.
-VISP_API model_weights model_init(backend_device const&, size_t n_tensors);
-
-struct model_load_params {
-    ggml_type float_type = GGML_TYPE_COUNT; // default: use type stored in GGUF file
-    int n_extra_tensors = 0;                // number of extra tensors to allocate in the context
-};
-
-// Loads model weights from a GGUF file and transfers them to backend buffers.
-VISP_API model_weights model_load(char const* filepath, backend_device const&, model_load_params = {});
+VISP_API model_weights model_init(size_t n_tensors);
 
 // Allocates backend buffers for the model weights if needed. Does not transfer data.
 // Returns false and does nothing if all tensors already have an associated backend buffer.
 VISP_API bool model_allocate(model_weights&, backend_device const&);
+
+// Adds model weights contained in `file` to `weights`. Allocates backend buffers for the
+// weights on `device` and transfers the data to the device buffer.
+// Optionally converts float weights to the specified data type during transfer.
+VISP_API void model_transfer(
+    model_file const& file,
+    model_weights& weights,
+    backend_device const& device,
+    ggml_type float_type = GGML_TYPE_COUNT);
 
 //
 // Compute graph - wrapper for ggml_cgraph and its associated backend memory
@@ -100,24 +126,29 @@ VISP_API bool compute_graph_allocate(compute_graph&, backend_device const&);
 VISP_API void compute(compute_graph const&, backend_device const&);
 
 //
+// Model build flags - backend capabilities, model configuration and optimization
+
+enum class model_build_flag {
+    // clang-format off
+    cwhn                = 1 << 0,
+    conv_2d_direct      = 1 << 1,
+    concat_n            = 1 << 2,
+    f16_conv_transpose  = 1 << 3,
+    window_partition    = 1 << 4
+}; // clang-format on
+
+using model_build_flags = flags<model_build_flag>;
+
+VISP_API model_build_flags model_get_backend_flags(backend_type);
+VISP_API model_build_flags model_get_build_flags(model_file const&);
+
+//
 // Model ref - represents a ML model
 //
 // * helper for building compute graphs
 // * allows access to the model's weights by name, with an optional name prefix
 //   to support nested modules
 // * pass anywhere ggml_context* is expected while building the graph
-
-enum class model_build_flag {
-    // clang-format off
-    cwhn                = 1 << 0,
-    conv_2d_direct      = 1 << 1,
-    fused_batch_norm    = 1 << 2,
-    concat_n            = 1 << 3,
-    f16_conv_transpose  = 1 << 4,
-    window_partition    = 1 << 5
-}; // clang-format on
-
-using model_build_flags = flags<model_build_flag>;
 
 struct VISP_API model_ref {
     ggml_context* weights_context = nullptr;
@@ -127,8 +158,8 @@ struct VISP_API model_ref {
     tensor_name prefix;
 
     model_ref() = default;
-    model_ref(model_weights& m);
-    model_ref(model_weights& m, compute_graph& g);
+    model_ref(model_weights&, model_build_flags = {});
+    model_ref(model_weights&, compute_graph&, model_build_flags = {});
 
     explicit model_ref(
         ggml_context* weights_context,
@@ -247,13 +278,17 @@ struct swin_params {
 
 extern swin_params const swin_t_params;
 extern swin_params const swin_l_params;
-VISP_API swin_params swin_detect_params(model_ref);
+VISP_API swin_params swin_detect_params(model_file const&);
 
 //
 // implementation
 
 constexpr model_build_flags operator|(model_build_flag lhs, model_build_flag rhs) {
     return model_build_flags(uint32_t(lhs) | uint32_t(rhs));
+}
+
+constexpr model_build_flags operator~(model_build_flag f) {
+    return ~model_build_flags(f);
 }
 
 } // namespace visp

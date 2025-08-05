@@ -1,8 +1,8 @@
 #include "visp/arch/birefnet.h"
-#include "visp/nn.h"
-#include "visp/vision.h"
 #include "util/math.h"
 #include "util/string.h"
+#include "visp/nn.h"
+#include "visp/vision.h"
 
 #include <ggml.h>
 
@@ -287,7 +287,8 @@ swin_result swin_transformer(model_ref m, tensor x, swin_params const& p) {
     return outs;
 }
 
-constexpr int32_t bilinear_align_corners = GGML_SCALE_MODE_BILINEAR | (int)GGML_SCALE_FLAG_ALIGN_CORNERS;
+constexpr int32_t bilinear_align_corners = GGML_SCALE_MODE_BILINEAR |
+    (int)GGML_SCALE_FLAG_ALIGN_CORNERS;
 
 tensor upscale_to_whcn(model_ref m, tensor x, tensor target) {
     return interpolate(m, x, {target->ne[0], target->ne[1]}, bilinear_align_corners);
@@ -368,7 +369,7 @@ tensor mean_2d(model_ref m, tensor x) {
     x = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3)); // cwhn -> whcn
     x = ggml_mean(m, x);
     x = ggml_reshape_3d(m, x, h, c, n);
-    x = ggml_mean(m, x);
+    x = ggml_mean(m, x); // TODO: combine means by merging dimensions?
     x = ggml_reshape_4d(m, x, c, 1, 1, n);
     return x;
 }
@@ -584,24 +585,24 @@ const swin_params swin_l_params = {
         swin_layer_t{2,    48,       192 * 8,     false}}};
 // clang-format on
 
-swin_params swin_detect_params(model_ref m) {
-    tensor t = m.find("bb.layers.0.blocks.0.attn.proj.bias");
-    if (t == nullptr) {
-        throw except("Failed to detect model parameters");
-    }
-    if (t->ne[0] == 96) {
+swin_params swin_detect_params(model_file const& f) {
+    int embed_dim = f.get_int("swin.embed_dim");
+    if (embed_dim == 96) {
         return swin_t_params;
-    } else if (t->ne[0] == 192) {
+    } else if (embed_dim == 192) {
         return swin_l_params;
     } else {
-        throw except("Unsupported Swin Transformer embed dim: {}", t->ne[0]);
+        throw except("Unsupported Swin Transformer embed dim: {}", embed_dim);
     }
 }
 
-birefnet_params birefnet_detect_params(model_ref m) {
+birefnet_params birefnet_detect_params(model_file const& f) {
+    if (std::string_view arch = f.arch(); arch != "birefnet") {
+        throw except("Architecture expected to be 'birefnet', but was '{}' ({})", arch, f.path);
+    }
     birefnet_params p;
-    p.image_size = 1024; // TODO: support 2K models
-    p.encoder = swin_detect_params(m);
+    p.image_size = f.get_int("birefnet.image_size");
+    p.encoder = swin_detect_params(f);
     return p;
 }
 

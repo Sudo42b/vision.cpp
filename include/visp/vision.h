@@ -107,6 +107,7 @@ VISP_API image_data sam_compute(sam_model&, box_2d box);
 struct sam_params {
     int image_size = 1024;
     int mask_size = 256;
+    model_build_flags flags = model_build_flag::cwhn;
 };
 
 struct sam_prediction {
@@ -144,11 +145,12 @@ VISP_API image_data birefnet_compute(birefnet_model&, image_view image);
 struct birefnet_params {
     int image_size = 1024;
     swin_params encoder;
+    model_build_flags flags = model_build_flag::cwhn;
 };
 
 using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
 
-VISP_API birefnet_params birefnet_detect_params(model_ref);
+VISP_API birefnet_params birefnet_detect_params(model_file const&);
 VISP_API birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
 
 VISP_API image_data birefnet_process_input(image_view, birefnet_params const&);
@@ -174,9 +176,10 @@ VISP_API image_data migan_compute(migan_model&, image_view image, image_view mas
 struct migan_params {
     int resolution = 256;
     bool invert_mask = false;
+    model_build_flags flags = model_build_flag::cwhn;
 };
 
-VISP_API migan_params migan_detect_params(model_ref m);
+VISP_API migan_params migan_detect_params(model_file const&);
 
 VISP_API image_data migan_process_input(image_view image, image_view mask, migan_params const&);
 VISP_API image_data migan_process_output(
@@ -202,9 +205,10 @@ VISP_API image_data esrgan_compute(esrgan_model&, image_view image);
 struct esrgan_params {
     int scale = 4;
     int n_blocks = 23;
+    model_build_flags flags;
 };
 
-VISP_API esrgan_params esrgan_detect_params(model_ref);
+VISP_API esrgan_params esrgan_detect_params(model_file const&);
 VISP_API int esrgan_estimate_graph_size(esrgan_params const&);
 
 VISP_API tensor esrgan_generate(model_ref, tensor image, esrgan_params const&);

@@ -232,22 +232,20 @@ backend_device backend_init(cli_args const& args) {
     return b;
 }
 
-model_weights load_model_weights(
+std::tuple<model_file, model_weights> load_model_weights(
     cli_args const& args, backend_device const& b, char const* default_model, int n_tensors = 0) {
 
     timer t;
     char const* model_path = args.model ? args.model : default_model;
     printf("Loading model weights from '%s'... ", model_path);
 
-    model_load_params load_params = {
-        .float_type = b.preferred_float_type(),
-        .n_extra_tensors = n_tensors,
-    };
-    model_weights weights = model_load(model_path, b, load_params);
+    model_file file = model_load(model_path);
+    model_weights weights = model_init(file.n_tensors() + n_tensors);
+    model_transfer(file, weights, b, b.preferred_float_type());
 
     printf("done (%s)\n", t.elapsed_str());
     printf("- float type: %s\n", ggml_type_name(weights.float_type()));
-    return weights;
+    return {std::move(file), std::move(weights)};
 }
 
 void compute_timed(compute_graph const& g, backend_device const& b) {
@@ -324,7 +322,7 @@ sam_prompt sam_parse_prompt(std::span<char const* const> args, i32x2 extent) {
 
 void run_sam(cli_args const& args) {
     backend_device backend = backend_init(args);
-    model_weights weights = load_model_weights(args, backend, "models/MobileSAM-F16.gguf");
+    auto [file, weights] = load_model_weights(args, backend, "models/MobileSAM-F16.gguf");
     sam_params params{};
 
     require_inputs(args.inputs, 1, "<image>");
@@ -337,7 +335,7 @@ void run_sam(cli_args const& args) {
         : sam_process_box({prompt.point1, prompt.point2}, image.extent, params);
 
     compute_graph graph = compute_graph_init();
-    model_ref m(weights, graph);
+    model_ref m(weights, graph, params.flags);
 
     tensor image_tensor = compute_graph_input(m, GGML_TYPE_F32, {3, 1024, 1024, 1}, "image");
     tensor point_tensor = compute_graph_input(m, GGML_TYPE_F32, {2, 2, 1, 1}, "points");
@@ -377,8 +375,8 @@ void run_sam(cli_args const& args) {
 
 void run_birefnet(cli_args const& args) {
     backend_device backend = backend_init(args);
-    model_weights weights = load_model_weights(args, backend, "models/BiRefNet-F16.gguf", 6);
-    birefnet_params params = birefnet_detect_params(weights);
+    auto [file, weights] = load_model_weights(args, backend, "models/BiRefNet-F16.gguf", 6);
+    birefnet_params params = birefnet_detect_params(file);
     int img_size = params.image_size;
 
     require_inputs(args.inputs, 1, "<image>");
@@ -392,7 +390,7 @@ void run_birefnet(cli_args const& args) {
     }
 
     compute_graph graph = compute_graph_init(6 * 1024);
-    model_ref m(weights, graph);
+    model_ref m(weights, graph, params.flags);
 
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, img_size, img_size, 1});
     tensor output = birefnet_predict(m, input, params);
@@ -417,8 +415,8 @@ void run_birefnet(cli_args const& args) {
 
 void run_migan(cli_args const& args) {
     backend_device backend = backend_init(args);
-    model_weights weights = load_model_weights(args, backend, "models/MIGAN-512-places2-F16.gguf");
-    migan_params params = migan_detect_params(weights);
+    auto [file, weights] = load_model_weights(args, backend, "models/MIGAN-512-places2-F16.gguf");
+    migan_params params = migan_detect_params(file);
     params.invert_mask = true; // -> inpaint opaque areas
 
     require_inputs(args.inputs, 2, "<image> <mask>");
@@ -430,7 +428,7 @@ void run_migan(cli_args const& args) {
     image_data input_data = migan_process_input(image, mask, params);
 
     compute_graph graph = compute_graph_init();
-    model_ref m(weights, graph);
+    model_ref m(weights, graph, params.flags);
 
     i64x4 input_shape = {4, params.resolution, params.resolution, 1};
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
@@ -454,8 +452,9 @@ void run_migan(cli_args const& args) {
 
 void run_esrgan(cli_args const& args) {
     backend_device backend = backend_init(args);
-    model_weights weights = load_model_weights(args, backend, "models/RealESRGAN-x4.gguf");
-    esrgan_params params = esrgan_detect_params(weights);
+    auto [file, weights] = load_model_weights(args, backend, "models/RealESRGAN-x4.gguf");
+    esrgan_params params = esrgan_detect_params(file);
+    params.flags |= model_get_backend_flags(backend.type());
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
@@ -468,7 +467,7 @@ void run_esrgan(cli_args const& args) {
     image_data output_image = image_alloc(image.extent * params.scale, image_format::rgb_f32);
 
     compute_graph graph = compute_graph_init(esrgan_estimate_graph_size(params));
-    model_ref m(weights, graph);
+    model_ref m(weights, graph, params.flags);
 
     i64x4 input_shape = {3, tiles.tile_size[0], tiles.tile_size[1], 1};
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);

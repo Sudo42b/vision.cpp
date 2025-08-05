@@ -46,6 +46,10 @@ class Writer(GGUFWriter):
             print(name, tensor.shape, tensor_data.dtype)
         super().add_tensor(name, tensor_data)
 
+    def add_int32(self, name: str, value: int):
+        print("*", name, "=", value)
+        super().add_int32(name, value)
+
 
 batch_norm_eps = 1e-5
 
@@ -144,6 +148,7 @@ def fuse_conv_2d_batch_norm(
 
 def convert_sam(input_filepath: Path, writer: Writer):
     writer.add_license("apache-2.0")
+    writer.add_tensor_data_layout("cwhn")
 
     model: dict[str, Tensor] = torch.load(input_filepath, map_location="cpu", weights_only=True)
 
@@ -221,9 +226,22 @@ def build_dense_positional_embeddings(
 
 def convert_birefnet(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
+    writer.add_tensor_data_layout("cwhn")
 
     weights = safetensors.safe_open(input_filepath, "pt")
     model: dict[str, Tensor] = {k: weights.get_tensor(k) for k in weights.keys()}
+
+    x = model["bb.layers.0.blocks.0.attn.proj.bias"]
+    if x.shape[0] == 96:
+        writer.add_string("swin.config", "tiny")
+        writer.add_int32("swin.embed_dim", 96)
+    elif x.shape[0] == 192:
+        writer.add_string("swin.config", "large")
+        writer.add_int32("swin.embed_dim", 192)
+    else:
+        raise ValueError(f"Unsupported Swin Transformer embed dim: {x.shape[0]}")
+
+    writer.add_int32("birefnet.image_size", 1024)  # TODO: add HR/dynamic models
 
     for key, tensor in model.items():
         # Shorten some names to fit into 64 chars
@@ -270,8 +288,14 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
 
 def convert_migan(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
+    writer.add_tensor_data_layout("cwhn")
 
     model: dict[str, Tensor] = torch.load(input_filepath, weights_only=True)
+
+    if "encoder.b512.fromrgb.weight" in model:
+        writer.add_int32("migan.image_size", 512)
+    elif "encoder.b256.fromrgb.weight" in model:
+        writer.add_int32("migan.image_size", 256)
 
     for name, tensor in model.items():
         if is_conv_2d(name, tensor):
@@ -296,11 +320,21 @@ def convert_esrgan(input_filepath: Path, writer: Writer):
     if getattr(model.model, "plus", False):
         raise ValueError("RealESRGAN+ (plus) models are not supported yet.")
 
-    for name, tensor in model.model.state_dict().items():
-        if is_conv_2d(name, tensor):
-            tensor = conv_2d_to_nhwc(tensor)
+    writer.add_tensor_data_layout("whcn")
+    writer.add_int32("esrgan.scale", model.scale)
+    for tag in model.tags:
+        if tag.endswith("nb"):
+            writer.add_int32("esrgan.block_count", int(tag[:-2]))
+        if tag.endswith("nf"):
+            writer.add_int32("esrgan.filter_count", int(tag[:-2]))
 
+    conv2d_weights = []
+    for i, (name, tensor) in enumerate(model.model.state_dict().items()):
         writer.add_tensor(name, tensor)
+
+        if is_conv_2d(name, tensor):
+            conv2d_weights.append(i)
+    writer.add_array("esrgan.conv2d_weights", conv2d_weights)
 
 
 #
@@ -362,7 +396,6 @@ if __name__ == "__main__":
 
         metadata.set_gguf_meta_model(writer)
         writer.add_quantization_version(GGML_QUANT_VERSION)
-        writer.add_tensor_data_layout("cwhn")
         writer.add_file_type(file_types[args.quantize])
         writer.write_header_to_file()
         writer.write_kv_data_to_file()

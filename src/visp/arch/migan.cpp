@@ -150,14 +150,11 @@ tensor migan_generate(model_ref m, tensor image, migan_params const& p) {
     return compute_graph_output(m, result);
 }
 
-migan_params migan_detect_params(model_ref m) {
-    if (m.find("encoder.b512.fromrgb.weight") != nullptr) {
-        return migan_params{512};
-    } else if (m.find("encoder.b256.fromrgb.weight") != nullptr) {
-        return migan_params{256};
-    } else {
-        throw std::runtime_error("Failed to detect model parameters");
+migan_params migan_detect_params(model_file const& f) {
+    if (std::string_view arch = f.arch(); arch != "migan") {
+        throw except("Architecture expected to be 'migan', but was '{}' ({})", arch, f.path);
     }
+    return migan_params{f.get_int("migan.image_size")};
 }
 
 image_data migan_process_input(image_view image, image_view mask, migan_params const& p) {

@@ -138,25 +138,23 @@ struct flags {
     explicit constexpr flags(uint32_t value) : value(value) {}
 
     flags& operator|=(E other) {
-        value |= other;
+        value |= uint32_t(other);
+        return *this;
+    }
+    
+    flags& operator|=(flags other) {
+        value |= other.value;
         return *this;
     }
 
-    friend constexpr bool operator&(flags<E> lhs, E rhs) {
-        return (lhs.value & uint32_t(rhs)) != 0;
-    }
+    constexpr flags operator~() const { return flags(~value); }
+    explicit constexpr operator bool() const { return value != 0; }
 
-    friend constexpr bool operator&(flags<E> lhs, flags<E> rhs) {
-        return (lhs.value & rhs.value) != 0;
-    }
+    friend constexpr flags operator&(flags lhs, E rhs) { return flags(lhs.value & uint32_t(rhs)); }
+    friend constexpr flags operator&(flags lhs, flags rhs) { return flags(lhs.value & rhs.value); }
 
-    friend constexpr flags<E> operator|(flags<E> lhs, E rhs) {
-        return flags<E>(lhs.value | uint32_t(rhs));
-    }
-
-    friend constexpr flags<E> operator|(flags<E> lhs, flags<E> rhs) {
-        return flags<E>(lhs.value | rhs.value);
-    }
+    friend constexpr flags operator|(flags lhs, E rhs) { return flags(lhs.value | uint32_t(rhs)); }
+    friend constexpr flags operator|(flags lhs, flags rhs) { return flags(lhs.value | rhs.value); }
 };
 
 } // namespace visp

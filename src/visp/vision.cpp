@@ -10,15 +10,13 @@ namespace visp {
 sam_model sam_load_model(char const* filepath, backend_device const& backend) {
     sam_model model;
     model.backend = &backend;
-    model_load_params load_params = {
-        .float_type = backend.preferred_float_type(),
-        .n_extra_tensors = 0,
-    };
-    model.weights = model_load(filepath, backend, load_params);
+    model_file file = model_load(filepath);
     model.params = sam_params{};
+    model.weights = model_init(file.n_tensors());
+    model_transfer(file, model.weights, backend, backend.preferred_float_type());
     model.encoder = compute_graph_init();
 
-    model_ref m = model_ref(model.weights, model.encoder);
+    model_ref m = model_ref(model.weights, model.encoder, model.params.flags);
     int res = model.params.image_size;
     model.input_image = compute_graph_input(m, GGML_TYPE_F32, {3, res, res, 1});
     tensor embeds = sam_encode_image(m, model.input_image, model.params);
@@ -43,7 +41,7 @@ image_data sam_compute_impl(sam_model& model, i32x2 point1, i32x2 point2) {
         model.is_point_prompt = is_point;
 
         model.decoder = compute_graph_init();
-        model_ref m(model.weights, model.decoder);
+        model_ref m(model.weights, model.decoder, model.params.flags);
         model.input_embed = compute_graph_input(m, GGML_TYPE_F32, {256, 64, 64, 1});
         model.input_prompt = compute_graph_input(m, GGML_TYPE_F32, {2, 2, 1, 1}, "input_prompt");
         tensor prompt_embed = is_point ? sam_encode_points(m, model.input_prompt)
@@ -81,12 +79,10 @@ image_data sam_compute(sam_model& model, box_2d box) {
 birefnet_model birefnet_load_model(char const* filepath, backend_device const& backend) {
     birefnet_model model;
     model.backend = &backend;
-    model_load_params load_params = {
-        .float_type = backend.preferred_float_type(),
-        .n_extra_tensors = swin_params::n_layers + 2
-    };
-    model.weights = model_load(filepath, backend, load_params);
-    model.params = birefnet_detect_params(model.weights);
+    model_file file = model_load(filepath);
+    model.params = birefnet_detect_params(file);
+    model.weights = model_init(file.n_tensors() + swin_params::n_layers + 2);
+    model_transfer(file, model.weights, backend, backend.preferred_float_type());
 
     birefnet_buffers buffers = birefnet_precompute(model.weights, model.params);
     model_allocate(model.weights, backend);
@@ -95,7 +91,7 @@ birefnet_model birefnet_load_model(char const* filepath, backend_device const& b
     }
 
     model.graph = compute_graph_init(6 * 1024);
-    model_ref m(model.weights, model.graph);
+    model_ref m(model.weights, model.graph, model.params.flags);
     int res = model.params.image_size;
     model.input = compute_graph_input(m, GGML_TYPE_F32, {3, res, res, 1});
     model.output = birefnet_predict(m, model.input, model.params);
@@ -120,17 +116,15 @@ image_data birefnet_compute(birefnet_model& model, image_view image) {
 migan_model migan_load_model(char const* filepath, backend_device const& backend) {
     migan_model model;
     model.backend = &backend;
-    model_load_params load_params = {
-        .float_type = backend.preferred_float_type(),
-        .n_extra_tensors = 0
-    };
-    model.weights = model_load(filepath, backend, load_params);
-    model.params = migan_detect_params(model.weights);
+    model_file file = model_load(filepath);
+    model.params = migan_detect_params(file);
     model.params.invert_mask = true; // inpaint opaque areas
-    int res = model.params.resolution;
-
+    model.weights = model_init(file.n_tensors());
+    model_transfer(file, model.weights, backend, backend.preferred_float_type());
+    
     model.graph = compute_graph_init();
-    model_ref m(model.weights, model.graph);
+    model_ref m(model.weights, model.graph, model.params.flags);
+    int res = model.params.resolution;
     model.input = compute_graph_input(m, GGML_TYPE_F32, {4, res, res, 1});
     model.output = migan_generate(m, model.input, model.params);
     compute_graph_allocate(model.graph, backend);
@@ -155,15 +149,13 @@ image_data migan_compute(migan_model& model, image_view image, image_view mask) 
 
 constexpr int esrgan_default_tile_size = 224;
 
-esrgan_model esrgan_load_model(char const* filepath, backend_device const& b) {
+esrgan_model esrgan_load_model(char const* filepath, backend_device const& device) {
     esrgan_model model;
-    model.backend = &b;
-    model_load_params load_params = {
-        .float_type = b.preferred_float_type(),
-        .n_extra_tensors = 0
-    };
-    model.weights = model_load(filepath, b, load_params);
-    model.params = esrgan_detect_params(model.weights);
+    model.backend = &device;
+    model_file file = model_load(filepath);
+    model.params = esrgan_detect_params(file);
+    model.weights = model_init(file.n_tensors());
+    model_transfer(file, model.weights, device, device.preferred_float_type());
     return model;
 }
 
@@ -173,7 +165,7 @@ image_data esrgan_compute(esrgan_model& model, image_view image) {
         model.tile_size = tiles.tile_size;
         model.graph = compute_graph_init(esrgan_estimate_graph_size(model.params));
 
-        model_ref m(model.weights, model.graph);
+        model_ref m(model.weights, model.graph, model.params.flags);
         i64x4 input_shape = {3, tiles.tile_size[0], tiles.tile_size[1], 1};
         model.input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
         model.output = esrgan_generate(m, model.input, model.params);

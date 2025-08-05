@@ -520,7 +520,7 @@ void workbench_run(
 
     workbench& w = get_workbench();
     w.current_backend = backend_init(backend_type);
-    model_weights weights = model_init(w.current_backend, tensors.size() + 10);
+    model_weights weights = model_init(tensors.size() + 10);
     compute_graph graph = compute_graph_init(1024);
     model_ref m(weights, graph);
 
