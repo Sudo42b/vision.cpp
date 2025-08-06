@@ -32,7 +32,7 @@ struct cli_args {
 };
 
 void print_usage() {
-char const* const usage = R"(
+    char const* const usage = R"(
 Usage: vision-cli <command> [options]
 
 Commands:
@@ -232,8 +232,20 @@ backend_device backend_init(cli_args const& args) {
     return b;
 }
 
+char const* to_string(tensor_data_layout l) {
+    switch (l) {
+        case tensor_data_layout::cwhn: return "cwhn";
+        case tensor_data_layout::whcn: return "whcn";
+        default: return "unknown";
+    }
+}
+
 std::tuple<model_file, model_weights> load_model_weights(
-    cli_args const& args, backend_device const& b, char const* default_model, int n_tensors = 0) {
+    cli_args const& args,
+    backend_device const& b,
+    char const* default_model,
+    int n_tensors = 0,
+    tensor_data_layout preferred_layout = tensor_data_layout::unknown) {
 
     timer t;
     char const* model_path = args.model ? args.model : default_model;
@@ -241,10 +253,16 @@ std::tuple<model_file, model_weights> load_model_weights(
 
     model_file file = model_load(model_path);
     model_weights weights = model_init(file.n_tensors() + n_tensors);
-    model_transfer(file, weights, b, b.preferred_float_type());
+    if (preferred_layout == tensor_data_layout::unknown) {
+        preferred_layout = file.tensor_layout();
+    }
+    model_transfer(file, weights, b, b.preferred_float_type(), preferred_layout);
 
     printf("done (%s)\n", t.elapsed_str());
     printf("- float type: %s\n", ggml_type_name(weights.float_type()));
+    if (preferred_layout != tensor_data_layout::unknown) {
+        printf("- tensor layout: %s\n", to_string(preferred_layout));
+    }
     return {std::move(file), std::move(weights)};
 }
 
@@ -452,8 +470,13 @@ void run_migan(cli_args const& args) {
 
 void run_esrgan(cli_args const& args) {
     backend_device backend = backend_init(args);
-    auto [file, weights] = load_model_weights(args, backend, "models/RealESRGAN-x4.gguf");
+    auto layout = backend.type() == backend_type::cpu ? tensor_data_layout::cwhn
+                                                      : tensor_data_layout::whcn;
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/RealESRGAN-x4.gguf", 0, layout);
     esrgan_params params = esrgan_detect_params(file);
+    printf("- scale: %dx\n", params.scale);
+    printf("- block count: %d\n", params.n_blocks);
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);

@@ -121,7 +121,7 @@ migan_model migan_load_model(char const* filepath, backend_device const& backend
     model.params.invert_mask = true; // inpaint opaque areas
     model.weights = model_init(file.n_tensors());
     model_transfer(file, model.weights, backend, backend.preferred_float_type());
-    
+
     model.graph = compute_graph_init();
     model_ref m(model.weights, model.graph);
     int res = model.params.resolution;
@@ -155,7 +155,10 @@ esrgan_model esrgan_load_model(char const* filepath, backend_device const& devic
     model_file file = model_load(filepath);
     model.params = esrgan_detect_params(file);
     model.weights = model_init(file.n_tensors());
-    model_transfer(file, model.weights, device, device.preferred_float_type());
+
+    tensor_data_layout conversion =
+        device.type() == backend_type::cpu ? tensor_data_layout::cwhn : tensor_data_layout::unknown;
+    model_transfer(file, model.weights, device, device.preferred_float_type(), conversion);
     return model;
 }
 

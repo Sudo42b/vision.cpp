@@ -70,15 +70,18 @@ VISP_API model_build_flags backend_default_flags(backend_type);
 //
 // Model file - holds the contents of a GGUF file
 
+enum tensor_data_layout { unknown, whcn, cwhn };
+
 struct model_file {
     gguf_context_ptr gguf;
     ggml_context_ptr data;
     std::string path;
 
     VISP_API int64_t n_tensors() const;
-    VISP_API int64_t key(char const* name) const;
     VISP_API std::string_view arch() const;
+    VISP_API tensor_data_layout tensor_layout() const;
 
+    VISP_API int64_t key(char const* name) const;
     VISP_API int get_int(char const* name) const;
     VISP_API std::string_view get_string(char const* name) const;
 };
@@ -120,7 +123,8 @@ VISP_API void model_transfer(
     model_file const& file,
     model_weights& weights,
     backend_device const& device,
-    ggml_type float_type = GGML_TYPE_COUNT);
+    ggml_type float_type = GGML_TYPE_COUNT,
+    tensor_data_layout = tensor_data_layout::unknown);
 
 //
 // Compute graph - wrapper for ggml_cgraph and its associated backend memory

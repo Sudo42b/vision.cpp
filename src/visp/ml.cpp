@@ -180,6 +180,20 @@ std::string_view model_file::arch() const {
     return get_string("general.architecture");
 }
 
+tensor_data_layout model_file::tensor_layout() const {
+    fixed_string<64> str;
+    int64_t key = gguf_find_key(gguf.get(), format(str, "{}.tensor_data_layout", arch()));
+    if (key != -1) {
+        std::string_view layout = gguf_get_val_str(gguf.get(), key);
+        if (layout == "cwhn") {
+            return tensor_data_layout::cwhn;
+        } else if (layout == "whcn") {
+            return tensor_data_layout::whcn;
+        }
+    }
+    return tensor_data_layout::unknown;
+}
+
 //
 // model_weights
 
@@ -202,6 +216,8 @@ bool model_allocate(model_weights& m, backend_device const& b) {
     return true;
 }
 
+namespace {
+
 bool is_float_type(ggml_type t) {
     return t != GGML_TYPE_I8 && t != GGML_TYPE_I16 && t != GGML_TYPE_I32 && t != GGML_TYPE_I64;
 }
@@ -223,7 +239,13 @@ ggml_type detect_float_type(ggml_context* ctx) {
     return GGML_TYPE_F32;
 }
 
-struct float_converter {
+template <typename T>
+void permute_whcn_to_cwhn(T* n) {
+    std::swap(n[0], n[2]); // -> chwn
+    std::swap(n[1], n[2]); // -> cwhn
+}
+
+struct tensor_converter {
     ggml_type src_type;
     ggml_type dst_type;
     ggml_backend_ptr backend;
@@ -233,13 +255,18 @@ struct float_converter {
     ggml_tensor convert_src{};
     ggml_tensor* convert_dst;
 
-    explicit float_converter(ggml_context* weights, ggml_type target_type) : dst_type(target_type) {
-        if (dst_type == GGML_TYPE_COUNT) {
+    tensor_converter(ggml_context* weights, ggml_type target_type, bool whcn_to_cwhn)
+        : dst_type(target_type) {
+
+        if (dst_type == GGML_TYPE_COUNT && !whcn_to_cwhn) {
             return;
         }
         src_type = detect_float_type(weights);
-        if (src_type == dst_type) {
+        if (src_type == dst_type && !whcn_to_cwhn) {
             return;
+        }
+        if (dst_type == GGML_TYPE_COUNT) {
+            dst_type = src_type;
         }
 
         ggml_init_params ctx_params{
@@ -274,8 +301,9 @@ struct float_converter {
         return dst_type;
     }
 
-    void const* operator()(ggml_tensor const* src, ggml_tensor const* dst) {
-        if (dst_type == GGML_TYPE_COUNT || !is_float_type(src->type) || src->type == dst_type) {
+    void const* operator()(ggml_tensor const* src, ggml_tensor const* dst, bool whcn_to_cwhn) {
+        bool need_type_conv = is_float_type(src->type) && src->type != dst_type;
+        if (dst_type == GGML_TYPE_COUNT || !(need_type_conv || whcn_to_cwhn)) {
             return src->data;
         }
         ASSERT(ctx, "Weights contain tensors that would require conversion");
@@ -284,6 +312,10 @@ struct float_converter {
         convert_src.data = src->data;
         std::copy(src->ne, src->ne + GGML_MAX_DIMS, convert_src.ne);
         std::copy(src->nb, src->nb + GGML_MAX_DIMS, convert_src.nb);
+        if (whcn_to_cwhn) {
+            permute_whcn_to_cwhn(convert_src.ne);
+            permute_whcn_to_cwhn(convert_src.nb);
+        }
 
         ASSERT(convert_dst->type == dst->type);
         std::copy(dst->ne, dst->ne + GGML_MAX_DIMS, convert_dst->ne);
@@ -297,21 +329,46 @@ struct float_converter {
     }
 };
 
+span<int32_t const> find_conv2d_weight_indices(model_file const& f) {
+    gguf_context* gguf = f.gguf.get();
+    auto name = format<fixed_string<64>>("{}.conv2d_weights", f.arch());
+    int64_t key = gguf_find_key(gguf, name.c_str());
+    if (key != -1 && gguf_get_arr_type(gguf, key) == GGUF_TYPE_INT32) {
+        size_t n = gguf_get_arr_n(gguf, key);
+        int32_t const* a = reinterpret_cast<int32_t const*>(gguf_get_arr_data(gguf, key));
+        return span(a, n);
+    }
+    return {};
+}
+
+} // namespace
+
 void model_transfer(
     model_file const& file,
     model_weights& weights,
     backend_device const& device,
-    ggml_type float_type) {
+    ggml_type float_type,
+    tensor_data_layout layout) {
 
     gguf_context* gguf = file.gguf.get();
     ggml_context* src_ctx = file.data.get();
     ggml_context* dst_ctx = weights.context.get();
-    float_converter convert(src_ctx, float_type);
 
-    for (int64_t i = 0; i < gguf_get_n_tensors(gguf); ++i) {
+    tensor_data_layout file_layout = file.tensor_layout();
+    bool to_cwhn = file_layout == tensor_data_layout::whcn && layout == tensor_data_layout::cwhn;
+    tensor_converter convert(src_ctx, float_type, to_cwhn);
+    // Try to find a list of tensor indices which are weights of 2D operations
+    span<int32_t const> conv2d_weights = find_conv2d_weight_indices(file);
+
+    for (int64_t i = 0, conv2d_idx = 0; i < gguf_get_n_tensors(gguf); ++i) {
         auto name = gguf_get_tensor_name(gguf, i);
         tensor orig = ggml_get_tensor(src_ctx, name); // TODO: don't use name lookup
-        tensor dup = ggml_new_tensor(dst_ctx, convert.target_type(orig), GGML_MAX_DIMS, orig->ne);
+        auto ne = nelements(orig);
+        if (to_cwhn && conv2d_idx < ssize(conv2d_weights) && conv2d_weights[conv2d_idx] == i) {
+            permute_whcn_to_cwhn(ne.data());
+            ++conv2d_idx;
+        }
+        tensor dup = ggml_new_tensor(dst_ctx, convert.target_type(orig), GGML_MAX_DIMS, ne.data());
         ggml_set_name(dup, name);
     }
 
@@ -319,11 +376,20 @@ void model_transfer(
     weights.weights_buffer = ggml_backend_buffer_ptr(buffer);
     weights.buffer_type = device.type();
     weights.flags = model_get_build_flags(file);
+    if (to_cwhn) {
+        weights.flags |= model_build_flag::cwhn;
+    }
 
-    for (ggml_tensor* t = ggml_get_first_tensor(dst_ctx); t; t = ggml_get_next_tensor(dst_ctx, t)) {
+    ggml_tensor* t = ggml_get_first_tensor(dst_ctx);
+    for (int i = 0, conv2d_idx = 0; t; ++i) {
         tensor data_tensor = ggml_get_tensor(src_ctx, ggml_get_name(t));
-        void const* data = convert(data_tensor, t);
+        bool is_2d = conv2d_idx < conv2d_weights.size() && conv2d_weights[conv2d_idx] == i;
+        if (is_2d) {
+            ++conv2d_idx;
+        }
+        void const* data = convert(data_tensor, t, is_2d && to_cwhn);
         ggml_backend_tensor_set(t, data, 0, ggml_nbytes(t));
+        t = ggml_get_next_tensor(dst_ctx, t);
     }
 }
 
