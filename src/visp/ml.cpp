@@ -2,7 +2,6 @@
 #include "util/string.h"
 #include "visp/platform.h"
 
-
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -114,7 +113,6 @@ void backend_set_n_threads(backend_device& b, int n_threads) {
     set_n_threads(b.handle.get(), n_threads);
 }
 
-
 //
 // model_build_flags
 
@@ -208,49 +206,94 @@ bool is_float_type(ggml_type t) {
     return t != GGML_TYPE_I8 && t != GGML_TYPE_I16 && t != GGML_TYPE_I32 && t != GGML_TYPE_I64;
 }
 
-struct float_converter {
-    ggml_type target;
-    ggml_type_traits const* dst_traits = nullptr;
-    std::vector<float> f32_buffer;
-    std::vector<byte> dst_buffer;
+int64_t max_tensor_elements(ggml_context* ctx) {
+    int64_t result = 0;
+    for (ggml_tensor* t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+        result = std::max(result, ggml_nelements(t));
+    }
+    return result;
+}
 
-    explicit float_converter(ggml_type target_type) : target(target_type) {
-        if (target != GGML_TYPE_COUNT) {
-            dst_traits = ggml_get_type_traits(target_type);
+ggml_type detect_float_type(ggml_context* ctx) {
+    for (ggml_tensor* t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+        if (is_float_type(t->type)) {
+            return t->type;
         }
+    }
+    return GGML_TYPE_F32;
+}
+
+struct float_converter {
+    ggml_type src_type;
+    ggml_type dst_type;
+    ggml_backend_ptr backend;
+    ggml_context_ptr ctx;
+    ggml_cgraph* graph;
+    ggml_gallocr_ptr gallocr;
+    ggml_tensor convert_src{};
+    ggml_tensor* convert_dst;
+
+    explicit float_converter(ggml_context* weights, ggml_type target_type) : dst_type(target_type) {
+        if (dst_type == GGML_TYPE_COUNT) {
+            return;
+        }
+        src_type = detect_float_type(weights);
+        if (src_type == dst_type) {
+            return;
+        }
+
+        ggml_init_params ctx_params{
+            .mem_size = ggml_tensor_overhead() + ggml_graph_overhead(),
+            .mem_buffer = nullptr,
+            .no_alloc = true};
+        ctx.reset(ggml_init(ctx_params));
+
+        size_t max_elem = max_tensor_elements(weights);
+        graph = ggml_new_graph_custom(ctx.get(), 2, false);
+        convert_src.type = src_type;
+        convert_src.ne[0] = max_elem;
+        convert_src.nb[0] = ggml_type_size(src_type);
+        for (int i = 1; i < GGML_MAX_DIMS; ++i) {
+            convert_src.ne[i] = 1;
+            convert_src.nb[i] = convert_src.nb[i - 1] * convert_src.ne[i - 1];
+        }
+        convert_dst = ggml_cast(ctx.get(), &convert_src, dst_type);
+        ggml_set_output(convert_dst);
+        ggml_build_forward_expand(graph, convert_dst);
+
+        gallocr.reset(ggml_gallocr_new(ggml_backend_cpu_buffer_type()));
+        ggml_gallocr_reserve(gallocr.get(), graph);
+
+        backend.reset(ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr));
     }
 
     ggml_type target_type(ggml_tensor const* t) const {
-        if (target == GGML_TYPE_COUNT || !is_float_type(t->type)) {
+        if (dst_type == GGML_TYPE_COUNT || !is_float_type(t->type)) {
             return t->type;
         }
-        return target;
+        return dst_type;
     }
 
     void const* operator()(ggml_tensor const* src, ggml_tensor const* dst) {
-        if (target == GGML_TYPE_COUNT || src->type == dst->type) {
+        if (dst_type == GGML_TYPE_COUNT || !is_float_type(src->type) || src->type == dst_type) {
             return src->data;
         }
-        ASSERT(dst->type == target);
+        ASSERT(ctx, "Weights contain tensors that would require conversion");
 
-        float const* f32_data = reinterpret_cast<float const*>(src->data);
-        if (src->type != GGML_TYPE_F32) {
-            if (int64_t(f32_buffer.size()) < ggml_nelements(src)) {
-                f32_buffer.resize(ggml_nelements(src));
-            }
-            ggml_type_traits const* src_traits = ggml_get_type_traits(src->type);
-            src_traits->to_float(src->data, f32_buffer.data(), ggml_nelements(src));
-            f32_data = f32_buffer.data();
-        }
-        void const* dst_data = f32_data;
-        if (target != GGML_TYPE_F32) {
-            if (dst_buffer.size() < ggml_nbytes(dst)) {
-                dst_buffer.resize(ggml_nbytes(dst));
-            }
-            dst_traits->from_float_ref(f32_data, dst_buffer.data(), ggml_nelements(dst));
-            dst_data = dst_buffer.data();
-        }
-        return dst_data;
+        convert_src.type = src->type;
+        convert_src.data = src->data;
+        std::copy(src->ne, src->ne + GGML_MAX_DIMS, convert_src.ne);
+        std::copy(src->nb, src->nb + GGML_MAX_DIMS, convert_src.nb);
+
+        ASSERT(convert_dst->type == dst->type);
+        std::copy(dst->ne, dst->ne + GGML_MAX_DIMS, convert_dst->ne);
+        std::copy(dst->nb, dst->nb + GGML_MAX_DIMS, convert_dst->nb);
+
+        bool alloc_ok = ggml_gallocr_alloc_graph(gallocr.get(), graph);
+        ASSERT(alloc_ok);
+
+        ggml_backend_graph_compute(backend.get(), graph);
+        return convert_dst->data;
     }
 };
 
@@ -263,11 +306,11 @@ void model_transfer(
     gguf_context* gguf = file.gguf.get();
     ggml_context* src_ctx = file.data.get();
     ggml_context* dst_ctx = weights.context.get();
-    float_converter convert(float_type);
+    float_converter convert(src_ctx, float_type);
 
     for (int64_t i = 0; i < gguf_get_n_tensors(gguf); ++i) {
         auto name = gguf_get_tensor_name(gguf, i);
-        tensor orig = ggml_get_tensor(src_ctx, name);
+        tensor orig = ggml_get_tensor(src_ctx, name); // TODO: don't use name lookup
         tensor dup = ggml_new_tensor(dst_ctx, convert.target_type(orig), GGML_MAX_DIMS, orig->ne);
         ggml_set_name(dup, name);
     }
@@ -321,7 +364,6 @@ bool compute_graph_allocate(compute_graph& g, backend_device const& backend) {
 void compute(compute_graph const& g, backend_device const& b) {
     ggml_backend_graph_compute(b, g.graph);
 }
-
 
 //
 // model_ref
