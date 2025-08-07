@@ -240,13 +240,13 @@ swin_layer_result swin_layer(
 
     model_ref blocks = m["blocks"];
     for (int i = 0; i < p.depth; ++i) {
-        swin_block_params block_params = {
-            .n_heads = p.n_heads,
-            .window_size = window_size,
-            .w = w,
-            .h = h,
-            .shift = i % 2 == 0 ? 0 : window_size / 2};
-        x = swin_block(blocks[i], x, attn_mask, block_params);
+        x = swin_block(
+            blocks[i], x, attn_mask,
+            {.n_heads = p.n_heads,
+             .window_size = window_size,
+             .w = w,
+             .h = h,
+             .shift = i % 2 == 0 ? 0 : window_size / 2});
     }
     if (p.downsample) {
         tensor x_down = patch_merging(m["downsample"], x, w, h);
@@ -258,6 +258,7 @@ swin_layer_result swin_layer(
 tensor patch_embed(model_ref m, tensor x, int patch_size) {
     ASSERT(x->ne[1] % patch_size == 0 && x->ne[2] % patch_size == 0);
 
+    m.flags |= model_build_flag::cwhn;
     x = conv_2d(m["proj"], x, patch_size);
     auto [c, ww, wh, b] = nelements(x);
     x = ggml_reshape_3d(m, x, c, ww * wh, b);
@@ -295,10 +296,11 @@ tensor upscale_to_whcn(model_ref m, tensor x, tensor target) {
 }
 
 tensor upscale_to(model_ref m, tensor x, tensor target) {
-    x = permute_cwhn_to_whcn(m, x);
-    x = interpolate(m, x, {target->ne[1], target->ne[2]}, bilinear_align_corners);
-    x = permute_whcn_to_cwhn(m, x);
-    return ggml_cont(m, x);
+    auto [target_width, target_height, c, n] = nelements_whcn(m, target);
+    x = contiguous_2d_to_whcn(m, x);
+    x = interpolate(m, x, {target_width, target_height}, bilinear_align_corners);
+    x = whcn_to_contiguous_2d(m, x);
+    return x;
 }
 
 tensor downscale_by_whcn(model_ref m, tensor x, int f) {
@@ -306,34 +308,32 @@ tensor downscale_by_whcn(model_ref m, tensor x, int f) {
 }
 
 tensor downscale_by(model_ref m, tensor x, int f) {
-    x = permute_cwhn_to_whcn(m, x);
+    x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
     x = downscale_by_whcn(m, x, f);
-    x = permute_whcn_to_cwhn(m, x);
-    return ggml_cont(m, x);
+    x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
+    return x;
 }
 
 swin_result encode_concat(model_ref m, swin_result& xs, swin_result& xs_low) {
     // TODO: implement cwhn upscale/interpolate which allows downscale & align_corners=True
-    // cwhn -> whcn
     for (int i = 0; i < 4; ++i) {
-        xs[i] = ggml_cont(m, ggml_permute(m, xs[i], 2, 0, 1, 3));
-        xs_low[i] = ggml_permute(m, xs_low[i], 2, 0, 1, 3);
+        xs[i] = ggml_cont(m, permute_cwhn_to_whcn(m, xs[i]));
+        xs_low[i] = permute_cwhn_to_whcn(m, xs_low[i]);
     }
-
+    // clang-format off
     xs[0] = concat(m, {xs[0], upscale_to_whcn(m, xs_low[0], xs[0])}, 2);
     xs[1] = concat(m, {xs[1], upscale_to_whcn(m, xs_low[1], xs[1])}, 2);
     xs[2] = concat(m, {xs[2], upscale_to_whcn(m, xs_low[2], xs[2])}, 2);
     xs[3] = concat(m, {xs[3], upscale_to_whcn(m, xs_low[3], xs[3])}, 2);
+    xs[3] = concat(m, {downscale_by_whcn(m, xs[0], 8),
+                       downscale_by_whcn(m, xs[1], 4),
+                       downscale_by_whcn(m, xs[2], 2),
+                       xs[3]}, /*dim = */ 2);
+    // clang-format on
 
-    xs[3] = concat(
-        m,
-        {downscale_by_whcn(m, xs[0], 8), downscale_by_whcn(m, xs[1], 4),
-         downscale_by_whcn(m, xs[2], 2), xs[3]},
-        /*dim = */ 2);
-
-    // whcn -> cwhn
+    // whcn -> native
     for (int i = 0; i < 4; ++i) {
-        xs[i] = ggml_cont(m, ggml_permute(m, xs[i], 1, 2, 0, 3));
+        xs[i] = whcn_to_contiguous_2d(m, xs[i]);
     }
     return xs;
 }
@@ -365,12 +365,11 @@ tensor deformable_conv_2d(model_ref m, tensor x, int stride, int pad) {
 }
 
 tensor mean_2d(model_ref m, tensor x) {
-    auto [c, w, h, n] = nelements(x);
-    x = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3)); // cwhn -> whcn
+    auto [w, h, c, n] = nelements_whcn(m, x);
+    x = contiguous_2d_to_whcn(m, x);
+    x = ggml_reshape_3d(m, x, w * h, c, n);
     x = ggml_mean(m, x);
-    x = ggml_reshape_3d(m, x, h, c, n);
-    x = ggml_mean(m, x); // TODO: combine means by merging dimensions?
-    x = ggml_reshape_4d(m, x, c, 1, 1, n);
+    x = is_cwhn(m) ? ggml_reshape_4d(m, x, c, 1, 1, n) : ggml_reshape_4d(m, x, 1, 1, c, n);
     return x;
 }
 
@@ -390,6 +389,7 @@ tensor aspp_module_deformable(model_ref m, tensor x, int padding) {
 
 tensor aspp_deformable(model_ref m, tensor x) {
     const int kernel_sizes[] = {1, 3, 7};
+    const int channel_dim = is_cwhn(m) ? 0 : 2;
 
     tensor x1 = aspp_module_deformable(m["aspp1"], x);
     model_ref aspp_deforms = m["aspp_deforms"];
@@ -399,10 +399,11 @@ tensor aspp_deformable(model_ref m, tensor x) {
         x_deforms[i] = aspp_module_deformable(aspp_deforms[i], x, padding);
     }
     tensor x5 = global_avg_pool(m["global_avg_pool"], x);
-    x5 = permute_cwhn_to_whcn(m, x5);
-    x5 = interpolate(m, x5, {x1->ne[1], x1->ne[2]}, bilinear_align_corners);
-    x5 = ggml_cont(m, permute_whcn_to_cwhn(m, x5));
-    x = concat(m, {x1, x_deforms[0], x_deforms[1], x_deforms[2], x5}, 0);
+    auto [w1, h1, c, n] = nelements_whcn(m, x1);
+    x5 = contiguous_2d_to_whcn(m, x5);
+    x5 = interpolate(m, x5, {w1, h1}, bilinear_align_corners);
+    x5 = whcn_to_contiguous_2d(m, x5);
+    x = concat(m, {x1, x_deforms[0], x_deforms[1], x_deforms[2], x5}, channel_dim);
 
     x = conv_2d_batch_norm(m["conv1"], x);
     x = ggml_relu_inplace(m, x);
@@ -441,17 +442,22 @@ tensor gdt_conv(model_ref m, tensor x) {
 }
 
 tensor decode(model_ref m, tensor x, swin_result const& features) {
+    const int channel_dim = is_cwhn(m) ? 0 : 2;
+
     tensor x1 = features[0];
     tensor x2 = features[1];
     tensor x3 = features[2];
     tensor x4 = features[3];
-    tensor x_whcn = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3)); // cwhn -> whcn
-
+    tensor x_whcn = ggml_cont(m, permute_cwhn_to_whcn(m, x));
+    if (is_whcn(m)) {
+        x = x_whcn;
+    }
     {
-        tensor patches = image_to_patches(m, x_whcn, x4->ne[1], x4->ne[2]);
-        patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
+        auto [w, h, c, n] = nelements_whcn(m, x4);
+        tensor patches = image_to_patches(m, x_whcn, w, h);
+        patches = whcn_to_contiguous_2d(m, patches);
         patches = simple_conv(m["ipt_blk5"], patches);
-        x4 = ggml_concat(m, x4, patches, 0);
+        x4 = ggml_concat(m, x4, patches, channel_dim);
     }
     tensor p4 = basic_decoder_block(m["block4"], x4);
     tensor p4_gdt = gdt_conv(m["gdt_convs_4"], p4);
@@ -464,10 +470,11 @@ tensor decode(model_ref m, tensor x, swin_result const& features) {
     tensor _p3 = ggml_add_inplace(m, _p4, x3);
 
     {
-        tensor patches = image_to_patches(m, x_whcn, _p3->ne[1], _p3->ne[2]);
-        patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
+        auto [w, h, c, n] = nelements_whcn(m, _p3);
+        tensor patches = image_to_patches(m, x_whcn, w, h);
+        patches = whcn_to_contiguous_2d(m, patches);
         patches = simple_conv(m["ipt_blk4"], patches);
-        _p3 = ggml_concat(m, _p3, patches, 0);
+        _p3 = ggml_concat(m, _p3, patches, channel_dim);
     }
     tensor p3 = basic_decoder_block(m["block3"], _p3);
     tensor p3_gdt = gdt_conv(m["gdt_convs_3"], p3);
@@ -480,10 +487,11 @@ tensor decode(model_ref m, tensor x, swin_result const& features) {
     tensor _p2 = ggml_add_inplace(m, _p3, x2);
 
     {
-        tensor patches = image_to_patches(m, x_whcn, _p2->ne[1], _p2->ne[2]);
-        patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
+        auto [w, h, c, n] = nelements_whcn(m, _p2);
+        tensor patches = image_to_patches(m, x_whcn, w, h);
+        patches = whcn_to_contiguous_2d(m, patches);
         patches = simple_conv(m["ipt_blk3"], patches);
-        _p2 = ggml_concat(m, _p2, patches, 0);
+        _p2 = ggml_concat(m, _p2, patches, channel_dim);
     }
     tensor p2 = basic_decoder_block(m["block2"], _p2);
     tensor p2_gdt = gdt_conv(m["gdt_convs_2"], p2);
@@ -496,15 +504,16 @@ tensor decode(model_ref m, tensor x, swin_result const& features) {
     tensor _p1 = ggml_add_inplace(m, _p2, x1);
 
     {
-        tensor patches = image_to_patches(m, x_whcn, _p1->ne[1], _p1->ne[2]);
-        patches = ggml_cont(m, ggml_permute(m, patches, 1, 2, 0, 3)); // whcn -> cwhn
+        auto [w, h, c, n] = nelements_whcn(m, _p1);
+        tensor patches = image_to_patches(m, x_whcn, w, h);
+        patches = whcn_to_contiguous_2d(m, patches);
         patches = simple_conv(m["ipt_blk2"], patches);
-        _p1 = ggml_concat(m, _p1, patches, 0);
+        _p1 = ggml_concat(m, _p1, patches, channel_dim);
     }
     _p1 = basic_decoder_block(m["block1"], _p1);
     _p1 = upscale_to(m, _p1, x);
     tensor p1_ipt = simple_conv(m["ipt_blk1"], x);
-    _p1 = ggml_concat(m, _p1, p1_ipt, 0);
+    _p1 = ggml_concat(m, _p1, p1_ipt, channel_dim);
 
     tensor p1_out = conv_2d(m["conv_out1.0"], _p1);
     p1_out = ggml_sigmoid_inplace(m, p1_out);

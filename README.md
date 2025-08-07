@@ -194,7 +194,7 @@ as other frameworks for inference speed, but with:
 | Full  | cpu  | f32  |     16333 ms | 18800 ms |              |
 | Full  | gpu  | f16  |       380 ms |   140 ms |              |
 | Lite  | cpu  | f32  |      4505 ms | 10900 ms |      6978 ms |
-| Lite  | gpu  | f16  |       204 ms |    59 ms |       967 ms |
+| Lite  | gpu  | f16  |       198 ms |    59 ms |       967 ms |
 
 #### MI-GAN, 512x512
 

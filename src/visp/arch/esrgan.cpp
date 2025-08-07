@@ -10,7 +10,7 @@ namespace visp {
 namespace esrgan {
 
 tensor upsample(model_ref m, tensor x) {
-    auto [w, h] = tensor_extent_2d(m, x);
+    auto [w, h, c, n] = nelements_whcn(m, x);
     x = interpolate(m, x, {w * 2, h * 2}, GGML_SCALE_MODE_NEAREST);
     x = conv_2d(m, x, 1, 1);
     x = ggml_leaky_relu(m, x, 0.2f, true);
@@ -53,7 +53,7 @@ tensor rrdb(model_ref m, tensor x) {
 
 tensor esrgan_generate(model_ref m, tensor x, esrgan_params const& p) {
     m = m["model"];
-    x = to_contiguous_2d(m, x);
+    x = cwhn_to_contiguous_2d(m, x);
     x = conv_2d(m[0], x, 1, 1);
 
     tensor sub = x;
@@ -73,7 +73,7 @@ tensor esrgan_generate(model_ref m, tensor x, esrgan_params const& p) {
     x = ggml_leaky_relu(m, x, 0.2f, true);
     x = conv_2d(m[seq + 2], x, 1, 1);
 
-    x = to_contiguous_channels(m, x);
+    x = contiguous_2d_to_cwhn(m, x);
     return compute_graph_output(m, x, "result");
 }
 

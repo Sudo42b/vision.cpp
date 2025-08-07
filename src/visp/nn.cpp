@@ -3,19 +3,12 @@
 
 namespace visp {
 
-tensor add_bias(model_ref m, tensor x) {
-    if (tensor bias = m.find("bias")) {
-        if (!(m.flags & model_build_flag::cwhn)) {
-            bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
-        }
-        x = ggml_add_inplace(m, x, bias);
-    }
-    return x;
-}
 
 tensor linear(model_ref m, tensor x) {
     x = ggml_mul_mat(m, m.weights("weight"), x);
-    x = add_bias(m, x);
+    if (tensor bias = m.find("bias")) {
+        x = ggml_add_inplace(m, x, bias);
+    }
     return x;
 }
 
@@ -34,18 +27,47 @@ tensor permute_whcn_to_cwhn(model_ref m, tensor x) {
     return ggml_permute(m, x, 1, 2, 0, 3);
 }
 
-tensor to_contiguous_2d(model_ref m, tensor x) {
+std::array<int64_t, 4> nelements_whcn(model_ref const& m, tensor t) {
+    auto ne = nelements(t);
+    return (m.flags & model_build_flag::cwhn) ? std::array{ne[1], ne[2], ne[0], ne[3]} : ne;
+}
+
+tensor cwhn_to_contiguous_2d(model_ref m, tensor x) {
     if (m.flags & model_build_flag::cwhn) {
-        return x; // 2D layout is CWHN too
+        return x; // preferred 2D layout is CWHN too
     }
     return ggml_cont(m, permute_cwhn_to_whcn(m, x));
 }
 
-tensor to_contiguous_channels(model_ref m, tensor x) {
+tensor whcn_to_contiguous_2d(model_ref m, tensor x) {
+    if (m.flags & model_build_flag::cwhn) {
+        return ggml_cont(m, permute_whcn_to_cwhn(m, x));
+    }
+    return x;
+}
+
+tensor contiguous_2d_to_cwhn(model_ref m, tensor x) {
     if (m.flags & model_build_flag::cwhn) {
         return x; // x is already CWHN
     }
     return ggml_cont(m, permute_whcn_to_cwhn(m, x));
+}
+
+tensor contiguous_2d_to_whcn(model_ref m, tensor x) {
+    if (m.flags & model_build_flag::cwhn) {
+        return ggml_cont(m, permute_cwhn_to_whcn(m, x));
+    }
+    return x;
+}
+
+tensor add_bias_2d(model_ref m, tensor x) {
+    if (tensor bias = m.find("bias")) {
+        if (!(m.flags & model_build_flag::cwhn)) {
+            bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
+        }
+        x = ggml_add_inplace(m, x, bias);
+    }
+    return x;
 }
 
 tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
@@ -84,7 +106,7 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
             x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, 1, 1);
         }
     }
-    x = add_bias(m, x);
+    x = add_bias_2d(m, x);
     return x;
 }
 
@@ -99,7 +121,7 @@ tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
     } else {
         x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
     }
-    x = add_bias(m, x);
+    x = add_bias_2d(m, x);
     return x;
 }
 
@@ -117,22 +139,33 @@ tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
     }
-    x = add_bias(m, x);
+    x = add_bias_2d(m, x);
     return x;
 }
 
 tensor conv_2d_deform(
     model_ref m, tensor x, tensor weight, tensor offset, tensor mask, int stride, int pad) {
-    ASSERT(m.flags & model_build_flag::cwhn);
 
-    x = permute_cwhn_to_whcn(m, x);
-    weight = permute_cwhn_to_whcn(m, weight);
-    offset = permute_cwhn_to_whcn(m, offset);
-    if (mask) {
-        mask = permute_cwhn_to_whcn(m, mask);
+    if (m.flags & model_build_flag::cwhn) {
+        x = permute_cwhn_to_whcn(m, x);
+        weight = permute_cwhn_to_whcn(m, weight);
+        offset = permute_cwhn_to_whcn(m, offset);
+        if (mask) {
+            mask = permute_cwhn_to_whcn(m, mask);
+        }
     }
     x = ggml_conv_2d_deform(m, weight, x, offset, mask, stride, stride, pad, pad);
-    x = permute_whcn_to_cwhn(m, x);
+    
+    if (m.flags & model_build_flag::cwhn) {
+        x = permute_whcn_to_cwhn(m, x);
+    } else if (!(m.flags & model_build_flag::conv_2d_direct)) {
+        // Vulkan WHCN implementation doesn't do the final permute atm
+        // only worth fixing if WHCN ends up faster AND we dont implement
+        // a direct version of conv_2d_deform
+        auto [w, h, c, n] = nelements(x);
+        x = ggml_reshape_4d(m, x, c, w, h, n);
+        x = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3));
+    }
     return x;
 }
 

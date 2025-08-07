@@ -521,6 +521,7 @@ void workbench_run(
     workbench& w = get_workbench();
     w.current_backend = backend_init(backend_type);
     model_weights weights = model_init(tensors.size() + 10);
+    weights.buffer_type = backend_type;
     compute_graph graph = compute_graph_init(1024);
     model_ref m(weights, graph);
 
@@ -541,8 +542,12 @@ void workbench_run(
     }
 
     param_dict test_params = build_dict(params);
-    test_case const& test = workbench_find_test(test_name);
+    std::string_view memory_layout = test_params.get("memory_layout", "cwhn");
+    if (memory_layout == "cwhn" || memory_layout == "nhwc") {
+        m.flags |= model_build_flag::cwhn;
+    }
 
+    test_case const& test = workbench_find_test(test_name);
     std::vector<tensor> outputs = test.func(m, inputs, test_params);
     for (tensor& out : outputs) {
         out = compute_graph_output(m, ggml_cont(m, out));

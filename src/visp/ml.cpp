@@ -119,7 +119,8 @@ void backend_set_n_threads(backend_device& b, int n_threads) {
 model_build_flags backend_default_flags(backend_type type) {
     using enum model_build_flag;
     switch (type) {
-        case backend_type::cpu: return conv_2d_direct | f16_conv_transpose | window_partition;
+        case backend_type::cpu:
+            return conv_2d_direct | concat_n | f16_conv_transpose | window_partition;
         case backend_type::gpu: return {};
     }
     return {};

@@ -35,7 +35,7 @@ tensor upsample_2d(model_ref m, tensor x) {
         filter = ggml_reshape_4d(m, filter, 1, filter->ne[0], filter->ne[1], 1);
     }
 
-    auto [w, h] = tensor_extent_2d(m, x);
+    auto [w, h, c, n] = nelements_whcn(m, x);
     x = interpolate(m, x, {w * 2, h * 2}, GGML_SCALE_MODE_NEAREST);
     x = ggml_mul_inplace(m, x, filter);
     x = conv_2d_depthwise(m["filter"], x, 1, 2); // 4x4 filter
@@ -82,7 +82,7 @@ tensor separable_conv_2d(model_ref m, tensor x, flags<conv> flags) {
 }
 
 tensor from_rgb(model_ref m, tensor x) {
-    x = to_contiguous_2d(m, x);
+    x = cwhn_to_contiguous_2d(m, x);
     x = conv_2d(m["fromrgb"], x);
     x = lrelu_agc(m, x, 0.2f, sqrt2, 256);
     return named(m, x);
@@ -135,7 +135,7 @@ tensor synthesis(model_ref m, tensor x_in, Features feats, int res) {
         model_ref block = m[format<tensor_name>("b{}", res >> i)];
         std::tie(x, img) = synthesis_block(block, x, feats[i], img, conv::upsample, conv::noise);
     }
-    img = to_contiguous_channels(m, img);
+    img = contiguous_2d_to_cwhn(m, img);
     return img;
 }
 
