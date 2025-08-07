@@ -542,7 +542,7 @@ void workbench_run(
     }
 
     param_dict test_params = build_dict(params);
-    std::string_view memory_layout = test_params.get("memory_layout", "cwhn");
+    std::string_view memory_layout = test_params.get("memory_layout", "whcn");
     if (memory_layout == "cwhn" || memory_layout == "nhwc") {
         m.flags |= model_build_flag::cwhn;
     }

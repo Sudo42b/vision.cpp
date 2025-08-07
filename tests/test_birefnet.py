@@ -15,6 +15,8 @@ from .workbench import input_tensor, generate_state
 
 torch.set_printoptions(precision=3, linewidth=100, edgeitems=6, sci_mode=False)
 
+nhwc_layout = dict(memory_layout="nhwc")
+
 
 class WindowAttention(nn.Module):
     def __init__(
@@ -741,7 +743,7 @@ def test_encode():
     state.update({f"input{i}": to_nhwc(xs[i]) for i in range(4)})
     state.update({f"input_low{i}": to_nhwc(xs_low[i]) for i in range(4)})
 
-    results = workbench.invoke_test("biref_encode", x, state)
+    results = workbench.invoke_test("biref_encode", x, state, nhwc_layout)
 
     for i, e in enumerate(expected):
         result = to_nchw(results[i])
@@ -867,7 +869,7 @@ def test_deformable_conv_2d():
     state = convert_to_nhwc(state, key="conv")
     state = {shorten_weight_name(k): v for k, v in state.items()}
     x = to_nhwc(x)
-    result = workbench.invoke_test("biref_deformable_conv_2d", x, state)
+    result = workbench.invoke_test("biref_deformable_conv_2d", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -915,7 +917,7 @@ def test_global_avg_pool(backend: str):
     for k, v in state.items():
         print(f"{k}: {v.shape}")
     x = to_nhwc(x)
-    result = workbench.invoke_test("biref_global_avg_pool", x, state, backend=backend)
+    result = workbench.invoke_test("biref_global_avg_pool", x, state, nhwc_layout, backend=backend)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -1007,7 +1009,7 @@ def test_aspp_deformable():
     state = {shorten_weight_name(k): v for k, v in state.items()}
     x = to_nhwc(x)
 
-    result = workbench.invoke_test("biref_aspp_deformable", x, state)
+    result = workbench.invoke_test("biref_aspp_deformable", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -1053,7 +1055,7 @@ def test_basic_dec_blk():
     state = {shorten_weight_name(k): v for k, v in state.items()}
     x = to_nhwc(x)
 
-    result = workbench.invoke_test("biref_basic_dec_blk", x, state)
+    result = workbench.invoke_test("biref_basic_dec_blk", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -1305,7 +1307,7 @@ def test_decoder():
     state["x3"] = to_nhwc(x3)
     state["x4"] = to_nhwc(x4)
 
-    result = workbench.invoke_test("biref_decode", x, state)
+    result = workbench.invoke_test("biref_decode", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)

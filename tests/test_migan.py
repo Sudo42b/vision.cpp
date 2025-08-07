@@ -10,6 +10,8 @@ from .workbench import input_tensor, generate_state
 
 torch.set_printoptions(precision=3, sci_mode=False)
 
+nhwc_layout = dict(memory_layout="nhwc")
+
 
 class lrelu_agc:
     def __init__(self, alpha=0.2, gain=1, clamp=None):
@@ -89,9 +91,7 @@ class Downsample2d(nn.Module):
             stride=2,
         )
         f = setup_filter([1, 3, 3, 1], gain=1)
-        self.filter.weight = nn.Parameter(
-            f.repeat([*self.filter.weight.shape[:2], 1, 1])
-        )
+        self.filter.weight = nn.Parameter(f.repeat([*self.filter.weight.shape[:2], 1, 1]))
 
     def forward(self, x):
         x = self.filter(x)
@@ -106,7 +106,7 @@ def test_downsample2d():
     state = convert_to_nhwc(state, key="filter.")
 
     x = to_nhwc(x)
-    result = workbench.invoke_test("migan_downsample_2d", x, state)
+    result = workbench.invoke_test("migan_downsample_2d", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -118,9 +118,7 @@ class Upsample2d(nn.Module):
         self.nearest_up = nn.Upsample(scale_factor=2, mode="nearest")
         w = torch.tensor([[1.0, 0.0], [0.0, 0.0]], dtype=torch.float32)
         assert resolution is not None
-        self.register_buffer(
-            "filter_const", w.repeat(1, 1, resolution // 2, resolution // 2)
-        )
+        self.register_buffer("filter_const", w.repeat(1, 1, resolution // 2, resolution // 2))
 
         self.filter = nn.Conv2d(
             in_channels=in_channels,
@@ -131,9 +129,7 @@ class Upsample2d(nn.Module):
         )
 
         f = setup_filter([1, 3, 3, 1], gain=4)
-        self.filter.weight = nn.Parameter(
-            f.repeat([*self.filter.weight.shape[:2], 1, 1])
-        )
+        self.filter.weight = nn.Parameter(f.repeat([*self.filter.weight.shape[:2], 1, 1]))
 
     def forward(self, x):
         x = self.nearest_up(x)
@@ -151,14 +147,13 @@ def test_upsample2d():
     state = convert_to_nhwc(state, key="filter.")
 
     x = to_nhwc(x)
-    result = workbench.invoke_test("migan_upsample_2d", x, state)
+    result = workbench.invoke_test("migan_upsample_2d", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
 
 
 class SeparableConv2d(nn.Module):
-
     def __init__(
         self,
         in_channels,
@@ -242,7 +237,7 @@ def test_separable_conv2d():
     state = convert_to_nhwc(state, key="conv")
     state["noise_strength"] = torch.tensor([0.5])
     x = to_nhwc(x)
-    result = workbench.invoke_test("migan_separable_conv_2d", x, state)
+    result = workbench.invoke_test("migan_separable_conv_2d", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -295,16 +290,12 @@ class Encoder(nn.Module):
         self.encode_res = [2**i for i in range(log2res, 1, -1)]
         self.ic_n = ic_n
 
-        for idx, (resi, resj) in enumerate(
-            zip(self.encode_res[:-1], self.encode_res[1:])
-        ):
+        for idx, (resi, resj) in enumerate(zip(self.encode_res[:-1], self.encode_res[1:])):
             hidden_ch_i = min(ch_base // resi, ch_max)
             hidden_ch_j = min(ch_base // resj, ch_max)
 
             if idx == 0:
-                block = EncoderBlock(
-                    hidden_ch_i, hidden_ch_j, rgb_n=ic_n, activation=activation
-                )
+                block = EncoderBlock(hidden_ch_i, hidden_ch_j, rgb_n=ic_n, activation=activation)
             else:
                 block = EncoderBlock(hidden_ch_i, hidden_ch_j, activation=activation)
 
@@ -342,7 +333,7 @@ def test_encoder():
         if "noise_strength" in k:
             state[k] = torch.tensor([0.5])
     x = to_nhwc(x)
-    result = workbench.invoke_test("migan_encoder", x, state)
+    result = workbench.invoke_test("migan_encoder", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -454,9 +445,7 @@ class Synthesis(nn.Module):
         self.block_res = block_res
 
         hidden_ch = min(ch_base // block_res[0], ch_max)
-        self.b4 = SynthesisBlockFirst(
-            hidden_ch, resolution=4, rgb_n=rgb_n, activation=activation
-        )
+        self.b4 = SynthesisBlockFirst(hidden_ch, resolution=4, rgb_n=rgb_n, activation=activation)
 
         for resi, resj in zip(block_res[:-1], block_res[1:]):
             hidden_ch_i = min(ch_base // resi, ch_max)
@@ -499,7 +488,7 @@ def test_synthesis():
             state[k] = torch.tensor([0.5])
     x = to_nhwc(x)
     state.update({f"feat{k}": to_nhwc(v) for k, v in enc_feats.items()})
-    result = workbench.invoke_test("migan_synthesis", x, state)
+    result = workbench.invoke_test("migan_synthesis", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)

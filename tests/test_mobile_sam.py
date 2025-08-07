@@ -10,6 +10,7 @@ from .workbench import to_nhwc, to_nchw, convert_to_nhwc, fuse_conv_2d_batch_nor
 
 torch.set_printoptions(precision=2, linewidth=100, sci_mode=False)
 
+nhwc_layout = dict(memory_layout="nhwc")
 
 #
 # Image Encoder
@@ -49,7 +50,7 @@ def test_conv_2d_batch_norm(bias: bool):
     state = fuse_all_conv_2d_batch_norm(state)
     state = convert_to_nhwc(state)
     x = to_nhwc(x)
-    result = workbench.invoke_test("sam_conv_2d_batch_norm", x, state)
+    result = workbench.invoke_test("sam_conv_2d_batch_norm", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected)
@@ -94,7 +95,7 @@ def test_patch_embed():
     convert_to_nhwc(state)
     x = to_nhwc(x)
     result = to_nhwc(torch.zeros_like(expected))
-    result = workbench.invoke_test("sam_patch_embed", x, state)
+    result = workbench.invoke_test("sam_patch_embed", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
@@ -126,7 +127,7 @@ def test_layer_norm_2d():
 
     x = to_nhwc(x)
     result = to_nhwc(torch.zeros_like(expected))
-    result = workbench.invoke_test("layer_norm", x, state)
+    result = workbench.invoke_test("layer_norm", x, state, nhwc_layout)
     result = to_nchw(result)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
@@ -188,7 +189,7 @@ def test_mb_conv():
     state = fuse_all_conv_2d_batch_norm(state)
     convert_to_nhwc(state)
     x = to_nhwc(x)
-    result = workbench.invoke_test("sam_mb_conv", x, state)
+    result = workbench.invoke_test("sam_mb_conv", x, state, nhwc_layout)
     result = to_nchw(result)
 
     # precision: ggml_gelu uses fp16 look-up table & tanh approximation
@@ -239,7 +240,7 @@ def test_patch_merging():
     state = fuse_all_conv_2d_batch_norm(state)
     convert_to_nhwc(state)
     x = to_nhwc(x)
-    result = workbench.invoke_test("sam_patch_merging", x, state)
+    result = workbench.invoke_test("sam_patch_merging", x, state, nhwc_layout)
     result = result.transpose(1, 2).reshape_as(expected)
 
     # precision: ggml_gelu uses fp16 look-up table & tanh approximation
@@ -492,7 +493,7 @@ def test_tiny_vit_block():
     ]
     state = fuse_all_conv_2d_batch_norm(state)
     state = convert_to_nhwc(state)
-    result = workbench.invoke_test("sam_tiny_vit_block", x, state)
+    result = workbench.invoke_test("sam_tiny_vit_block", x, state, nhwc_layout)
 
     assert torch.allclose(result, expected, rtol=0.001, atol=0.02)
 
@@ -1253,7 +1254,7 @@ def test_two_way_transformer():
     state["input_image_pe"] = to_nhwc(image_pe)
     state["input_point_embedding"] = point_embedding
     result_queries, result_keys = workbench.invoke_test(
-        "sam_two_way_transformer", image_embedding, state
+        "sam_two_way_transformer", image_embedding, state, nhwc_layout
     )
 
     assert torch.allclose(result_queries, expected_queries, atol=1e-6, rtol=1e-4)
@@ -1321,7 +1322,7 @@ def test_output_upscaling():
     expected = upscaling(x)
 
     x = to_nhwc(x)
-    result = workbench.invoke_test("sam_output_upscaling", x, state, backend="vulkan")
+    result = workbench.invoke_test("sam_output_upscaling", x, state, nhwc_layout, backend="vulkan")
     result = to_nchw(result)
 
     assert torch.allclose(result, expected, atol=1e-4, rtol=1e-2)  # fp16 weights
@@ -1460,7 +1461,7 @@ def test_predict_masks():
     state["input_dense_prompt"] = to_nhwc(dense_prompt_embeddings)
     result_masks = torch.zeros_like(expected_masks).contiguous()
     result_masks, result_iou_pred = workbench.invoke_test(
-        "sam_predict_masks", image_embeddings, state, backend="vulkan"
+        "sam_predict_masks", image_embeddings, state, nhwc_layout, backend="vulkan"
     )
 
     assert torch.allclose(result_masks, expected_masks, rtol=1e-2, atol=1e-2)
