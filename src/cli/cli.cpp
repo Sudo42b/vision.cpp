@@ -242,7 +242,7 @@ char const* to_string(tensor_data_layout l) {
 
 std::tuple<model_file, model_weights> load_model_weights(
     cli_args const& args,
-    backend_device const& b,
+    backend_device const& dev,
     char const* default_model,
     int n_tensors = 0,
     tensor_data_layout preferred_layout = tensor_data_layout::unknown) {
@@ -256,7 +256,7 @@ std::tuple<model_file, model_weights> load_model_weights(
     if (preferred_layout == tensor_data_layout::unknown) {
         preferred_layout = file.tensor_layout();
     }
-    model_transfer(file, weights, b, b.preferred_float_type(), preferred_layout);
+    model_transfer(file, weights, dev, dev.preferred_float_type(), preferred_layout);
 
     printf("done (%s)\n", t.elapsed_str());
     printf("- float type: %s\n", ggml_type_name(weights.float_type()));
@@ -340,7 +340,8 @@ sam_prompt sam_parse_prompt(std::span<char const* const> args, i32x2 extent) {
 
 void run_sam(cli_args const& args) {
     backend_device backend = backend_init(args);
-    auto [file, weights] = load_model_weights(args, backend, "models/MobileSAM-F16.gguf");
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/MobileSAM-F16.gguf", 0, backend.preferred_layout());
     sam_params params{};
 
     require_inputs(args.inputs, 1, "<image>");
@@ -393,7 +394,8 @@ void run_sam(cli_args const& args) {
 
 void run_birefnet(cli_args const& args) {
     backend_device backend = backend_init(args);
-    auto [file, weights] = load_model_weights(args, backend, "models/BiRefNet-F16.gguf", 6);
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/BiRefNet-F16.gguf", 6, backend.preferred_layout());
     birefnet_params params = birefnet_detect_params(file);
     int img_size = params.image_size;
 
@@ -433,7 +435,8 @@ void run_birefnet(cli_args const& args) {
 
 void run_migan(cli_args const& args) {
     backend_device backend = backend_init(args);
-    auto [file, weights] = load_model_weights(args, backend, "models/MIGAN-512-places2-F16.gguf");
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/MIGAN-512-places2-F16.gguf", backend.preferred_layout());
     migan_params params = migan_detect_params(file);
     params.invert_mask = true; // -> inpaint opaque areas
 
@@ -470,10 +473,8 @@ void run_migan(cli_args const& args) {
 
 void run_esrgan(cli_args const& args) {
     backend_device backend = backend_init(args);
-    auto layout = backend.type() == backend_type::cpu ? tensor_data_layout::cwhn
-                                                      : tensor_data_layout::whcn;
     auto [file, weights] = load_model_weights(
-        args, backend, "models/RealESRGAN-x4.gguf", 0, layout);
+        args, backend, "models/RealESRGAN-x4.gguf", 0, backend.preferred_layout());
     esrgan_params params = esrgan_detect_params(file);
     printf("- scale: %dx\n", params.scale);
     printf("- block count: %d\n", params.n_blocks);

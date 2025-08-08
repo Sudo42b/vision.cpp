@@ -7,13 +7,13 @@ namespace visp {
 //
 // Mobile SAM
 
-sam_model sam_load_model(char const* filepath, backend_device const& backend) {
+sam_model sam_load_model(char const* filepath, backend_device const& dev) {
     sam_model model;
-    model.backend = &backend;
+    model.backend = &dev;
     model_file file = model_load(filepath);
     model.params = sam_params{};
     model.weights = model_init(file.n_tensors());
-    model_transfer(file, model.weights, backend, backend.preferred_float_type());
+    model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
     model.encoder = compute_graph_init();
 
     model_ref m = model_ref(model.weights, model.encoder);
@@ -22,7 +22,7 @@ sam_model sam_load_model(char const* filepath, backend_device const& backend) {
     tensor embeds = sam_encode_image(m, model.input_image, model.params);
     model.output_embed = compute_graph_output(m, embeds);
 
-    compute_graph_allocate(model.encoder, backend);
+    compute_graph_allocate(model.encoder, dev);
     return model;
 }
 
@@ -76,16 +76,16 @@ image_data sam_compute(sam_model& model, box_2d box) {
 //
 // BiRefNet
 
-birefnet_model birefnet_load_model(char const* filepath, backend_device const& backend) {
+birefnet_model birefnet_load_model(char const* filepath, backend_device const& dev) {
     birefnet_model model;
-    model.backend = &backend;
+    model.backend = &dev;
     model_file file = model_load(filepath);
     model.params = birefnet_detect_params(file);
     model.weights = model_init(file.n_tensors() + swin_params::n_layers + 2);
-    model_transfer(file, model.weights, backend, backend.preferred_float_type());
+    model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
 
     birefnet_buffers buffers = birefnet_precompute(model.weights, model.params);
-    model_allocate(model.weights, backend);
+    model_allocate(model.weights, dev);
     for (tensor_data const& buf : buffers) {
         transfer_to_backend(buf);
     }
@@ -95,7 +95,7 @@ birefnet_model birefnet_load_model(char const* filepath, backend_device const& b
     int res = model.params.image_size;
     model.input = compute_graph_input(m, GGML_TYPE_F32, {3, res, res, 1});
     model.output = birefnet_predict(m, model.input, model.params);
-    compute_graph_allocate(model.graph, backend);
+    compute_graph_allocate(model.graph, dev);
 
     return model;
 }
@@ -113,21 +113,21 @@ image_data birefnet_compute(birefnet_model& model, image_view image) {
 //
 // MI-GAN
 
-migan_model migan_load_model(char const* filepath, backend_device const& backend) {
+migan_model migan_load_model(char const* filepath, backend_device const& dev) {
     migan_model model;
-    model.backend = &backend;
+    model.backend = &dev;
     model_file file = model_load(filepath);
     model.params = migan_detect_params(file);
     model.params.invert_mask = true; // inpaint opaque areas
     model.weights = model_init(file.n_tensors());
-    model_transfer(file, model.weights, backend, backend.preferred_float_type());
+    model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
 
     model.graph = compute_graph_init();
     model_ref m(model.weights, model.graph);
     int res = model.params.resolution;
     model.input = compute_graph_input(m, GGML_TYPE_F32, {4, res, res, 1});
     model.output = migan_generate(m, model.input, model.params);
-    compute_graph_allocate(model.graph, backend);
+    compute_graph_allocate(model.graph, dev);
 
     return model;
 }
@@ -149,16 +149,13 @@ image_data migan_compute(migan_model& model, image_view image, image_view mask) 
 
 constexpr int esrgan_default_tile_size = 224;
 
-esrgan_model esrgan_load_model(char const* filepath, backend_device const& device) {
+esrgan_model esrgan_load_model(char const* filepath, backend_device const& dev) {
     esrgan_model model;
-    model.backend = &device;
+    model.backend = &dev;
     model_file file = model_load(filepath);
     model.params = esrgan_detect_params(file);
     model.weights = model_init(file.n_tensors());
-
-    tensor_data_layout conversion =
-        device.type() == backend_type::cpu ? tensor_data_layout::cwhn : tensor_data_layout::unknown;
-    model_transfer(file, model.weights, device, device.preferred_float_type(), conversion);
+    model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
     return model;
 }
 

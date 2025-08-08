@@ -191,7 +191,7 @@ def fuse_conv_2d_batch_norm(
 
 def convert_sam(input_filepath: Path, writer: Writer):
     writer.add_license("apache-2.0")
-    writer.set_tensor_layout_default(TensorLayout.nhwc)
+    writer.set_tensor_layout_default(TensorLayout.nchw)
 
     model: dict[str, Tensor] = torch.load(input_filepath, map_location="cpu", weights_only=True)
 
@@ -209,10 +209,11 @@ def convert_sam(input_filepath: Path, writer: Writer):
             name = name + "_indexed"
             tensor = tensor[:, attention_bias_idxs]
 
-        if "local_conv" in key:  # always keep as nhwc
+        if "local_conv" in key:  # always convert to nhwc
+            original_tensor_layout = writer.tensor_layout
             writer.tensor_layout = TensorLayout.nhwc
             fuse_conv_2d_batch_norm(model, key, name, "", "c", "bn", writer)
-            writer.tensor_layout = TensorLayout.nchw
+            writer.tensor_layout = original_tensor_layout
             continue
 
         if fuse_conv_2d_batch_norm(model, key, name, "", "c", "bn", writer):
@@ -275,7 +276,7 @@ def build_dense_positional_embeddings(
 
 def convert_birefnet(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
-    writer.set_tensor_layout_default(TensorLayout.nhwc)
+    writer.set_tensor_layout_default(TensorLayout.nchw)
 
     weights = safetensors.safe_open(input_filepath, "pt")
     model: dict[str, Tensor] = {k: weights.get_tensor(k) for k in weights.keys()}
@@ -340,7 +341,7 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
 
 def convert_migan(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
-    writer.set_tensor_layout_default(TensorLayout.nhwc)
+    writer.set_tensor_layout_default(TensorLayout.nchw)
 
     model: dict[str, Tensor] = torch.load(input_filepath, weights_only=True)
 

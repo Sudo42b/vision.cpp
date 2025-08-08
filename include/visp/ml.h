@@ -23,6 +23,9 @@ using std::span;
 using tensor_name = fixed_string<GGML_MAX_NAME>;
 using tensor = ggml_tensor*;
 
+// Memory layout, especially for weights of 2D operations like convolutions
+enum tensor_data_layout { unknown, whcn, cwhn };
+
 //
 // Backend device - represents the compute hardware
 
@@ -37,6 +40,7 @@ struct backend_device {
 
     VISP_API backend_type type() const;
     VISP_API ggml_type preferred_float_type() const;
+    VISP_API tensor_data_layout preferred_layout() const;
     VISP_API size_t total_memory() const;
 
     operator ggml_backend_t() const { return handle.get(); }
@@ -57,7 +61,7 @@ VISP_API void backend_set_n_threads(backend_device&, int n_threads);
 enum class model_build_flag {
     // clang-format off
     cwhn                = 1 << 0,
-    conv_2d_direct      = 1 << 1,
+    conv_2d_direct_cwhn = 1 << 1,
     concat_n            = 1 << 2,
     f16_conv_transpose  = 1 << 3,
     window_partition    = 1 << 4
@@ -69,8 +73,6 @@ VISP_API model_build_flags backend_default_flags(backend_type);
 
 //
 // Model file - holds the contents of a GGUF file
-
-enum tensor_data_layout { unknown, whcn, cwhn };
 
 struct model_file {
     gguf_context_ptr gguf;

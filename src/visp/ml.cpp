@@ -94,6 +94,13 @@ ggml_type backend_device::preferred_float_type() const {
     return GGML_TYPE_COUNT; // no preference, use float type of model weights
 }
 
+tensor_data_layout backend_device::preferred_layout() const {
+    if (type() == backend_type::cpu) {
+        return tensor_data_layout::cwhn;
+    }
+    return tensor_data_layout::unknown; // no preference, keep model weight layout
+}
+
 size_t backend_device::total_memory() const {
     ggml_backend_dev_t dev = ggml_backend_get_device(handle.get());
     size_t free, total;
@@ -120,7 +127,7 @@ model_build_flags backend_default_flags(backend_type type) {
     using enum model_build_flag;
     switch (type) {
         case backend_type::cpu:
-            return conv_2d_direct | concat_n | f16_conv_transpose | window_partition;
+            return conv_2d_direct_cwhn | concat_n | f16_conv_transpose | window_partition;
         case backend_type::gpu: return {};
     }
     return {};
@@ -241,9 +248,14 @@ ggml_type detect_float_type(ggml_context* ctx) {
 }
 
 template <typename T>
-void permute_whcn_to_cwhn(T* n) {
-    std::swap(n[0], n[2]); // -> chwn
-    std::swap(n[1], n[2]); // -> cwhn
+void permute_whcn_to_cwhn(T* n, bool depthwise) {
+    if (depthwise) { // wh1c -> c1wh
+        T perm[] = {n[3], n[2], n[0], n[1]};
+        std::copy(perm, perm + 4, n);
+    } else {
+        std::swap(n[0], n[2]); // -> chwn
+        std::swap(n[1], n[2]); // -> cwhn
+    }
 }
 
 struct tensor_converter {
@@ -314,8 +326,9 @@ struct tensor_converter {
         std::copy(src->ne, src->ne + GGML_MAX_DIMS, convert_src.ne);
         std::copy(src->nb, src->nb + GGML_MAX_DIMS, convert_src.nb);
         if (whcn_to_cwhn) {
-            permute_whcn_to_cwhn(convert_src.ne);
-            permute_whcn_to_cwhn(convert_src.nb);
+            bool depthwise = convert_src.ne[2] == 1;
+            permute_whcn_to_cwhn(convert_src.ne, depthwise);
+            permute_whcn_to_cwhn(convert_src.nb, depthwise);
         }
 
         ASSERT(convert_dst->type == dst->type);
@@ -366,7 +379,7 @@ void model_transfer(
         tensor orig = ggml_get_tensor(src_ctx, name); // TODO: don't use name lookup
         auto ne = nelements(orig);
         if (to_cwhn && conv2d_idx < ssize(conv2d_weights) && conv2d_weights[conv2d_idx] == i) {
-            permute_whcn_to_cwhn(ne.data());
+            permute_whcn_to_cwhn(ne.data(), ne[2] == 1);
             ++conv2d_idx;
         }
         tensor dup = ggml_new_tensor(dst_ctx, convert.target_type(orig), GGML_MAX_DIMS, ne.data());

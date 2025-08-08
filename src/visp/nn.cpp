@@ -81,7 +81,7 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
             x = ggml_mul_mat(m, weight, x);
             x = ggml_reshape_4d(m, x, weight->ne[1], w, h, b);
 
-        } else if (m.flags & model_build_flag::conv_2d_direct) {
+        } else if (m.flags & model_build_flag::conv_2d_direct_cwhn) { 
             weight = permute_cwhn_to_whcn(m, weight);
             x = permute_cwhn_to_whcn(m, x);
             x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
@@ -100,11 +100,7 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
             x = ggml_reshape_4d(m, x, weight->ne[3], cols->ne[1], cols->ne[2], cols->ne[3]);
         }
     } else { // WHCN layout
-        if (m.flags & model_build_flag::conv_2d_direct) {
-            x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
-        } else {
-            x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, 1, 1);
-        }
+        x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
     }
     x = add_bias_2d(m, x);
     return x;
@@ -158,7 +154,7 @@ tensor conv_2d_deform(
     
     if (m.flags & model_build_flag::cwhn) {
         x = permute_whcn_to_cwhn(m, x);
-    } else if (!(m.flags & model_build_flag::conv_2d_direct)) {
+    } else if (!(m.flags & model_build_flag::f16_conv_transpose)) {
         // Vulkan WHCN implementation doesn't do the final permute atm
         // only worth fixing if WHCN ends up faster AND we dont implement
         // a direct version of conv_2d_deform
