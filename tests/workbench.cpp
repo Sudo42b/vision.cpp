@@ -95,7 +95,8 @@ DEF(conv_2d_deform)(model_ref m, span<tensor> input, param_dict const& p) {
     tensor weight = m.weights("weight");
     tensor offset = m.weights("offset");
     tensor mask = m.find("mask");
-    return {conv_2d_deform(m, input[0], weight, offset, mask, 1, 1)};
+    int padding = p.get("padding", 1);
+    return {conv_2d_deform(m, input[0], weight, offset, mask, 1, padding)};
 }
 
 DEF(batch_norm_2d)(model_ref m, span<tensor> input, param_dict const& p) {
@@ -130,7 +131,7 @@ DEF(sam_mb_conv)(model_ref m, span<tensor> input, param_dict const& p) {
 }
 
 DEF(sam_patch_merging)(model_ref m, span<tensor> input, param_dict const& p) {
-    return {sam::patch_merging(m, input[0], 32)};
+    return {sam::patch_merging(m, input[0])};
 }
 
 DEF(sam_mlp)(model_ref m, span<tensor> input, param_dict const& p) {

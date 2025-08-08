@@ -41,7 +41,7 @@ float resize_longest_side(i32x2 extent, int target_longest_side);
 
 tensor patch_embed(model_ref m, tensor x);
 tensor mb_conv(model_ref m, tensor x);
-tensor patch_merging(model_ref m, tensor x, int input_resolution);
+tensor patch_merging(model_ref m, tensor x);
 tensor mlp(model_ref m, tensor x);
 tensor attention_rel_bias(model_ref m, tensor x, int dim, int num_heads);
 tensor window_partition(model_ref m, tensor x, int window);

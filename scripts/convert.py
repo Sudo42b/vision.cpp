@@ -33,6 +33,14 @@ class TensorLayout(Enum):
     nchw = "whcn"
     nhwc = "cwhn"
 
+    @staticmethod
+    def parse(s: str):
+        if s == "whcn" or s == "nchw":
+            return TensorLayout.nchw
+        if s == "cwhn" or s == "nhwc":
+            return TensorLayout.nhwc
+        return TensorLayout.unknown
+
 
 class Writer(GGUFWriter):
     def __init__(self, path: Path, arch_name: str, float_type: str, verbose: bool):
@@ -41,6 +49,8 @@ class Writer(GGUFWriter):
         self.float_type = float_type
         self.tensor_layout = TensorLayout.unknown
         self.verbose = verbose
+        self.conv2d_weights: list[int] = []
+        self._index = 0
 
     def add_tensor(self, name: str, tensor: Tensor, float_type: str | None = None):
         if len(name) >= 64:
@@ -54,6 +64,16 @@ class Writer(GGUFWriter):
         if self.verbose:
             print(name, tensor.shape, tensor_data.dtype)
         super().add_tensor(name, tensor_data)
+        self._index += 1
+
+    def convert_tensor_2d(self, tensor: Tensor):
+        # assume tensor is NCHW layout (PyTorch default)
+        if self.tensor_layout is TensorLayout.nhwc:
+            return conv_2d_to_nhwc(tensor)
+        else:
+            # add tensor index to list to optionally convert layout on the fly later
+            self.conv2d_weights.append(self._index)
+            return tensor
 
     def add_int32(self, name: str, value: int):
         print("*", name, "=", value)
@@ -63,6 +83,14 @@ class Writer(GGUFWriter):
         print("*", f"{self.arch}.tensor_data_layout", "=", layout.value)
         self.tensor_layout = layout
         self.add_tensor_data_layout(layout.value)
+
+    def set_tensor_layout_default(self, layout: TensorLayout):
+        if self.tensor_layout is TensorLayout.unknown:
+            self.set_tensor_layout(layout)
+
+    def add_conv2d_weight_indices(self):
+        if self.conv2d_weights:
+            self.add_array(f"{self.arch}.conv2d_weights", self.conv2d_weights)
 
 
 batch_norm_eps = 1e-5
@@ -142,9 +170,7 @@ def fuse_conv_2d_batch_norm(
         fused_weight = conv_weight * bn_weight[:, None, None, None]
         fused_bias = (conv_bias - bn_mean) * bn_weight + bn_bias
 
-        if writer.tensor_layout is TensorLayout.nhwc:
-            fused_weight = conv_2d_to_nhwc(fused_weight)
-
+        fused_weight = writer.convert_tensor_2d(fused_weight)
         writer.add_tensor(name, fused_weight)
         writer.add_tensor(name.replace("weight", "bias"), fused_bias)
         return True
@@ -156,7 +182,7 @@ def fuse_conv_2d_batch_norm(
     elif suffix_norm in key:
         return True  # batch norm was fused above
 
-    return False  # no match
+    return False  # tensor is not part of conv2d+batch-norm
 
 
 #
@@ -165,7 +191,7 @@ def fuse_conv_2d_batch_norm(
 
 def convert_sam(input_filepath: Path, writer: Writer):
     writer.add_license("apache-2.0")
-    writer.set_tensor_layout(TensorLayout.nhwc)
+    writer.set_tensor_layout_default(TensorLayout.nhwc)
 
     model: dict[str, Tensor] = torch.load(input_filepath, map_location="cpu", weights_only=True)
 
@@ -183,12 +209,18 @@ def convert_sam(input_filepath: Path, writer: Writer):
             name = name + "_indexed"
             tensor = tensor[:, attention_bias_idxs]
 
+        if "local_conv" in key:  # always keep as nhwc
+            writer.tensor_layout = TensorLayout.nhwc
+            fuse_conv_2d_batch_norm(model, key, name, "", "c", "bn", writer)
+            writer.tensor_layout = TensorLayout.nchw
+            continue
+
         if fuse_conv_2d_batch_norm(model, key, name, "", "c", "bn", writer):
             continue
 
         if name.endswith("neck.0.weight") or name.endswith("neck.2.weight"):
             assert tensor.shape[2] == tensor.shape[3] and tensor.shape[2] <= 3
-            tensor = conv_2d_to_nhwc(tensor)
+            tensor = writer.convert_tensor_2d(tensor)
 
         # Precompute dense positional embeddings from random matrix stored in the model
         if name == "prompt_encoder.pe_layer.positional_encoding_gaussian_matrix":
@@ -243,7 +275,7 @@ def build_dense_positional_embeddings(
 
 def convert_birefnet(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
-    writer.set_tensor_layout(TensorLayout.nhwc)
+    writer.set_tensor_layout_default(TensorLayout.nhwc)
 
     weights = safetensors.safe_open(input_filepath, "pt")
     model: dict[str, Tensor] = {k: weights.get_tensor(k) for k in weights.keys()}
@@ -260,9 +292,7 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
 
     writer.add_int32("birefnet.image_size", 1024)  # TODO: add HR/dynamic models
 
-    conv2d_weights = []
-
-    for i, (key, tensor) in enumerate(model.items()):
+    for key, tensor in model.items():
         # Shorten some names to fit into 64 chars
         name = key
         name = name.replace("decoder_block", "block")
@@ -296,18 +326,12 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
             continue  # batch norm was fused
 
         if is_conv_2d(name, tensor):
-            if writer.tensor_layout is TensorLayout.nchw:
-                if "patch_embed" in name:  # part of SWIN, always store as NHWC
-                    tensor = conv_2d_to_nhwc(tensor)
-                else:  # store rest as NCHW as requested
-                    conv2d_weights.append(i)
-            else:
+            if "patch_embed" in name:  # part of SWIN, always store as NHWC
                 tensor = conv_2d_to_nhwc(tensor)
+            else:  # store rest in requested tensor layout
+                tensor = writer.convert_tensor_2d(tensor)
 
         writer.add_tensor(name, tensor)
-
-    if conv2d_weights:
-        writer.add_array("birefnet.conv2d_weights", conv2d_weights)
 
 
 #
@@ -316,7 +340,7 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
 
 def convert_migan(input_filepath: Path, writer: Writer):
     writer.add_license("mit")
-    writer.add_tensor_data_layout(TensorLayout.nhwc)
+    writer.set_tensor_layout_default(TensorLayout.nhwc)
 
     model: dict[str, Tensor] = torch.load(input_filepath, weights_only=True)
 
@@ -327,7 +351,7 @@ def convert_migan(input_filepath: Path, writer: Writer):
 
     for name, tensor in model.items():
         if is_conv_2d(name, tensor):
-            tensor = conv_2d_to_nhwc(tensor)
+            tensor = writer.convert_tensor_2d(tensor)
 
         writer.add_tensor(name, tensor)
 
@@ -348,7 +372,7 @@ def convert_esrgan(input_filepath: Path, writer: Writer):
     if getattr(model.model, "plus", False):
         raise ValueError("RealESRGAN+ (plus) models are not supported yet.")
 
-    writer.set_tensor_layout(TensorLayout.nchw)
+    writer.set_tensor_layout_default(TensorLayout.nchw)
     writer.add_int32("esrgan.scale", model.scale)
     for tag in model.tags:
         if tag.endswith("nb"):
@@ -356,14 +380,10 @@ def convert_esrgan(input_filepath: Path, writer: Writer):
         if tag.endswith("nf"):
             writer.add_int32("esrgan.filter_count", int(tag[:-2]))
 
-    conv2d_weights = []
-    for i, (name, tensor) in enumerate(model.model.state_dict().items()):
-        writer.add_tensor(name, tensor)
-
+    for name, tensor in model.model.state_dict().items():
         if is_conv_2d(name, tensor):
-            conv2d_weights.append(i)
-    # Indices of conv2D weights, can be used for converting to cwhn layout when loading
-    writer.add_array("esrgan.conv2d_weights", conv2d_weights)
+            tensor = writer.convert_tensor_2d(tensor)
+        writer.add_tensor(name, tensor)
 
 
 #
@@ -382,10 +402,11 @@ file_types = {None: 0, "f32": 0, "f16": 1}
 if __name__ == "__main__":
     # fmt: off
     parser = argparse.ArgumentParser(description="Convert model weights (.pt/.pth/.safetensors) to GGUF format.")
-    parser.add_argument("arch", choices=["sam", "birefnet", "migan", "esrgan"], help="Model architecture")
+    parser.add_argument("arch", choices=list(arch_names.keys()), help="Model architecture")
     parser.add_argument("input", type=str, help="Path to the input model file")
     parser.add_argument("--output", "-o", type=str, default="models", help="Path to the output directory or file")
     parser.add_argument("--quantize", "-q", choices=["f16"], default=None, help="Convert float weights to the specified data type")
+    parser.add_argument("--layout", "-l", choices=["whcn", "cwhn"], default=None, help="Tensor data layout for 2D operations like convolution")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument("--model-name", type=str, default=None, help="Name of the model for metadata")
     parser.add_argument("--metadata", type=Path, help="Specify the path for an authorship metadata override file")
@@ -395,8 +416,9 @@ if __name__ == "__main__":
     input_path = Path(args.input)
     output_path = Path(args.output)
     quant_suffix = f"-{args.quantize.upper()}" if args.quantize else ""
+    layout_suffix = f"-{args.layout.upper()}" if args.layout else ""
     if output_path.is_dir() or output_path.suffix != ".gguf":
-        output_path = output_path / f"{input_path.stem}{quant_suffix}.gguf"
+        output_path = output_path / f"{input_path.stem}{quant_suffix}{layout_suffix}.gguf"
 
     print(f"Converting {args.arch}")
     print("* input: ", input_path)
@@ -410,6 +432,9 @@ if __name__ == "__main__":
             args.verbose,
         )
         metadata = Metadata.load(args.metadata, input_path.with_suffix(""), args.model_name)
+
+        if args.layout is not None:
+            writer.set_tensor_layout(TensorLayout.parse(args.layout))
 
         match args.arch:
             case "sam":
@@ -426,6 +451,7 @@ if __name__ == "__main__":
         metadata.set_gguf_meta_model(writer)
         writer.add_quantization_version(GGML_QUANT_VERSION)
         writer.add_file_type(file_types[args.quantize])
+        writer.add_conv2d_weight_indices()
         writer.write_header_to_file()
         writer.write_kv_data_to_file()
         writer.write_tensors_to_file(progress=True)

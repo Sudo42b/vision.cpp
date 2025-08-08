@@ -23,17 +23,16 @@ tensor conv_2d_depthwise_batch_norm(model_ref m, tensor x, int stride = 1, int p
 }
 
 tensor window_partition(model_ref m, tensor x, int window) {
-    int64_t c = x->ne[0];
-    int64_t b = x->ne[3];
+    auto [c, w, h, b] = nelements(x);
     if (m.flags & model_build_flag::window_partition) {
         x = ggml_win_part(m, x, window);
         x = ggml_reshape_3d(m, x, c, window * window, x->ne[3]);
         return x;
     }
-    int64_t px = (window - x->ne[1] % window) % window;
-    int64_t py = (window - x->ne[2] % window) % window;
-    int64_t npw = (x->ne[1] + px) / window;
-    int64_t nph = (x->ne[2] + py) / window;
+    int64_t px = (window - w % window) % window;
+    int64_t py = (window - h % window) % window;
+    int64_t npw = (w + px) / window;
+    int64_t nph = (h + py) / window;
 
     if (px > 0 || py > 0) {
         x = ggml_pad(m, x, 0, int(px), int(py), 0);
@@ -93,21 +92,24 @@ tensor mb_conv(model_ref m, tensor x) {
     return named(m, x);
 }
 
-tensor patch_merging(model_ref m, tensor x, int input_resolution) {
-    if (x->ne[2] == 1) {
-        x = ggml_reshape_4d(m, x, x->ne[0], input_resolution, input_resolution, x->ne[3]);
-    }
+tensor patch_merging(model_ref m, tensor x) {
     x = conv_2d_batch_norm(m["conv1"], x);
     x = ggml_gelu_inplace(m, x);
 
-    int c_out = int(m.weights("conv2.c.weight")->ne[0]);
+    int c_out_dim = is_cwhn(m) ? 0 : 3;
+    int c_out = int(m.weights("conv2.c.weight")->ne[c_out_dim]);
     int stride = (c_out == 320 || c_out == 448 || c_out == 576) ? 1 : 2;
     x = conv_2d_depthwise_batch_norm(m["conv2"], x, stride, 1);
     x = ggml_gelu_inplace(m, x);
 
-    auto [c, h, w, b] = nelements(x);
+    auto [w, h, c, b] = nelements_whcn(m, x);
     x = conv_2d_batch_norm(m["conv3"], x);
-    x = ggml_reshape_3d(m, x, c, w * h, b);
+    if (is_whcn(m)) {
+        x = ggml_reshape_3d(m, x, w * h, c, b);
+        x = ggml_cont(m, ggml_permute(m, x, 1, 0, 2, 3));
+    } else {
+        x = ggml_reshape_3d(m, x, c, w * h, b);
+    } // -> always [c, wh, b]
     return named(m, x);
 }
 
@@ -175,8 +177,10 @@ tensor tiny_vit_block(
     x = ggml_reshape_3d(m, x, c, spatial, b);
     x = ggml_add_inplace(m, x, res_x);
 
+    model_ref local_conv = m["local_conv"];
+    local_conv.flags |= model_build_flag::cwhn;
     x = ggml_reshape_4d(m, x, c, w, h, b);
-    x = conv_2d_depthwise_batch_norm(m["local_conv"], x, 1, 1);
+    x = conv_2d_depthwise_batch_norm(local_conv, x, 1, 1);
     x = ggml_reshape_3d(m, x, c, spatial, b);
 
     tensor x_mlp = mlp(m["mlp"], x);
@@ -189,7 +193,7 @@ tensor conv_layer(model_ref m, tensor x, tiny_vit_params::layer p) {
     for (int i = 0; i < p.depth; ++i) {
         x = mb_conv(block[i], x);
     }
-    x = patch_merging(m["downsample"], x, p.resolution);
+    x = patch_merging(m["downsample"], x);
     return named(m, x);
 }
 
@@ -199,12 +203,15 @@ tensor basic_layer(model_ref m, tensor x, tiny_vit_params::layer const& p) {
         x = tiny_vit_block(blocks[i], x, p.resolution, p.embed_dim, p.num_heads, p.window_size);
     }
     if (p.downsample) {
-        x = patch_merging(m["downsample"], x, p.resolution);
+        x = ggml_reshape_4d(m, x, x->ne[0], p.resolution, p.resolution, x->ne[2]);
+        x = cwhn_to_contiguous_2d(m, x);
+        x = patch_merging(m["downsample"], x);
     }
     return named(m, x);
 }
 
 tensor tiny_vit(model_ref m, tensor x, tiny_vit_params const& p) {
+    x = cwhn_to_contiguous_2d(m, x);
     x = patch_embed(m["patch_embed"], x);
     x = conv_layer(m["layers.0"], x, p.layers[0]);
 
@@ -216,10 +223,15 @@ tensor tiny_vit(model_ref m, tensor x, tiny_vit_params const& p) {
     x = ggml_reshape_4d(m, x, x->ne[0], 64, 64, x->ne[2]);
 
     // neck
+    x = cwhn_to_contiguous_2d(m, x);
     x = conv_2d(m["neck.0"], x);
+    x = contiguous_2d_to_cwhn(m, x);
     x = layer_norm(m["neck.1"], x);
+    x = cwhn_to_contiguous_2d(m, x);
     x = conv_2d(m["neck.2"], x, 1, 1);
+    x = contiguous_2d_to_cwhn(m, x);
     x = layer_norm(m["neck.3"], x);
+
     return x;
 }
 
@@ -418,6 +430,7 @@ auto two_way_transformer(
 }
 
 tensor upscale_outputs(model_ref m, tensor x) {
+    m.flags |= model_build_flag::cwhn;
     x = conv_transpose_2d(m[0], x, 2);
     x = layer_norm(m[1], x);
     x = ggml_gelu_inplace(m, x);

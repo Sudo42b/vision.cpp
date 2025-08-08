@@ -760,15 +760,17 @@ def test_encode():
 @pytest.mark.parametrize("memory_layout", ["nchw", "nhwc"])
 @pytest.mark.parametrize("backend", ["cpu", "vulkan"])
 def test_conv_2d_deform(scenario: str, memory_layout: str, backend: str):
+    torch.manual_seed(42)
+
     w, h, c_in, c_out, k = {
         "small": (4, 4, 5, 2, 3),
-        "large": (42, 38, 82, 32, 3),
+        "large": (49, 38, 81, 17, 7),
     }[scenario]
-    x = input_tensor(1, c_in, h, w)
+    x = input_tensor(1, c_in, h, w) - 0.5
     weight = input_tensor(c_out, c_in, k, k)
     offset = 1.0 - input_tensor(1, 2 * k * k, h, w)
     mask = torch.rand(1, k * k, h, w)
-    expected = torchvision.ops.deform_conv2d(x, offset, weight, mask=mask, padding=(1, 1))
+    expected = torchvision.ops.deform_conv2d(x, offset, weight, mask=mask, padding=(k // 2, k // 2))
 
     state = {
         "weight": weight,
@@ -778,7 +780,7 @@ def test_conv_2d_deform(scenario: str, memory_layout: str, backend: str):
     if memory_layout == "nhwc":
         x = to_nhwc(x)
         state = {k: to_nhwc(v) for k, v in state.items()}
-    params = dict(memory_layout=memory_layout)
+    params = dict(memory_layout=memory_layout, padding=k // 2)
     result = workbench.invoke_test("conv_2d_deform", x, state, params, backend=backend)
     if memory_layout == "nhwc":
         result = to_nchw(result)
