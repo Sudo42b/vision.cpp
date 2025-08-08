@@ -180,28 +180,28 @@ as other frameworks for inference speed, but with:
 * CPU: AMD Ryzen 5 5600X (6 cores)
 * GPU: NVIDIA GeForce RTX 4070
 
-#### MobileSAM, 1024x1024, encode + decode
+#### MobileSAM, 1024x1024
 
-|      |      | _vision.cpp_ |     PyTorch | ONNX Runtime |
-| :--- | :--- | -----------: | ----------: | -----------: |
-| cpu  | f32  |  632 + 37 ms | 559 + 42 ms |  728 + 87 ms |
-| gpu  | f16  |   18 +  3 ms |  10 +  6 ms |              |
+|      |      | _vision.cpp_ | PyTorch | ONNX Runtime |
+| :--- | :--- | -----------: | ------: | -----------: |
+| cpu  | f32  |       669 ms |  601 ms |       805 ms |
+| gpu  | f16  |        19 ms |   16 ms |              |
 
 #### BiRefNet, 1024x1024
 
 | Model |      |      | _vision.cpp_ |  PyTorch | ONNX Runtime |
 | :---- | :--- | :--- | -----------: | -------: | -----------: |
 | Full  | cpu  | f32  |     16333 ms | 18800 ms |              |
-| Full  | gpu  | f16  |       380 ms |   140 ms |              |
+| Full  | gpu  | f16  |       268 ms |   140 ms |              |
 | Lite  | cpu  | f32  |      4505 ms | 10900 ms |      6978 ms |
-| Lite  | gpu  | f16  |       198 ms |    59 ms |       967 ms |
+| Lite  | gpu  | f16  |       109 ms |    59 ms |              |
 
 #### MI-GAN, 512x512
 
 | Model       |      |      | _vision.cpp_ | PyTorch |
 | :---------- | :--- | :--- | -----------: | ------: |
 | 512-places2 | cpu  | f32  |       523 ms |  637 ms |
-| 512-places2 | gpu  | f16  |        24 ms |   17 ms |
+| 512-places2 | gpu  | f16  |        21 ms |   17 ms |
 
 #### Setup
 

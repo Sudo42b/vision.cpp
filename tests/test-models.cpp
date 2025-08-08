@@ -47,7 +47,7 @@ VISP_BACKEND_TEST(test_birefnet)(backend_type bt) {
     image_data input = image_load(input_path.string().c_str());
     image_data output = birefnet_compute(model, input);
 
-    float tolerance = bt == backend_type::cpu ? 0.01f : 0.3f; // TODO: GPU is non-deterministic
+    float tolerance = bt == backend_type::cpu ? 0.01f : 0.015f;
     compare_images(name, output, tolerance);
 }
 
