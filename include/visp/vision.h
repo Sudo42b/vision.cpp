@@ -142,14 +142,17 @@ VISP_API image_data birefnet_compute(birefnet_model&, image_view image);
 // --- BiRefNet pipeline
 
 struct birefnet_params {
-    int image_size = 1024;
+    int image_size = 1024; // can be -1 for dynamic size
+    int image_multiple = 32;
+    i32x2 image_extent = {1024, 1024}; // required if image_size is -1
     swin_params encoder;
 };
 
 using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
 
-VISP_API birefnet_params birefnet_detect_params(model_file const&);
+VISP_API birefnet_params birefnet_detect_params(model_file const&, i32x2 dynamic_extent = {});
 VISP_API birefnet_buffers birefnet_precompute(model_ref, birefnet_params const&);
+VISP_API i32x2 birefnet_image_extent(i32x2 input_extent, birefnet_params const&);
 
 VISP_API image_data birefnet_process_input(image_view, birefnet_params const&);
 VISP_API image_data birefnet_process_output(

@@ -12,6 +12,8 @@ using std::clamp;
 constexpr int32_t div_ceil(int32_t a, int32_t b) { return (a + b - 1) / b; }
 constexpr int64_t div_ceil(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
+constexpr int32_t next_multiple(int32_t x, int32_t mult) { return div_ceil(x, mult) * mult; }
+
 constexpr float sqr(float x) { return x * x; }
 constexpr int sqr(int x) { return x * x; }
 

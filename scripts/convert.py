@@ -291,7 +291,13 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
     else:
         raise ValueError(f"Unsupported Swin Transformer embed dim: {x.shape[0]}")
 
-    writer.add_int32("birefnet.image_size", 1024)  # TODO: add HR/dynamic models
+    image_size = 1024
+    if "HR" in input_filepath.name or "2K" in input_filepath.name:
+        image_size = 2048  # actually 2K should rather be 2560x1440
+    elif "dynamic" in input_filepath.name:
+        image_size = -1
+    writer.add_int32("birefnet.image_size", image_size)
+    writer.add_int32("birefnet.image_multiple", 128)
 
     for key, tensor in model.items():
         # Shorten some names to fit into 64 chars

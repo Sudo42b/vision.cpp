@@ -51,6 +51,25 @@ VISP_BACKEND_TEST(test_birefnet)(backend_type bt) {
     compare_images(name, output, tolerance);
 }
 
+VISP_TEST(test_birefnet_dynamic) {
+    path model_path = test_dir().models / "BiRefNet-dynamic-F16.gguf";
+    if (!exists(model_path) || !backend_is_available(backend_type::gpu)) {
+        throw test_skip{"Model not available"}; // it's a large model
+    }
+    // Test using 2 images with different resolutions one after the other
+    path input_path1 = test_dir().input / "cat-and-hat.jpg";
+    path input_path2 = test_dir().input / "wardrobe.jpg";
+
+    backend_device b = backend_init(backend_type::gpu);
+    birefnet_model model = birefnet_load_model(model_path.string().c_str(), b);
+    image_data input1 = image_load(input_path1.string().c_str());
+    image_data input2 = image_load(input_path2.string().c_str());
+    image_data output1 = birefnet_compute(model, input1);
+    image_data output2 = birefnet_compute(model, input2);
+
+    compare_images("birefnet-dynamic.png", output2, 0.015f);
+}
+
 VISP_BACKEND_TEST(test_migan)(backend_type bt) {
     path model_path = test_dir().models / "MIGAN-512-places2-F16.gguf";
     path image_path = test_dir().input / "bench-image.jpg";

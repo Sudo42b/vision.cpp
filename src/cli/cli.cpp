@@ -395,33 +395,35 @@ void run_sam(cli_args const& args) {
 void run_birefnet(cli_args const& args) {
     backend_device backend = backend_init(args);
     auto [file, weights] = load_model_weights(
-        args, backend, "models/BiRefNet-F16.gguf", 6, backend.preferred_layout());
-    birefnet_params params = birefnet_detect_params(file);
-    int img_size = params.image_size;
+        args, backend, "models/BiRefNet-F16.gguf", 0, backend.preferred_layout());
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
+    birefnet_params params = birefnet_detect_params(file, image.extent);
     image_data input_data = birefnet_process_input(image, params);
 
-    birefnet_buffers buffers = birefnet_precompute(model_ref(weights), params);
-    model_allocate(weights, backend);
-    for (tensor_data const& buf : buffers) {
-        transfer_to_backend(buf);
-    }
+    i32x2 extent = params.image_extent;
+    char const* image_size_str = params.image_size < 0 ? " (dynamic)" : "";
+    printf("- model image size: %d%s\n", params.image_size, image_size_str);
+    printf("- inference image size: %dx%d\n", extent[0], extent[1]);
 
     compute_graph graph = compute_graph_init(6 * 1024);
     model_ref m(weights, graph);
 
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, img_size, img_size, 1});
+    birefnet_buffers buffers = birefnet_precompute(m, params);
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
     tensor output = birefnet_predict(m, input, params);
 
     compute_graph_allocate(graph, backend);
     transfer_to_backend(input, input_data);
+    for (tensor_data const& buf : buffers) {
+        transfer_to_backend(buf);
+    }
 
     compute_timed(graph, backend);
 
     tensor_data mask_data = transfer_from_backend(output);
-    image_view mask_output({img_size, img_size}, mask_data.as_f32());
+    image_view mask_output(extent, mask_data.as_f32());
     image_data mask_resized = image_scale(mask_output, image.extent);
     image_data mask = image_f32_to_u8(mask_resized, image_format::alpha_u8);
     image_save(mask, args.output);

@@ -23,6 +23,7 @@ int main(int argc, char** argv) {
     int passed = 0;
     int failed = 0;
     int errors = 0;
+    int skipped = 0;
 
     std::string_view filter;
     bool exclude_gpu = false;
@@ -61,7 +62,7 @@ int main(int argc, char** argv) {
             }
         } catch (const visp::test_failure& e) {
             ++failed;
-            printf(" %s\n", "\033[31mFAILED\033[0m");
+            printf("%s %s\n", verbose ? "" : name, "\033[31mFAILED\033[0m");
             printf("  \033[90m%s:%d:\033[0m Assertion failed\n", e.file, e.line);
             printf("  \033[93m%s\033[0m\n", e.condition);
             if (e.eval) {
@@ -70,9 +71,14 @@ int main(int argc, char** argv) {
             if (!visp::extra_info.empty()) {
                 printf("  %s\n", visp::extra_info.c_str());
             }
+        } catch (const visp::test_skip&) {
+            ++skipped;
+            if (verbose) {
+                printf(" %s\n", "\033[33mSKIPPED\033[0m");
+            }
         } catch (const std::exception& e) {
             ++errors;
-            printf(" %s\n", "\033[31mERROR\033[0m");
+            printf("%s %s\n", verbose ? "" : name, "\033[31mERROR\033[0m");
             printf("  \033[90m%s:%d:\033[0m Unhandled exception\n", test.file, test.line);
             printf("  \033[93m%s\033[0m\n", e.what());
         }
@@ -106,6 +112,9 @@ int main(int argc, char** argv) {
     }
     if (errors > 0) {
         printf("\033[31m%d errors, ", errors);
+    }
+    if (skipped > 0) {
+        printf("\033[33m%d skipped, ", skipped);
     }
     printf("\033[92m%d passed %sin %lldms\033[0m\n", passed, color, (long long)duration);
 

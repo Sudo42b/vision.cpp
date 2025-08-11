@@ -56,6 +56,11 @@ struct test_directories {
 
 test_directories const& test_dir();
 
+// Use `throw test_skip{"reason"}` in a test case to skip it without failing
+struct test_skip {
+    char const* reason = nullptr;
+};
+
 float& test_tolerance_value();
 
 struct test_with_tolerance {

@@ -80,27 +80,29 @@ birefnet_model birefnet_load_model(char const* filepath, backend_device const& d
     birefnet_model model;
     model.backend = &dev;
     model_file file = model_load(filepath);
-    model.params = birefnet_detect_params(file);
-    model.weights = model_init(file.n_tensors() + swin_params::n_layers + 2);
+    model.params = birefnet_detect_params(file, {1024, 1024});
+    model.weights = model_init(file.n_tensors());
     model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
-
-    birefnet_buffers buffers = birefnet_precompute(model.weights, model.params);
-    model_allocate(model.weights, dev);
-    for (tensor_data const& buf : buffers) {
-        transfer_to_backend(buf);
-    }
-
-    model.graph = compute_graph_init(6 * 1024);
-    model_ref m(model.weights, model.graph);
-    int res = model.params.image_size;
-    model.input = compute_graph_input(m, GGML_TYPE_F32, {3, res, res, 1});
-    model.output = birefnet_predict(m, model.input, model.params);
-    compute_graph_allocate(model.graph, dev);
-
     return model;
 }
 
 image_data birefnet_compute(birefnet_model& model, image_view image) {
+    i32x2 res = birefnet_image_extent(image.extent, model.params);
+    if (!model.input || res != model.params.image_extent) {
+        model.params.image_extent = res;
+        model.graph = compute_graph_init(6 * 1024);
+
+        model_ref m(model.weights, model.graph);
+        birefnet_buffers buffers = birefnet_precompute(m, model.params);
+        model.input = compute_graph_input(m, GGML_TYPE_F32, {3, res[0], res[1], 1});
+        model.output = birefnet_predict(m, model.input, model.params);
+
+        compute_graph_allocate(model.graph, *model.backend);
+        for (tensor_data const& buf : buffers) {
+            transfer_to_backend(buf);
+        }
+    }
+
     image_data img_data = birefnet_process_input(image, model.params);
     transfer_to_backend(model.input, img_data);
 

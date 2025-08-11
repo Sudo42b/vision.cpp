@@ -6,8 +6,6 @@
 
 #include <ggml.h>
 
-#include <optional>
-
 namespace visp {
 namespace birefnet {
 
@@ -86,8 +84,8 @@ tensor window_attention(model_ref m, tensor x, tensor mask, int num_heads, int w
 
     tensor attn = ggml_mul_mat(m, k, q);
 
-    tensor rel_pos_index =
-        m.with_prefix(format<tensor_name>("window_attention_{}", window)).weights("rel_pos_index");
+    tensor_name rel_pos_name = format<tensor_name>("window_attention_{}.rel_pos_index", window);
+    tensor rel_pos_index = ggml_get_tensor(m, rel_pos_name.c_str());
     tensor rel_pos_table = m.weights("relative_position_bias_table");
     tensor rel_pos_bias = ggml_get_rows(m, rel_pos_table, rel_pos_index);
     rel_pos_bias = ggml_reshape_4d(m, rel_pos_bias, num_heads, window * window, window * window, 1);
@@ -235,8 +233,8 @@ tensor_data create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int w
 swin_layer_result swin_layer(
     model_ref m, tensor x, int64_t w, int64_t h, swin_layer_t const& p, int window_size) {
     // Attention masks need to be precomputed
-    tensor attn_mask =
-        m.with_prefix(format<tensor_name>("swin_layer_{}x{}", w, h)).find("attn_mask");
+    tensor_name attn_mask_name = format<tensor_name>("swin_layer_{}x{}.attn_mask", w, h);
+    tensor attn_mask = ggml_get_tensor(m, attn_mask_name.c_str());
 
     model_ref blocks = m["blocks"];
     for (int i = 0; i < p.depth; ++i) {
@@ -538,10 +536,10 @@ image_data birefnet_process_input(image_view image, birefnet_params const& p) {
     constexpr f32x4 mean = f32x4{0.485f, 0.456f, 0.406f, 0.f};
     constexpr f32x4 std = f32x4{0.229f, 0.224f, 0.225f, 1.f};
 
-    std::optional<image_data> resized;
-    if (image.extent[0] != p.image_size || image.extent[1] != p.image_size) {
-        resized = image_scale(image, i32x2{p.image_size, p.image_size});
-        image = image_view(*resized);
+    image_data resized;
+    if (image.extent != p.image_extent) {
+        resized = image_scale(image, p.image_extent);
+        image = image_view(resized);
     }
 
     return image_u8_to_f32(image, image_format::rgb_f32, -mean, 1.f / std);
@@ -550,10 +548,9 @@ image_data birefnet_process_input(image_view image, birefnet_params const& p) {
 image_data birefnet_process_output(
     span<float const> mask_data, i32x2 target_extent, birefnet_params const& p) {
 
-    i32x2 model_extent = {p.image_size, p.image_size};
-    image_view mask_output(model_extent, mask_data);
+    image_view mask_output(p.image_extent, mask_data);
     image_data mask_resized;
-    if (model_extent != target_extent) {
+    if (p.image_extent != target_extent) {
         mask_resized = image_scale(mask_output, target_extent);
         mask_output = mask_resized;
     }
@@ -562,12 +559,13 @@ image_data birefnet_process_output(
 
 birefnet_buffers birefnet_precompute(model_ref m, birefnet_params const& params) {
     int w = params.encoder.window_size;
-    int res = params.image_size / 4;
+    int width = params.image_extent[0] / 4;
+    int height = params.image_extent[1] / 4;
 
     birefnet_buffers b;
     b[0] = birefnet::create_relative_position_index(m, w);
     for (int i = 0; i < swin_params::n_layers + 1; ++i) {
-        b[i + 1] = birefnet::create_attention_mask(m, res >> i, res >> i, w);
+        b[i + 1] = birefnet::create_attention_mask(m, width >> i, height >> i, w);
     }
     return b;
 }
@@ -605,12 +603,25 @@ swin_params swin_detect_params(model_file const& f) {
     }
 }
 
-birefnet_params birefnet_detect_params(model_file const& f) {
+i32x2 birefnet_image_extent(i32x2 input_extent, birefnet_params const& p) {
+    i32x2 extent{p.image_size, p.image_size};
+    if (p.image_size == -1) {
+        ASSERT(input_extent[0] > 0 && input_extent[1] > 0);
+        extent = {
+            next_multiple(input_extent[0], p.image_multiple),
+            next_multiple(input_extent[1], p.image_multiple)};
+    }
+    return extent;
+}
+
+birefnet_params birefnet_detect_params(model_file const& f, i32x2 dynamic_extent) {
     if (std::string_view arch = f.arch(); arch != "birefnet") {
         throw except("Architecture expected to be 'birefnet', but was '{}' ({})", arch, f.path);
     }
     birefnet_params p;
     p.image_size = f.get_int("birefnet.image_size");
+    p.image_multiple = f.get_int("birefnet.image_multiple");
+    p.image_extent = birefnet_image_extent(dynamic_extent, p);
     p.encoder = swin_detect_params(f);
     return p;
 }
