@@ -211,7 +211,10 @@ model_weights model_init(size_t size) {
     params.no_alloc = true;
     ggml_context_ptr ctx(ggml_init(params));
 
-    return model_weights{std::move(ctx), backend_type::cpu, {}, {}};
+    model_weights w{};
+    w.context = std::move(ctx);
+    w.buffer_type = backend_type::cpu;
+    return w;
 }
 
 bool model_allocate(model_weights& m, backend_device const& b) {
@@ -397,7 +400,7 @@ void model_transfer(
     ggml_tensor* t = ggml_get_first_tensor(dst_ctx);
     for (int i = 0, conv2d_idx = 0; t; ++i) {
         tensor data_tensor = ggml_get_tensor(src_ctx, ggml_get_name(t));
-        bool is_2d = conv2d_idx < conv2d_weights.size() && conv2d_weights[conv2d_idx] == i;
+        bool is_2d = conv2d_idx < int(conv2d_weights.size()) && conv2d_weights[conv2d_idx] == i;
         if (is_2d) {
             ++conv2d_idx;
         }
