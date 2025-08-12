@@ -192,9 +192,9 @@ as other frameworks for inference speed, but with:
 | Model |      |      | _vision.cpp_ |  PyTorch | ONNX Runtime |
 | :---- | :--- | :--- | -----------: | -------: | -----------: |
 | Full  | cpu  | f32  |     16333 ms | 18800 ms |              |
-| Full  | gpu  | f16  |       268 ms |   140 ms |              |
+| Full  | gpu  | f16  |       243 ms |   140 ms |              |
 | Lite  | cpu  | f32  |      4505 ms | 10900 ms |      6978 ms |
-| Lite  | gpu  | f16  |       109 ms |    59 ms |              |
+| Lite  | gpu  | f16  |        86 ms |    59 ms |              |
 
 #### MI-GAN, 512x512
 
@@ -205,7 +205,7 @@ as other frameworks for inference speed, but with:
 
 #### Setup
 
-* vision.cpp: using vision-bench, GPU via Vulkan, eg. `vision-bench sam cpu`
+* vision.cpp: using vision-bench, GPU via Vulkan, eg. `vision-bench -m sam -b cpu`
 * PyTorch: v2.7.1+cu128, eager eval, GPU via CUDA, average n iterations after warm-up
 
 ## Dependencies (integrated)

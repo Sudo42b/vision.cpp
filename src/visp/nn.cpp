@@ -154,13 +154,6 @@ tensor conv_2d_deform(
     
     if (m.flags & model_build_flag::cwhn) {
         x = permute_whcn_to_cwhn(m, x);
-    } else if (!(m.flags & model_build_flag::f16_conv_transpose)) {
-        // Vulkan WHCN implementation doesn't do the final permute atm
-        // only worth fixing if WHCN ends up faster AND we dont implement
-        // a direct version of conv_2d_deform
-        auto [w, h, c, n] = nelements(x);
-        x = ggml_reshape_4d(m, x, c, w, h, n);
-        x = ggml_cont(m, ggml_permute(m, x, 2, 0, 1, 3));
     }
     return x;
 }

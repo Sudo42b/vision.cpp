@@ -240,8 +240,8 @@ DEF(biref_relative_position_index)(model_ref m, span<tensor> input, param_dict c
 DEF(biref_window_attention)(model_ref m, span<tensor> input, param_dict const& p) {
     int window_size = 3;
     tensor mask = m.find("mask");
-    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, window_size);
-    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+    auto rel_pos_index = birefnet::create_relative_position_index(m, window_size);
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
     return {birefnet::window_attention(m, input[0], mask, 2, window_size)};
 }
@@ -254,8 +254,8 @@ DEF(biref_swin_block)(model_ref m, span<tensor> input, param_dict const& p) {
     block.h = 6;
     block.shift = 0;
     tensor mask = m.find("mask");
-    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
-    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
     return {birefnet::swin_block(m, input[0], mask, block)};
 }
@@ -276,9 +276,11 @@ DEF(biref_swin_layer)(model_ref m, span<tensor> input, param_dict const& p) {
     layer.n_heads = 2;
     layer.n_features = 8;
     layer.downsample = true;
-    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
-    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
+    auto attn_mask = birefnet::create_attention_mask(m, 6, 6, 3);
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
+    transfer_to_backend(attn_mask);
     auto result = birefnet::swin_layer(m, input[0], 6, 6, layer, 3);
     ASSERT(result.w_down == 3 && result.h_down == 3);
     return {result.x_down};
@@ -294,11 +296,11 @@ DEF(biref_swin_transformer)(model_ref m, span<tensor> input, param_dict const& p
             swin_layer_t{2, 4, 8 * 4, true},
             swin_layer_t{2, 2, 8 * 8, false},
         }};
-    auto rel_pos_index = birefnet::create_relative_position_index(m.weights_context, 3);
+    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
     auto attn_masks = std::array{
-        birefnet::create_attention_mask(m.weights_context, 8, 8, 3), birefnet::create_attention_mask(m.weights_context, 4, 4, 3),
-        birefnet::create_attention_mask(m.weights_context, 2, 2, 3), birefnet::create_attention_mask(m.weights_context, 1, 1, 3)};
-    ggml_backend_alloc_ctx_tensors(m.weights_context, workbench_backend());
+        birefnet::create_attention_mask(m, 8, 8, 3), birefnet::create_attention_mask(m, 4, 4, 3),
+        birefnet::create_attention_mask(m, 2, 2, 3), birefnet::create_attention_mask(m, 1, 1, 3)};
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
     for (auto&& attn_mask : attn_masks) {
         transfer_to_backend(attn_mask);
