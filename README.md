@@ -41,7 +41,7 @@ You can download the model and input image here: [MobileSAM-F16.gguf](https://hu
 Find the `vision-cli` executable in the `bin` folder and run it to generate the mask:
 
 ```sh
-vision-cli -m MobileSAM-F16.gguf -i input.png -p 420 120 650 430 -o mask.png
+vision-cli -m MobileSAM-F16.gguf -i input.jpg -p 420 120 650 430 -o mask.png
 ```
 Pass `--composite output.png` to composite input and mask. Use `--help` for more options.
 
@@ -109,7 +109,7 @@ vision-cli migan -m MIGAN-512-places2-F16.gguf -i image.png mask.png -o output.p
 [Model download](https://huggingface.co/Acly/Real-ESRGAN-GGUF) | [Paper (arXiv)](https://arxiv.org/abs/2107.10833) | [Repository (GitHub)](https://github.com/xinntao/Real-ESRGAN) | License: BSD-3-Clause
 
 ```sh
-vision-cli esrgan -m ESRGAN-4x_foolhardy_Remacrih-F16.gguf -i input.png -o output.png
+vision-cli esrgan -m ESRGAN-4x-foolhardy_Remacri-F16.gguf -i input.png -o output.png
 ```
 
 
@@ -152,7 +152,7 @@ cmake . -B build -D CMAKE_BUILD_TYPE=Release -D VISP_VULKAN=ON
 
 ### Tests _(Optional)_
 
-Run all C++ tests with the following command:
+Build with `-DVISP_TESTS=ON`. Run all C++ tests with the following command:
 ```sh
 cd build
 ctest -C Release
@@ -210,6 +210,6 @@ as other frameworks for inference speed, but with:
 
 ## Dependencies (integrated)
 
-* [ggml](https://github.com/ggml-org/ggml) - ML inference library | MIT
+* [ggml](https://github.com/ggml-org/ggml) - ML tensor library | MIT
 * [stb-image](https://github.com/nothings/stb) - Image load/save/resize | Public Domain
 * [fmt](https://github.com/fmtlib/fmt) - String formatting _(only if compiler doesn't support &lt;format&gt;)_ | MIT
