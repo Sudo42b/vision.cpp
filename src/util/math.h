@@ -3,7 +3,7 @@
 #include "visp/util.h"
 
 #include <algorithm>
-#include <span>
+#include <cmath>
 
 namespace visp {
 using std::clamp;

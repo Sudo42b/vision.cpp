@@ -11,6 +11,7 @@
 #include <ggml.h>
 
 #include <cassert>
+#include <cmath>
 #include <exception>
 #include <numeric>
 #include <span>
