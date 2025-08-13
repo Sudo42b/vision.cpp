@@ -14,23 +14,25 @@ sam_model sam_load_model(char const* filepath, backend_device const& dev) {
     model.params = sam_params{};
     model.weights = model_init(file.n_tensors());
     model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
-    model.encoder = compute_graph_init();
-
-    model_ref m = model_ref(model.weights, model.encoder);
-    int res = model.params.image_size;
-    model.input_image = compute_graph_input(m, GGML_TYPE_F32, {3, res, res, 1});
-    tensor embeds = sam_encode_image(m, model.input_image, model.params);
-    model.output_embed = compute_graph_output(m, embeds);
-
-    compute_graph_allocate(model.encoder, dev);
     return model;
 }
 
-void sam_encode(sam_model& m, image_view image) {
-    m.image_extent = image.extent;
-    image_data img_data = sam_process_input(image, m.params);
-    transfer_to_backend(m.input_image, img_data);
-    compute(m.encoder, *m.backend);
+void sam_encode(sam_model& model, image_view image) {
+    if (!model.encoder) {
+        model.encoder = compute_graph_init();
+        model_ref m = model_ref(model.weights, model.encoder);
+
+        int res = model.params.image_size;
+        model.input_image = compute_graph_input(m, GGML_TYPE_F32, {3, res, res, 1});
+        tensor embeds = sam_encode_image(m, model.input_image, model.params);
+        model.output_embed = compute_graph_output(m, embeds);
+        compute_graph_allocate(model.encoder, *model.backend);
+    }
+
+    model.image_extent = image.extent;
+    image_data img_data = sam_process_input(image, model.params);
+    transfer_to_backend(model.input_image, img_data);
+    compute(model.encoder, *model.backend);
 }
 
 image_data sam_compute_impl(sam_model& model, i32x2 point1, i32x2 point2) {
@@ -50,6 +52,7 @@ image_data sam_compute_impl(sam_model& model, i32x2 point1, i32x2 point2) {
 
         compute_graph_allocate(model.decoder, *model.backend);
     }
+
     f32x4 prompt_data = is_point
         ? sam_process_point(point1, model.image_extent, model.params)
         : sam_process_box({point1, point2}, model.image_extent, model.params);
@@ -123,18 +126,20 @@ migan_model migan_load_model(char const* filepath, backend_device const& dev) {
     model.params.invert_mask = true; // inpaint opaque areas
     model.weights = model_init(file.n_tensors());
     model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
-
-    model.graph = compute_graph_init();
-    model_ref m(model.weights, model.graph);
-    int res = model.params.resolution;
-    model.input = compute_graph_input(m, GGML_TYPE_F32, {4, res, res, 1});
-    model.output = migan_generate(m, model.input, model.params);
-    compute_graph_allocate(model.graph, dev);
-
     return model;
 }
 
 image_data migan_compute(migan_model& model, image_view image, image_view mask) {
+    if (!model.graph) {
+        model.graph = compute_graph_init();
+        model_ref m(model.weights, model.graph);
+
+        int res = model.params.resolution;
+        model.input = compute_graph_input(m, GGML_TYPE_F32, {4, res, res, 1});
+        model.output = migan_generate(m, model.input, model.params);
+        compute_graph_allocate(model.graph, *model.backend);
+    }
+
     image_data input_data = migan_process_input(image, mask, model.params);
     transfer_to_backend(model.input, input_data);
 
@@ -179,6 +184,7 @@ image_data esrgan_compute(esrgan_model& model, image_view image) {
     image_data input_tile = image_alloc(tiles.tile_size, image_format::rgb_f32);
     image_data output_tile = image_alloc(tiles_out.tile_size, image_format::rgb_f32);
     image_data output_image = image_alloc(image.extent * model.params.scale, image_format::rgb_f32);
+    image_clear(output_image);
 
     for (int t = 0; t < tiles.total(); ++t) {
         i32x2 tile_coord = tiles.coord(t);

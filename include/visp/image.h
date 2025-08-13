@@ -97,8 +97,11 @@ struct image_data {
     std::unique_ptr<uint8_t[]> data;
 };
 
-// Allocate image data. Pixels are not initialized.
+// Allocate image data. Memory is not initialized!
 VISP_API image_data image_alloc(i32x2 extent, image_format format);
+
+// Set all pixels to zero.
+void image_clear(image_span const&);
 
 // Load image from file (PNG, JPEG, etc.)
 VISP_API image_data image_load(char const* filepath);
@@ -194,6 +197,7 @@ struct VISP_API tile_layout {
 VISP_API tile_layout tile_scale(tile_layout const&, int scale);
 
 // Merge a tile into the destination image. Both images must be rgb_f32 format.
+// Blends pixels from `tile` and `dst` in overlap regions. `dst` must be all zeros initially.
 VISP_API void tile_merge(
     image_view const& tile, image_span const& dst, i32x2 tile_coord, tile_layout const& layout);
 

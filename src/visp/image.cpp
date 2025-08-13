@@ -169,6 +169,10 @@ image_data image_alloc(i32x2 extent, image_format format) {
     return image_data{extent, format, std::unique_ptr<uint8_t[]>(new uint8_t[size])};
 }
 
+void image_clear(image_span const& img) {
+    memset(img.data, 0, n_bytes(img));
+}
+
 image_format image_format_from_channels(int n_channels) {
     switch (n_channels) {
         case 1: return image_format::alpha_u8;
@@ -629,10 +633,13 @@ void tile_merge(
                     coverage[i] = layout.overlap[i];
                 }
             }
-            float norm = float((coverage[0] + 1) * (coverage[1] + 1));
-            float blend = weight > 0 ? weight / norm : 1.0f;
-
-            dst.store(idx, dst.load(idx) + blend * tile.load(idx - beg));
+            f32x4 val = tile.load(idx - beg);
+            if (weight > 0) {
+                float norm = float((coverage[0] + 1) * (coverage[1] + 1));
+                float blend = weight / norm;
+                val = dst.load(idx) + blend * val;
+            }
+            dst.store(idx, val);
         }
     }
 }

@@ -490,6 +490,7 @@ void run_esrgan(cli_args const& args) {
     image_data input_tile = image_alloc(tiles.tile_size, image_format::rgb_f32);
     image_data output_tile = image_alloc(tiles_out.tile_size, image_format::rgb_f32);
     image_data output_image = image_alloc(image.extent * params.scale, image_format::rgb_f32);
+    image_clear(output_image);
 
     compute_graph graph = compute_graph_init(esrgan_estimate_graph_size(params));
     model_ref m(weights, graph);
