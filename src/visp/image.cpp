@@ -8,6 +8,7 @@
 #include <stb_image_write.h>
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <utility>

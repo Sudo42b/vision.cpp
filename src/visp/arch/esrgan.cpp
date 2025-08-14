@@ -1,4 +1,5 @@
 #include "visp/arch/esrgan.h"
+#include "util/math.h"
 #include "util/string.h"
 #include "visp/nn.h"
 #include "visp/vision.h"
