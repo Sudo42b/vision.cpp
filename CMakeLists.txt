@@ -104,27 +104,31 @@ endif()
 
 # Installation
 
-install(TARGETS visioncpp
-  RUNTIME DESTINATION bin
-  LIBRARY DESTINATION lib
-  ARCHIVE DESTINATION lib)
-install(DIRECTORY include/ DESTINATION include)
-if(PROJECT_IS_TOP_LEVEL)
-  install(FILES README.md LICENSE DESTINATION .)
-endif()
-
-install(TARGETS vision-cli RUNTIME DESTINATION bin)
-
-include(CMakePackageConfigHelpers)
-
 set(VISP_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header files")
 set(VISP_LIB_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR} CACHE PATH "Location of library files")
 set(VISP_BIN_INSTALL_DIR ${CMAKE_INSTALL_BINDIR} CACHE PATH "Location of binary files")
 
+install(TARGETS visioncpp
+  RUNTIME DESTINATION ${VISP_BIN_INSTALL_DIR}
+  LIBRARY DESTINATION ${VISP_LIB_INSTALL_DIR}
+  ARCHIVE DESTINATION ${VISP_LIB_INSTALL_DIR})
+install(DIRECTORY include/ DESTINATION ${VISP_INCLUDE_INSTALL_DIR})
+if(PROJECT_IS_TOP_LEVEL)
+  install(FILES README.md LICENSE DESTINATION .)
+endif()
+
+install(TARGETS vision-cli RUNTIME DESTINATION ${VISP_BIN_INSTALL_DIR})
+
+if(VISP_CI OR VISP_DEV)
+  set_target_properties(vision-cli PROPERTIES INSTALL_RPATH "\$ORIGIN/../${VISP_LIB_INSTALL_DIR}")
+endif()
+
+include(CMakePackageConfigHelpers)
+
 configure_package_config_file(
   scripts/cmake/visioncpp-config.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-config.cmake
-  INSTALL_DESTINATION lib/cmake/visioncpp
+  INSTALL_DESTINATION ${VISP_LIB_INSTALL_DIR}/cmake/visioncpp
   PATH_VARS VISP_INCLUDE_INSTALL_DIR VISP_LIB_INSTALL_DIR VISP_BIN_INSTALL_DIR
 )
 write_basic_package_version_file(
@@ -135,7 +139,7 @@ write_basic_package_version_file(
 install(
   FILES ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-config.cmake
         ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-version.cmake
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/visioncpp
+  DESTINATION ${VISP_LIB_INSTALL_DIR}/cmake/visioncpp
 )
 
 # Packaging
