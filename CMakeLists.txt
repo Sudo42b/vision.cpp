@@ -42,8 +42,9 @@ if(VISP_ASAN)
   endif()
 endif()
 
-# Windows/MSVC specific defaults
+# Platform specific defaults
 
+# Windows
 if(MSVC)
   list(APPEND VISP_COMP_OPTIONS /utf-8)
   list(APPEND VISP_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
@@ -51,6 +52,12 @@ if(MSVC)
     # Enable debug symbols also in release builds
     list(APPEND VISP_COMP_OPTIONS /Zi)
     list(APPEND VISP_LINK_OPTIONS /DEBUG)
+  endif()
+# Linux
+elseif(UNIX AND NOT APPLE)
+  if(VISP_CI OR VISP_DEV)
+    # Disable omitting dependencies from ELF binaries so they can be found via RPATH
+    list(APPEND VISP_LINK_OPTIONS -Wl,--no-as-needed)
   endif()
 endif()
 
