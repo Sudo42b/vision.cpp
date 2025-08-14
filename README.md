@@ -23,7 +23,7 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 ## Get Started
 
 Get the library and executables:
-* Download a [release package]() _(TODO)_ and extract it,
+* Download a [release package](https://github.com/Acly/vision.cpp/releases) and extract it,
 * or [build from source](#building).
 
 ### Example: Select an object in an image
