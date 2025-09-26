@@ -12,16 +12,6 @@ namespace visp {
 //
 // backend
 
-enum ggml_backend_dev_type convert(backend_type type) {
-    switch (type) {
-        case backend_type::cpu: return GGML_BACKEND_DEVICE_TYPE_CPU;
-        case backend_type::gpu: return GGML_BACKEND_DEVICE_TYPE_GPU;
-        default:
-            ASSERT(false, "Unsupported backend type");
-            return GGML_BACKEND_DEVICE_TYPE_CPU; // fallback
-    }
-}
-
 bool load_ggml_backends() {
     static const bool loaded = []() {
         if (ggml_backend_reg_count() > 0) {
@@ -41,7 +31,15 @@ bool load_ggml_backends() {
 
 bool backend_is_available(backend_type type) {
     load_ggml_backends();
-    return ggml_backend_dev_by_type(convert(type)) != nullptr;
+    switch (type) {
+        case backend_type::cpu:
+            return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) != nullptr;
+        case backend_type::gpu:
+            return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr ||
+                ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU) != nullptr;
+        default: ASSERT(false, "Invalid backend type");
+    }
+    return false;
 }
 
 backend_device backend_init() {
@@ -57,7 +55,18 @@ backend_device backend_init(backend_type type) {
     load_ggml_backends();
 
     backend_device b;
-    b.handle.reset(ggml_backend_init_by_type(convert(type), nullptr));
+    switch (type) {
+        case backend_type::cpu:
+            b.handle.reset(ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr));
+            break;
+        case backend_type::gpu:
+            b.handle.reset(ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr));
+            if (!b.handle) {
+                b.handle.reset(ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU, nullptr));
+            }
+            break;
+        default: ASSERT(false, "Invalid backend type");
+    }
     if (!b.handle) {
         throw except("Failed to initialize backend, no suitable device available");
     }
@@ -72,7 +81,8 @@ backend_type backend_device::type() const {
     ggml_backend_dev_t dev = ggml_backend_get_device(handle.get());
     switch (ggml_backend_dev_type(dev)) {
         case GGML_BACKEND_DEVICE_TYPE_CPU: return backend_type::cpu;
-        case GGML_BACKEND_DEVICE_TYPE_GPU: return backend_type::gpu;
+        case GGML_BACKEND_DEVICE_TYPE_GPU:
+        case GGML_BACKEND_DEVICE_TYPE_IGPU: return backend_type::gpu;
         default: ASSERT(false, "Unsupported backend device type"); return backend_type::cpu;
     }
 }
