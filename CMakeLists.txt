@@ -3,10 +3,10 @@ cmake_minimum_required(VERSION 3.28)
 project(vision.cpp VERSION 0.1.0 LANGUAGES CXX)
 
 option(VISP_VULKAN "Enable Vulkan support" OFF)
-option(VISP_DEV "Enable development mode" OFF)
+option(VISP_DEV "Enable development mode" ON)
 option(VISP_CI "Enable for continuous integration environment" OFF)
 option(VISP_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
-option(VISP_FMT_LIB "Use external fmt library instead of standard C++ <format>" OFF)
+option(VISP_FMT_LIB "Use external fmt library instead of standard C++ <format>" ON)
 option(VISP_ASAN "Enable AddressSanitizer" OFF)
 
 if(PROJECT_IS_TOP_LEVEL)

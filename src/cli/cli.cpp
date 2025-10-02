@@ -1,7 +1,8 @@
 #include "util/math.h"
 #include "util/string.h"
 #include "visp/vision.h"
-
+#include "visp/arch/yolov9t.h"
+#include "visp/nn.h"
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
@@ -9,11 +10,12 @@
 #include <optional>
 #include <string_view>
 #include <vector>
+#include "ggml.h"
 
 namespace visp {
 using std::filesystem::path;
 
-enum class cli_command { none, sam, birefnet, migan, esrgan };
+enum class cli_command { none, sam, birefnet, migan, esrgan, yolov9t };
 
 struct cli_args {
     cli_command command = cli_command::none;
@@ -40,6 +42,7 @@ Commands:
     birefnet  - BirefNet background removal
     migan     - MI-GAN inpainting
     esrgan    - ESRGAN/Real-ESRGAN upscaling
+    yolov9t   - YOLOv9t object detection
 
 Options:
     -i, --input <image1> [<image2> ...]  Input image(s)
@@ -56,6 +59,7 @@ Examples:
     vision-cli birefnet -m BiRefNet-F16.gguf -i image.jpg -o mask.png --composite output.png
     vision-cli migan -m MIGAN-F16.gguf -i image.jpg mask.png -o output.png
     vision-cli esrgan -m ESRGAN-x4-F16.gguf -i image.jpg -o upscaled.png
+    vision-cli yolov9t -m yolov9t_converted-F16.gguf -i image.jpg -o detections.png
 )";
     printf("%s", usage);
 }
@@ -123,6 +127,8 @@ cli_args cli_parse(int argc, char** argv) {
         r.command = cli_command::migan;
     } else if (arg1 == "esrgan") {
         r.command = cli_command::esrgan;
+    } else if (arg1 == "yolov9t") {
+        r.command = cli_command::yolov9t;
     } else if (arg1 == "-h" || arg1 == "--help") {
         print_usage();
     } else {
@@ -164,6 +170,7 @@ void run_sam(cli_args const&);
 void run_birefnet(cli_args const&);
 void run_migan(cli_args const&);
 void run_esrgan(cli_args const&);
+void run_yolov9t(cli_args const&);
 
 } // namespace visp
 
@@ -181,6 +188,7 @@ int main(int argc, char** argv) {
             case cli_command::birefnet: run_birefnet(args); break;
             case cli_command::migan: run_migan(args); break;
             case cli_command::esrgan: run_esrgan(args); break;
+            case cli_command::yolov9t: run_yolov9t(args); break;
             case cli_command::none: break;
         }
 
@@ -524,6 +532,86 @@ void run_esrgan(cli_args const& args) {
     image_data output_u8 = image_f32_to_u8(output_image, image_format::rgba_u8);
     image_save(output_u8, args.output);
     printf("-> output image saved to %s\n", args.output);
+}
+
+
+// YOLOv9t
+void run_yolov9t(cli_args const& args) {
+    using namespace visp::yolov9t;
+    
+    backend_device backend = backend_init(args);
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/yolov9t_converted.gguf", 0, backend.preferred_layout());
+    
+    yolov9t_params params = yolov9t_detect_params(file);
+    printf("- model input size: %dx%d\n", params.input_size, params.input_size);
+    int img_sz = check_img_size(params.input_size, params.stride);
+    require_inputs(args.inputs, 1, "<image>");
+    image_data input_image = image_load(args.inputs[0]);
+    printf("- input image size: %dx%d\n", input_image.extent[0], input_image.extent[1]);
+    printf("- tensor layout: %s\n", 
+           (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
+    
+    timer t_preprocess;
+    image_data resized_image = letterbox(std::move(input_image), 
+                                    {params.input_size, params.input_size}, 
+                                    {114, 114, 114}, 
+                                    true, false, true, params.stride);
+    image_data processed_f32 = image_u8_to_f32(resized_image, image_format::rgb_f32, params.offset, params.scale);
+    
+    printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
+    printf("Preprocessing complete (%s)\n", t_preprocess.elapsed_str());
+    
+    compute_graph graph = compute_graph_init(4*1024*1024*2);
+    model_ref m(weights, graph);
+    
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, 
+                                        {3, img_sz, img_sz, 1});
+    printf("Running YOLOv9t inference...\n");
+    DetectOutput outputs = yolov9t_forward(m, input);
+    // 그래프 완료
+    if (outputs.predictions != nullptr) {
+        ggml_build_forward_expand(graph.graph, outputs.predictions);
+        printf("outputs.predictions built\n");
+    } else if (!outputs.raw_outputs.empty()) {
+        printf("outputs.raw_outputs built\n");
+        // training mode인 경우 raw_outputs 사용
+        for (auto& raw_out : outputs.raw_outputs) {
+            ggml_build_forward_expand(graph.graph, raw_out);
+        }
+    }
+    compute_graph_allocate(graph, backend);
+                                        
+    transfer_to_backend(input, processed_f32);
+    
+    compute_timed(graph, backend);
+    
+    timer t_post;
+    printf("Postprocessing... skipped (no renderer yet)\n");
+    
+    NMSParams nms_params;
+    nms_params.conf_thres = 0.25f;
+    nms_params.iou_thres = 0.45f;
+    nms_params.max_det = 300;
+    
+    std::vector<detected_obj> detections = non_max_suppression(
+        outputs.predictions, nms_params);
+    
+    // Scale boxes back to original image size
+    scale_boxes(detections, {img_sz, img_sz}, input_image.extent);
+    // Reload original image for drawing
+    image_data output_image = image_load(args.inputs[0]);
+    
+    // Draw detections and save
+    std::vector<std::string> const& class_names = get_coco_class_names();
+    draw_detections(output_image, detections, class_names);
+    
+    // Save result
+    image_save(output_image, args.output);
+    printf("-> output image saved to %s\n", args.output);
+    
+    printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
+    printf("Found %zu objects\n", detections.size());
 }
 
 } // namespace visp

@@ -21,3 +21,6 @@ __pycache__
 
 # Don't sync Python dependencies for now, latest versions should work
 uv.lock
+.venv
+cmake-4.1.1
+depend/ggml*

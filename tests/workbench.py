@@ -88,9 +88,9 @@ def encode_params(params: dict[str, str | int | float]):
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 root_dir = Path(__file__).parent.parent
-bin_dir = root_dir / "build" / "bin"
+bin_dir = root_dir / "build" / "lib"
 
-lib = ctypes.CDLL(str(bin_dir / "vision-workbench.dll"))
+lib = ctypes.CDLL(str(bin_dir / "libvision-workbench.so"))
 lib.visp_workbench.argtypes = [
     ctypes.c_char_p,
     ctypes.POINTER(RawTensor),

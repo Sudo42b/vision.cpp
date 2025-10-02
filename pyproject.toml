@@ -3,8 +3,8 @@ dynamic = ["version"]
 name = "vision.cpp"
 requires-python = ">=3.12"
 dependencies = [
-    "torch",
-    "torchvision",
+    "torch<2.8",
+    "torchvision<0.23",
     "timm",
     "pytest",
     "opencv-python",
@@ -12,6 +12,8 @@ dependencies = [
     "einops>=0.8.1",
     "spandrel>=0.4.1",
     "gguf>=0.17.1",
+    "numpy<2.0",
+    "ultralytics>=8.3.203",
 ]
 
 [tool.uv]

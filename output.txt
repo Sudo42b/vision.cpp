@@ -1,0 +1,30 @@
+Initializing backend... done (2.9 ms)
+- device: CPU - AMD Ryzen 9 5900X 12-Core Processor
+Loading model weights from 'models/yolov9t_converted.gguf'... done (59.1 ms)
+- float type: f32
+- tensor layout: cwhn
+- model input size: 640x640
+- input image size: 512x512
+- tensor layout: CWHN
+Preprocessing: letterbox 1.2x scale, pad (0, 0)
+Preprocessing complete (13.8 ms)
+Running YOLOv9t inference...
+ELAN1 model.2: x shape [1,160,160,32]
+ELAN1 model.2: cv4_out shape [1,160,160,32]
+AConv In: ne[0]=32, ne[1]=160, ne[2]=160, ne[3]=1
+AConv Out: ne[0]=64, ne[1]=80, ne[2]=80, ne[3]=1
+RepNCSPELAN4 model.4: x shape [1,80,80,64]
+/mnt/e/7_RISCV/vision.cpp/depend/ggml/src/ggml.c:3391: GGML_ASSERT(ggml_is_contiguous(a)) failed
+/mnt/e/7_RISCV/vision.cpp/build/lib/libggml-base.so(+0x16e2b)[0x758232191e2b]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libggml-base.so(ggml_print_backtrace+0x21f)[0x75823219228f]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libggml-base.so(ggml_abort+0x152)[0x758232192462]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libggml-base.so(ggml_reshape_2d+0xe5)[0x758232199345]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libvisioncpp.so(_ZN4visp7conv_2dENS_9model_refEP11ggml_tensorii+0x3f5)[0x7582323c08e5]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libvisioncpp.so(_ZN4visp7yolov9t4ConvENS_9model_refEP11ggml_tensorRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEiiiiibb+0x265)[0x7582323ab865]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libvisioncpp.so(_ZN4visp7yolov9t6RepCSPENS_9model_refEP11ggml_tensorRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEiiibii+0x188)[0x7582323b16a8]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libvisioncpp.so(_ZN4visp7yolov9t12RepNCSPELAN4ENS_9model_refEP11ggml_tensorRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEiiiiib+0x34f)[0x7582323b253f]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libvisioncpp.so(_ZN4visp7yolov9t16yolov9t_backboneENS_9model_refEP11ggml_tensor+0x39d)[0x7582323b32fd]
+/mnt/e/7_RISCV/vision.cpp/build/lib/libvisioncpp.so(_ZN4visp7yolov9t15yolov9t_forwardENS_9model_refEP11ggml_tensor+0x84)[0x7582323b4134]
+./build/bin/vision-cli(+0x9a25)[0x6380ce915a25]
+./build/bin/vision-cli(+0x5ee9)[0x6380ce911ee9]
+/lib/x86_64-linux-gnu/libc.so.6(+0x29d90)[0x758231a29d90]

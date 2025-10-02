@@ -31,8 +31,8 @@ std::array<int64_t, 4> nelements_whcn(model_ref const&, tensor t);
 
 // 2D (convolution) functions
 // Input and weight are expected to be in "contiguous 2D" layout as configured in `m`.
-tensor conv_2d(model_ref m, tensor x, int stride = 1, int pad = 0);
-tensor conv_2d_depthwise(model_ref m, tensor x, int stride = 1, int pad = 0);
+tensor conv_2d(model_ref m, tensor x,  int stride=1, int pad=0, int dilate=1);
+tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad);
 tensor conv_2d_deform(
     model_ref m, tensor x, tensor weight, tensor offset, tensor mask, int stride, int pad);
 tensor conv_transpose_2d(model_ref m, tensor x, int stride);

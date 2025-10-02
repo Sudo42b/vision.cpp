@@ -3,6 +3,7 @@
 #include "visp/arch/esrgan.h"
 #include "visp/arch/migan.h"
 #include "visp/arch/mobile-sam.h"
+#include "visp/arch/yolov9t.h"
 #include "visp/nn.h"
 
 #include <ggml-blas.h>
@@ -401,6 +402,26 @@ DEF(esrgan_rrdbnet)(model_ref m, span<tensor> input, param_dict const& p) {
     params.scale = 2;
     return {esrgan_generate(m, input[0], params)};
 }
+
+//
+// YOLOv9t - Commented out due to namespace issues
+/*
+DEF(yolov9t_conv_layer)(model_ref m, span<tensor> input, param_dict const& p) {
+    std::string prefix = "model.0.conv";  // First conv layer
+    return {yolov9t::conv_layer(m, input[0], prefix)};
+}
+
+DEF(yolov9t_backbone)(model_ref m, span<tensor> input, param_dict const& p) {
+    auto outputs = yolov9t::yolov9t_backbone(m, input[0]);
+    return outputs;
+}
+
+DEF(yolov9t_forward)(model_ref m, span<tensor> input, param_dict const& p) {
+    auto output = yolov9t::yolov9t_forward(m, input[0]);
+    return {output.box_outputs[0], output.box_outputs[1], output.box_outputs[2], 
+            output.cls_outputs[0], output.cls_outputs[1], output.cls_outputs[2]};
+}
+*/
 
 //
 // Workbench implementation
