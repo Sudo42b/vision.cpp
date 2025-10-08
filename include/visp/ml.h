@@ -309,6 +309,8 @@ struct dino_params {
     bool flash_attention = false;
 };
 
+VISP_API std::vector<tensor> dino_get_intermediate_layers(
+    model_ref, tensor image, std::span<int const> layers, dino_params const&);
 
 //
 // implementation

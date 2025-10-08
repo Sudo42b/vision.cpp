@@ -2,6 +2,7 @@ add_library(visioncpp SHARED)
 
 target_sources(visioncpp PRIVATE
   arch/birefnet.cpp
+  arch/dino.cpp
   arch/esrgan.cpp
   arch/migan.cpp
   arch/mobile-sam.cpp
