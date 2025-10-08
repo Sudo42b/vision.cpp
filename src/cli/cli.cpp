@@ -460,7 +460,8 @@ void run_depth_anything(cli_args const& args) {
     model_ref m(weights, graph);
 
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
-    tensor output = depthany_predict(m, input, params);
+    tensor depth = depthany_predict(m, input, params);
+    tensor output = compute_graph_output(m, ggml_sigmoid(m, depth));
 
     compute_graph_allocate(graph, backend);
     transfer_to_backend(input, input_data);

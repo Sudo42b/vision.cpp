@@ -115,16 +115,16 @@ inline tensor attention(model_ref m, tensor x, int n_heads, bool flash_attn) {
 
 inline tensor block(model_ref m, tensor x, dino_params const& p) {
     tensor attn = x;
-    attn = layer_norm(m["norm1"], attn);
+    attn = layer_norm(m["norm1"], attn, 1e-6f);
     attn = attention(m["attn"], attn, p.n_heads, p.flash_attention);
     attn = layer_scale(m["ls1"], attn);
-    x = ggml_add_inplace(m, x, attn);
+    x = ggml_add(m, x, attn);
 
     tensor ffn = x;
-    ffn = layer_norm(m["norm2"], ffn);
+    ffn = layer_norm(m["norm2"], ffn, 1e-6f);
     ffn = mlp(m["mlp"], ffn);
     ffn = layer_scale(m["ls2"], ffn);
-    x = ggml_add_inplace(m, x, ffn);
+    x = ggml_add(m, x, ffn);
 
     return named(m, x);
 }
@@ -145,7 +145,9 @@ inline std::vector<tensor> get_intermediate_layers(
         x = block(blocks[i], x, p);
 
         if (contains(layers, i)) {
-            tensor out = layer_norm(m["norm"], x);
+            tensor out = layer_norm(m["norm"], x, 1e-6f);
+            ggml_format_name(out, "dino_layer_%d", i);
+            ggml_build_forward_expand(m.graph, out);
             outputs.push_back(out);
         }
     }
@@ -154,7 +156,7 @@ inline std::vector<tensor> get_intermediate_layers(
 
 } // namespace dino
 
-inline std::vector<tensor> dino_intermediate_layers(
+inline std::vector<tensor> dino_get_intermediate_layers(
     model_ref m, tensor x, std::span<const int> layers, dino_params const& p) {
     return dino::get_intermediate_layers(m, x, layers, p);
 }

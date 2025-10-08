@@ -1,9 +1,9 @@
 #pragma once
 
 #include "visp/arch/dino.h"
-#include "visp/vision.h"
 #include "visp/ml.h"
 #include "visp/nn.h"
+#include "visp/vision.h"
 
 namespace visp {
 namespace dpt {
@@ -87,9 +87,9 @@ inline tensor depthany_predict(model_ref m, tensor image, depthany_params const&
     int64_t w_patch = w / p.dino.patch_size;
     int64_t h_patch = h / p.dino.patch_size;
 
-    auto features = dino_intermediate_layers(m["pretrained"], image, p.feature_layers, p.dino);
+    auto features = dino_get_intermediate_layers(m["pretrained"], image, p.feature_layers, p.dino);
     tensor depth = dpt::head(m["depth_head"], features, w_patch, h_patch);
-    depth = ggml_relu_inplace(m, depth);
+    // depth = ggml_relu_inplace(m, depth); <- reference does another ReLU here
     return compute_graph_output(m, depth);
 }
 
