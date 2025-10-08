@@ -2,8 +2,6 @@
 #include "util/string.h"
 #include "visp/vision.h"
 
-#include "visp/arch/depth-anything.h"
-
 #include <algorithm>
 #include <charconv>
 #include <cstdio>

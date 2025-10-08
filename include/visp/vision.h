@@ -181,7 +181,13 @@ struct depthany_params {
 };
 
 VISP_API depthany_params depthany_detect_params(model_file const&, i32x2 input_extent = {});
+VISP_API i32x2 depthany_image_extent(i32x2 input_extent, depthany_params const&);
 
+VISP_API image_data depthany_process_input(image_view image, depthany_params const&);
+image_data depthany_process_output(
+    span<float const> output_data, i32x2 target_extent, depthany_params const&);
+
+VISP_API tensor depthany_predict(model_ref, tensor image, depthany_params const&);
 
 //
 // MI-GAN - image inpainting
