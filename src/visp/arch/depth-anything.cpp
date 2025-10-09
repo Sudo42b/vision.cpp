@@ -27,10 +27,13 @@ tensor feature_fusion(model_ref m, tensor x0, tensor x1, int64_t const* size) {
     }
     x = residual_conv(m["resConfUnit2"], x);
 
-    int64_t w = size ? size[0] : x->ne[0] * 2;
-    int64_t h = size ? size[1] : x->ne[1] * 2;
+    int const dim = m.flags & model_build_flag::cwhn ? 1 : 0;
+    int64_t w = size ? size[dim + 0] : x->ne[dim + 0] * 2;
+    int64_t h = size ? size[dim + 1] : x->ne[dim + 1] * 2;
     int32_t mode = int32_t(GGML_SCALE_MODE_BILINEAR) | GGML_SCALE_FLAG_ALIGN_CORNERS;
+    x = contiguous_2d_to_whcn(m, x);
     x = interpolate(m, x, {w, h}, mode);
+    x = whcn_to_contiguous_2d(m, x);
 
     x = conv_2d(m["out_conv"], x);
     return named(m, x);
@@ -70,9 +73,11 @@ tensor head(model_ref m, span<tensor> features, int64_t patch_w, int64_t patch_h
     tensor path1 = feature_fusion(scratch["refinenet1"], path2, layer1_rn);
 
     tensor out = conv_2d(scratch["output_conv1"], path1, 1, 1);
+    out = contiguous_2d_to_whcn(m, out);
     out = interpolate(
         m, out, {patch_w * 14, patch_h * 14},
         int32_t(GGML_SCALE_MODE_BILINEAR) | GGML_SCALE_FLAG_ALIGN_CORNERS);
+    out = whcn_to_contiguous_2d(m, out);
 
     model_ref output_conv2 = scratch["output_conv2"];
     out = conv_2d(output_conv2[0], out, 1, 1);

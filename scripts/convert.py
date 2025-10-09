@@ -357,6 +357,8 @@ def convert_depth_anything(input_filepath: Path, writer: Writer):
         if is_conv_2d(name, tensor):
             if "patch_embed" in name or "projects" in name:
                 tensor = conv_2d_to_nhwc(tensor)
+            elif "resize_layers.0" in name or "resize_layers.1" in name:
+                pass  # ConvTranspose2D, don't change layout
             else:
                 tensor = writer.convert_tensor_2d(tensor)
 
@@ -422,7 +424,7 @@ def convert_esrgan(input_filepath: Path, writer: Writer):
 arch_names = {
     "sam": "mobile-sam",
     "birefnet": "birefnet",
-    "depth-anything": "depth-anything",
+    "depth-anything": "depthanything",
     "migan": "migan",
     "esrgan": "esrgan",
 }

@@ -122,14 +122,14 @@ depthany_model depthany_load_model(char const* filepath, backend_device const& d
     depthany_model model;
     model.backend = &dev;
     model_file file = model_load(filepath);
+    model.params = depthany_detect_params(file);
     model.weights = model_init(file.n_tensors());
     model_transfer(file, model.weights, dev, dev.preferred_float_type(), dev.preferred_layout());
     return model;
 }
 
 image_data depthany_compute(depthany_model& model, image_view image) {
-    depthany_params params{};
-    i32x2 res = depthany_image_extent(image.extent, params);
+    i32x2 res = depthany_image_extent(image.extent, model.params);
 
     if (!model.graph || res != model.params.image_extent) {
         model.params.image_extent = res;
@@ -137,17 +137,17 @@ image_data depthany_compute(depthany_model& model, image_view image) {
 
         model_ref m(model.weights, model.graph);
         model.input = compute_graph_input(m, GGML_TYPE_F32, {3, res[0], res[1], 1});
-        model.output = depthany_predict(m, model.input, params);
+        model.output = depthany_predict(m, model.input, model.params);
         compute_graph_allocate(model.graph, *model.backend);
     }
 
-    image_data img_data = depthany_process_input(image, params);
+    image_data img_data = depthany_process_input(image, model.params);
     transfer_to_backend(model.input, img_data);
 
     compute(model.graph, *model.backend);
 
     tensor_data output_data = transfer_from_backend(model.output);
-    return depthany_process_output(output_data.as_f32(), image.extent, params);
+    return depthany_process_output(output_data.as_f32(), image.extent, model.params);
 }
 
 //
