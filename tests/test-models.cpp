@@ -70,6 +70,22 @@ VISP_TEST(test_birefnet_dynamic) {
     compare_images("birefnet-dynamic.png", output2, 0.015f);
 }
 
+VISP_BACKEND_TEST(test_depth_anything)(backend_type bt) {
+    path model_path = test_dir().models / "DepthAnythingV2-Small-F16.gguf";
+    path input_path = test_dir().input / "cat-and-hat.jpg";
+    std::string name = "depth-anything";
+    name += bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
+
+    backend_device b = backend_init(bt);
+    depthany_model model = depthany_load_model(model_path.string().c_str(), b);
+    image_data input = image_load(input_path.string().c_str());
+    image_data depth = depthany_compute(model, input);
+    image_data output = image_f32_to_u8(depth, image_format::alpha_u8);
+
+    float tolerance = bt == backend_type::cpu ? 0.01f : 0.015f;
+    compare_images(name, output, tolerance);
+}
+
 VISP_BACKEND_TEST(test_migan)(backend_type bt) {
     path model_path = test_dir().models / "MIGAN-512-places2-F16.gguf";
     path image_path = test_dir().input / "bench-image.jpg";
