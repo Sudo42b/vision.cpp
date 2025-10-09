@@ -458,8 +458,7 @@ void run_depth_anything(cli_args const& args) {
     model_ref m(weights, graph);
 
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
-    tensor depth = depthany_predict(m, input, params);
-    tensor output = compute_graph_output(m, ggml_sigmoid(m, depth));
+    tensor output = depthany_predict(m, input, params);
 
     compute_graph_allocate(graph, backend);
     transfer_to_backend(input, input_data);
@@ -467,7 +466,8 @@ void run_depth_anything(cli_args const& args) {
     compute_timed(graph, backend);
 
     tensor_data output_data = transfer_from_backend(output);
-    image_data depth_image = depthany_process_output(output_data.as_f32(), image.extent, params);
+    image_data depth_raw = depthany_process_output(output_data.as_f32(), image.extent, params);
+    image_data depth_image = image_f32_to_u8(depth_raw, image_format::alpha_u8);
     image_save(depth_image, args.output);
     printf("-> depth image saved to %s\n", args.output);
 }

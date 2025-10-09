@@ -280,6 +280,26 @@ VISP_TEST(image_erosion) {
     CHECK_IMAGES_EQUAL(output, expected);
 }
 
+VISP_TEST(image_normalize) {
+    constexpr i32x2 extent{2, 2};
+    std::array<f32x3, extent[0] * extent[1]> input_data = {
+        f32x3{-1.0f, 4.2f, 0.5f}, f32x3{5.0f, 4.2f, 0.0f}, //
+        f32x3{-5.0f, 4.2f, 0.6f}, f32x3{1.0f, 4.2f, 1.0f}, //
+    };
+    std::array<f32x3, extent[0] * extent[1]> expected_data = {
+        f32x3{0.4f, 0.0f, 0.5f}, f32x3{1.0f, 0.0f, 0.0f}, //
+        f32x3{0.0f, 0.0f, 0.6f}, f32x3{0.6f, 0.0f, 1.0f}, //
+    };
+    std::array<f32x3, extent[0] * extent[1]> output_data{};
+
+    auto input = image_view(extent, input_data);
+    auto output = image_span(extent, output_data);
+    image_normalize(input, output);
+
+    auto expected = image_view(extent, expected_data);
+    CHECK_IMAGES_EQUAL(output, expected);
+}
+
 VISP_TEST(tile_merge) {
     std::array<std::array<f32x3, 5 * 5>, 4> tiles;
     for (int t = 0; t < 4; ++t) {

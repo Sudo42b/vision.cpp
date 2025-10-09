@@ -124,14 +124,12 @@ image_data depthany_process_input(image_view image, depthany_params const& p) {
 }
 
 image_data depthany_process_output(span<float const> data, i32x2 extent, depthany_params const& p) {
-
     image_view depth_output(p.image_extent, data);
-    image_data depth_resized;
-    if (depth_output.extent != extent) {
-        depth_resized = image_scale(depth_output, extent);
-        depth_output = depth_resized;
+    image_data normalized = image_normalize(depth_output);
+    if (normalized.extent != extent) {
+        return image_scale(normalized, extent);
     }
-    return image_f32_to_u8(depth_output, image_format::alpha_u8);
+    return normalized;
 }
 
 } // namespace visp

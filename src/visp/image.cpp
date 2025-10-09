@@ -197,7 +197,7 @@ image_data image_load(char const* filepath) {
 
 void image_save(image_view const& img, char const* filepath) {
     ASSERT(img.extent[0] > 0 && img.extent[1] > 0);
-    
+
     if (!(img.format == image_format::alpha_u8 || img.format == image_format::rgb_u8 ||
           img.format == image_format::rgba_u8)) {
         throw except("Unsupported image format [{}]", int(img.format));
@@ -532,6 +532,53 @@ void image_erosion(image_view const& src, image_span const& dst, int radius) {
         case image_format::alpha_f32: erosion<float>(src, dst, radius); break;
         default: ASSERT(false, "erosion operation only supports single channel alpha formats");
     }
+}
+
+void image_normalize(image_view const& src, image_span const& dst, float min, float max) {
+    ASSERT(src.extent == dst.extent);
+    ASSERT(is_float(src.format) && is_float(dst.format));
+    ASSERT(min < max);
+
+    float const fmax = std::numeric_limits<float>::max();
+    int const channels = n_channels(src);
+    float const* src_data = (float const*)src.data;
+    float* dst_data = (float*)dst.data;
+
+    f32x4 min_val = {fmax, fmax, fmax, fmax};
+    f32x4 max_val = {-fmax, -fmax, -fmax, -fmax};
+
+    for (int y = 0; y < src.extent[1]; ++y) {
+        for (int x = 0; x < src.extent[0]; ++x) {
+            for (int c = 0; c < channels; ++c) {
+                float v = src_data[y * src.stride / 4 + x * channels + c];
+                min_val[c] = std::min(min_val[c], v);
+                max_val[c] = std::max(max_val[c], v);
+            }
+        }
+    }
+
+    f32x4 delta = max_val - min_val;
+    for (int c = 0; c < channels; ++c) {
+        delta[c] = delta[c] < 1e-5f ? 1.0f : delta[c];
+    }
+    f32x4 scale = f32x4{max - min} / delta;
+    f32x4 offset = -min_val * scale + f32x4{min};
+
+    for (int y = 0; y < src.extent[1]; ++y) {
+        for (int x = 0; x < src.extent[0]; ++x) {
+            for (int c = 0; c < channels; ++c) {
+                float v = src_data[y * src.stride / 4 + x * channels + c];
+                v = v * scale[c] + offset[c];
+                dst_data[y * dst.stride / 4 + x * channels + c] = v;
+            }
+        }
+    }
+}
+
+image_data image_normalize(image_view const& img, float min, float max) {
+    image_data dst = image_alloc(img.extent, img.format);
+    image_normalize(img, dst, min, max);
+    return dst;
 }
 
 template <typename T>
