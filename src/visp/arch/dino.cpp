@@ -57,7 +57,7 @@ tensor mlp(model_ref m, tensor x) {
     return x;
 }
 
-tensor attention(model_ref m, tensor x, int n_heads, bool flash_attn) {
+tensor attention(model_ref m, tensor x, int n_heads) {
     auto [c, n, b, _] = nelements(x);
     float scale = 1.0f / std::sqrt(float(c) / float(n_heads));
 
@@ -77,32 +77,19 @@ tensor attention(model_ref m, tensor x, int n_heads, bool flash_attn) {
     };
     tensor q = split(qkv, 0);
     tensor k = split(qkv, 1);
-    tensor v = split(qkv, 2, !flash_attn);
+    tensor v = split(qkv, 2, !(m.flags & model_build_flag::flash_attention));
 
-    if (flash_attn) {
-        int c_pad = int(GGML_PAD(c, 4) - c);
-        int n_pad = int(GGML_PAD(n, 32) - n);
-        q = ggml_pad(m, q, c_pad, n_pad, 0, 0);
-        k = ggml_pad(m, k, c_pad, n_pad, 0, 0);
-        v = ggml_pad(m, v, c_pad, n_pad, 0, 0);
-
-        ggml_type dtype = m.weights("qkv.weight")->type;
-        k = ggml_cast(m, k, dtype);
-        v = ggml_cast(m, v, dtype);
-
+    if (m.flags & model_build_flag::flash_attention) {
         x = ggml_flash_attn_ext(m, q, k, v, nullptr, scale, 0.0f, 0.0f);
-        x = slice(m, x, {}, {}, {0, n}, {});
     } else {
-        q = ggml_scale_inplace(m, q, scale);
-
         tensor attn = ggml_mul_mat(m, k, q);
-        attn = ggml_soft_max(m, attn);
+        attn = ggml_soft_max_ext(m, attn, nullptr, scale, 0.0f);
 
         x = ggml_mul_mat(m, v, attn);
         x = ggml_cont(m, ggml_permute(m, x, 0, 2, 1, 3));
-        x = ggml_reshape_3d(m, x, c, n, b);
     }
 
+    x = ggml_reshape_3d(m, x, c, n, b);
     x = linear(m["proj"], x);
     return named(m, x);
 }
@@ -110,7 +97,7 @@ tensor attention(model_ref m, tensor x, int n_heads, bool flash_attn) {
 tensor block(model_ref m, tensor x, dino_params const& p) {
     tensor attn = x;
     attn = layer_norm(m["norm1"], attn, 1e-6f);
-    attn = attention(m["attn"], attn, p.n_heads, p.flash_attention);
+    attn = attention(m["attn"], attn, p.n_heads);
     attn = layer_scale(m["ls1"], attn);
     x = ggml_add(m, x, attn);
 

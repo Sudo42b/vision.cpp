@@ -429,13 +429,15 @@ DEF(dino_prepare_tokens)(model_ref m, span<tensor> input, param_dict const& p) {
 }
 
 DEF(dino_attention)(model_ref m, span<tensor> input, param_dict const& p) {
-    return {dino::attention(m, input[0], p.get("n_heads", 8), p.get("flash_attn", 0) != 0)};
+    if (p.get("flash_attn", 0) != 0) {
+        m.flags |= model_build_flag::flash_attention;
+    }
+    return {dino::attention(m, input[0], p.get("n_heads", 8))};
 }
 
 DEF(dino_block)(model_ref m, span<tensor> input, param_dict const& p) {
     dino_params params{};
     params.n_heads = p.get("n_heads", 8);
-    params.flash_attention = p.get("flash_attn", 0) != 0;
     return {dino::block(m, input[0], params)};
 }
 
@@ -445,7 +447,6 @@ DEF(dino_intermediate_layers)(model_ref m, span<tensor> input, param_dict const&
     params.embed_dim = 6;
     params.n_blocks = 4;
     params.n_heads = 3;
-    params.flash_attention = p.get("flash_attn", 0) != 0;
     auto layers = std::array{0, 1, 2, 3};
     return dino::get_intermediate_layers(m, input[0], layers, params);
 }

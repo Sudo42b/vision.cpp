@@ -142,8 +142,9 @@ model_build_flags backend_default_flags(backend_type type) {
     using enum model_build_flag;
     switch (type) {
         case backend_type::cpu:
-            return conv_2d_direct_cwhn | concat_n | f16_conv_transpose | window_partition;
-        case backend_type::gpu: return {};
+            return conv_2d_direct_cwhn | concat_n | f16_conv_transpose | window_partition |
+                flash_attention;
+        case backend_type::gpu: return flash_attention;
     }
     return {};
 }

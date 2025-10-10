@@ -443,7 +443,7 @@ void run_birefnet(cli_args const& args) {
 void run_depth_anything(cli_args const& args) {
     backend_device backend = backend_init(args);
     auto [file, weights] = load_model_weights(
-        args, backend, "models/DepthAnythingV2-Small-F32.gguf");
+        args, backend, "models/DepthAnythingV2-Small-F32.gguf", 0, backend.preferred_layout());
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
@@ -456,6 +456,8 @@ void run_depth_anything(cli_args const& args) {
 
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
+    bool flash_attn = !!(m.flags & model_build_flag::flash_attention);
+    printf("- flash attention: %s\n", flash_attn ? "on" : "off");
 
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
     tensor output = depthany_predict(m, input, params);

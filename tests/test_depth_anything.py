@@ -213,7 +213,8 @@ class Attention(nn.Module):
         return x
 
 
-def test_attention():
+@pytest.mark.parametrize("flash_attn", [0, 1])
+def test_attention(flash_attn: int):
     dim = 6
     num_heads = 3
     module = Attention(dim=dim, num_heads=num_heads, qkv_bias=True, proj_bias=True)
@@ -224,7 +225,7 @@ def test_attention():
     x = input_tensor(1, 12, dim)
     expected = module(x)
     result = workbench.invoke_test(
-        "dino_attention", x, state, dict(n_heads=num_heads, flash_attn=0)
+        "dino_attention", x, state, dict(n_heads=num_heads, flash_attn=flash_attn)
     )
 
     assert torch.allclose(result, expected)
@@ -292,7 +293,7 @@ def test_block():
     expected = module(x)
     result = workbench.invoke_test("dino_block", x, state, dict(n_heads=num_heads))
 
-    assert torch.allclose(result, expected, atol=1e-2)  # precision drop due to GELU in MLP
+    assert torch.allclose(result, expected, rtol=1e-2)  # precision drop due to GELU in MLP
 
 
 class DinoVisionTransformer(nn.Module):
@@ -430,8 +431,6 @@ class DinoVisionTransformer(nn.Module):
         x = self.patch_embed(x, flatten=True)
         if masks is not None:
             x = torch.where(masks.unsqueeze(-1), self.mask_token.to(x.dtype).unsqueeze(0), x)
-
-        print(x.shape, self.cls_token.shape)
 
         x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
         x = x + self.interpolate_pos_encoding(x, w, h)
@@ -861,8 +860,9 @@ def test_dpt_head():
     module.load_state_dict(state)
     module.eval()
 
-    x = [input_tensor(2, 1, h * w, in_channels) for _ in range(4)]
-    expected = module(x, h, w)
+    x = [input_tensor(1, 1 + h * w, in_channels) for _ in range(4)]
+    x_tuples = [(t[:, 1:, :], None) for t in x]
+    expected = module(x_tuples, h, w)
 
     state = convert_to_nhwc(state, key="projects")
     result = workbench.invoke_test("depthany_head", x, state)

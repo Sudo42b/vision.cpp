@@ -65,7 +65,8 @@ enum class model_build_flag {
     conv_2d_direct_cwhn = 1 << 1,
     concat_n            = 1 << 2,
     f16_conv_transpose  = 1 << 3,
-    window_partition    = 1 << 4
+    window_partition    = 1 << 4,
+    flash_attention     = 1 << 5
 }; // clang-format on
 
 using model_build_flags = flags<model_build_flag>;
@@ -306,7 +307,6 @@ struct dino_params {
     int n_blocks = 12;
     int n_heads = 6;
     int mlp_ratio = 4;
-    bool flash_attention = false;
 };
 
 VISP_API std::vector<tensor> dino_get_intermediate_layers(
