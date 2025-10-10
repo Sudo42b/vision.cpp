@@ -152,7 +152,8 @@ def test_roll(shift: tuple[int, int, int, int], backend: str):
 @pytest.mark.parametrize("align_corners", [True, False])
 @pytest.mark.parametrize("size", ["small", "large"])
 @pytest.mark.parametrize("scale", [0.6, 2.0])
-def test_interpolate(mode: str, align_corners: bool, size: str, scale: float):
+@pytest.mark.parametrize("backend", ["cpu", "vulkan"])
+def test_interpolate(mode: str, align_corners: bool, size: str, scale: float, backend: str):
     b, c, h, w = {
         "small": (1, 3, 2, 3),
         "large": (4, 19, 20, 30),
@@ -164,5 +165,5 @@ def test_interpolate(mode: str, align_corners: bool, size: str, scale: float):
     )
 
     params = dict(mode=mode, h=target[0], w=target[1], align_corners=1 if align_corners else 0)
-    result = workbench.invoke_test("interpolate", x, {}, params)
+    result = workbench.invoke_test("interpolate", x, {}, params, backend)
     assert torch.allclose(result, expected)

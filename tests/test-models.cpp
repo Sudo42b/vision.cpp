@@ -72,7 +72,7 @@ VISP_TEST(test_birefnet_dynamic) {
 
 VISP_BACKEND_TEST(test_depth_anything)(backend_type bt) {
     path model_path = test_dir().models / "DepthAnythingV2-Small-F16.gguf";
-    path input_path = test_dir().input / "cat-and-hat.jpg";
+    path input_path = test_dir().input / "wardrobe.jpg";
     std::string name = "depth-anything";
     name += bt == backend_type::cpu ? "-cpu.png" : "-gpu.png";
 
