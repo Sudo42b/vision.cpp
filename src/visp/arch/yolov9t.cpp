@@ -642,17 +642,19 @@ tensor Concat(model_ref m, tensor a, tensor b, int axis, bool debug) {
     return output;
 }
 // YOLOv9t backbone implementation (matching Python structure)
-std::vector<tensor> yolov9t_backbone(model_ref m, tensor x) {
+// std::vector<tensor> yolov9t_backbone(model_ref m, tensor x) {
+std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     std::map<int, tensor> features;
     // Layer 0: Conv(3, 16, 3, 2) - P1/2
     tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, false);
+    features[0] = x0;
 
     // Layer 1: Conv(16, 32, 3, 2) - P2/4
     tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, false);
-
+    features[1] = x1;
     // Layer 2: ELAN1(32, 32, 32, 16)
     tensor x2 = ELAN1(m, x1, "model.2", 32, 32, 32, 16, false);
-
+    features[2] = x2;
     // Layer 3: AConv(32, 64) - P3/8
     tensor x3 = AConv(m, x2, "model.3", 32, 64, false);
     features[3] = x3;
@@ -663,6 +665,7 @@ std::vector<tensor> yolov9t_backbone(model_ref m, tensor x) {
 
     // Layer 5: AConv(64, 96) - P4/16
     tensor x5 = AConv(m, x4, "model.5", 64, 96);
+    features[5] = x5;
 
     // Layer 6: RepNCSPELAN4(96, 96, 96, 48, 3)
     tensor x6 = RepNCSPELAN4(m, x5, "model.6", 96, 96, 96, 48, 3);
@@ -670,23 +673,24 @@ std::vector<tensor> yolov9t_backbone(model_ref m, tensor x) {
 
     // Layer 7: AConv(96, 128) - P5/32
     tensor x7 = AConv(m, x6, "model.7", 96, 128);
-
+    features[7] = x7;
     // Layer 8: RepNCSPELAN4(128, 128, 128, 64, 3)
     tensor x8 = RepNCSPELAN4(m, x7, "model.8", 128, 128, 128, 64, 3);
-
+    features[8] = x8;
     // Layer 9: SPPELAN(128, 128, 64)
     tensor x9 = SPPELAN(m, x8, "model.9", 128, 128, 64, 5, false);
     features[9] = x9;
 
     // Layer 10: Upsample(None, 2, 'nearest')
     tensor x10 = Upsample(m, x9, 2);
-
+    features[10] = x10;
     // printf("After Upsample layer 10: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
     //        (int)x10->ne[0], (int)x10->ne[1], (int)x10->ne[2], (int)x10->ne[3]);
     // printf("Feature map from layer 6 (P4): ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
     //        (int)features[6]->ne[0], (int)features[6]->ne[1], (int)features[6]->ne[2], (int)features[6]->ne[3]);
     // Layer 11: Concat(1) - with P4 (layer 6)
     tensor x11 = Concat(m, x10, features[6], 2);
+    features[11] = x11;
     // printf("After Concat layer 11: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
     //        (int)x11->ne[0], (int)x11->ne[1], (int)x11->ne[2], (int)x11->ne[3]);
     // Layer 12: RepNCSPELAN4(224, 96, 96, 48, 3)
@@ -695,32 +699,34 @@ std::vector<tensor> yolov9t_backbone(model_ref m, tensor x) {
 
     // Layer 13: Upsample(None, 2, 'nearest')
     tensor x13 = Upsample(m, x12, 2);
-
+    features[13] = x13;
     // Layer 14: Concat(1) - with P3 (layer 4)
     tensor x14 = Concat(m, x13, features[4], 2);
-
+    features[14] = x14;
     // Layer 15: RepNCSPELAN4(160, 64, 64, 32, 3) - N3 output
     tensor x15 = RepNCSPELAN4(m, x14, "model.15", 160, 64, 64, 32, 3);
-
+    features[15] = x15;
     // Layer 16: AConv(64, 48)
     tensor x16 = AConv(m, x15, "model.16", 64, 48);
-
+    features[16] = x16;
     // Layer 17: Concat(1) - with P4 (layer 12)
     tensor x17 = Concat(m, x16, features[12]);
-
+    features[17] = x17;
     // Layer 18: RepNCSPELAN4(144, 96, 96, 48, 3) - N4 output
     tensor x18 = RepNCSPELAN4(m, x17, "model.18", 144, 96, 96, 48, 3);
-
+    features[18] = x18;
     // Layer 19: AConv(96, 64)
     tensor x19 = AConv(m, x18, "model.19", 96, 64);
-
+    features[19] = x19;
     // Layer 20: Concat(1) - with P5 (layer 9)
     tensor x20 = Concat(m, x19, features[9]);
-
+    features[20] = x20;
     // Layer 21: RepNCSPELAN4(192, 128, 128, 64, 3) - N5 output
     tensor x21 = RepNCSPELAN4(m, x20, "model.21", 192, 128, 128, 64, 3);
+    features[21] = x21;
     // Return detection outputs: N3(x15), N4(x18), N5(x21)
-    return {x15, x18, x21};
+    // return {x15, x18, x21};
+    return features;
 }
 
 // Convert distance predictions to bounding boxes
@@ -891,15 +897,28 @@ DetectOutput detect_forward(model_ref m,
 DetectOutput yolov9t_forward(model_ref m, tensor x) {
     
     // Run backbone + neck
-    std::vector<tensor> features = yolov9t_backbone(m, x);
+    // std::vector<tensor> features = yolov9t_backbone(m, x);
+    std::map<int, tensor> features = yolov9t_backbone(m, x);
+
+    // Save the first feature (layer 0) to a text file using C stdio to avoid incomplete std::ofstream error
+    tensor feature_0 = features[0];
+    for (auto f : features) {
+        printf("feature shape: [%d,%d,%d,%d]\n", (int)f.second->ne[0], (int)f.second->ne[1], (int)f.second->ne[2], (int)f.second->ne[3]);
+    }
+    
     // features = [N3(64 channels), N4(96 channels), N5(128 channels)]
+
+    
+    
     printf("features size: [%d]\n", (int)features.size());
     DetectOutput outputs = {0};
 
     // channels for N3, N4, N5
     std::vector<int> channels = {64, 96, 128};
     // std::string base_name = std::to_string(i);
-    DetectOutput d = detect_forward(m, features, channels, 80, false);
+    // {x15, x18, x21};
+    std::vector<tensor> features_vector = {features[15], features[18], features[21]};
+    DetectOutput d = detect_forward(m, features_vector, channels, 80, false);
     printf("detect_forward complete\n");
     
     return d;

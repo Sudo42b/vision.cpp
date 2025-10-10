@@ -3,7 +3,7 @@
 #include "visp/image.h"
 #include "visp/ml.h"
 #include "visp/util.h"
-
+#include <map>
 #include <array>
 #include <vector>
 
@@ -100,7 +100,8 @@ tensor Bottleneck(
     float e = 0.5,
     bool debug = false);
 // Backbone network
-std::vector<tensor> yolov9t_backbone(model_ref m, tensor x);
+// std::vector<tensor> yolov9t_backbone(model_ref m, tensor x);
+std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x);
 
 // Detection head components
 tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug=false);
