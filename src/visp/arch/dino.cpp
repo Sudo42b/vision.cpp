@@ -1,15 +1,13 @@
-#include "util/math.h"
 #include "visp/arch/dino.h"
+#include "util/math.h"
 #include "visp/ml.h"
 #include "visp/nn.h"
 
 namespace visp {
 namespace dino {
 
-tensor interpolate_pos_encoding(
-    model_ref m, tensor x, int64_t w, int64_t h, int patch_size) {
-
-    tensor pos_embed = ggml_cast(m, m.weights("pos_embed"), GGML_TYPE_F32);
+tensor interpolate_pos_encoding(model_ref m, tensor x, int64_t w, int64_t h, int patch_size) {
+    tensor pos_embed = m.weights("pos_embed");
     int64_t n_patch = x->ne[1] - 1;
     int64_t n = pos_embed->ne[1] - 1;
     if (n_patch == n && w == h) {
@@ -65,19 +63,15 @@ tensor attention(model_ref m, tensor x, int n_heads) {
     qkv = ggml_reshape_4d(m, qkv, c / n_heads, n_heads, 3, n * b);
     qkv = ggml_cont(m, ggml_permute(m, qkv, 0, 1, 3, 2));
 
-    auto split = [=](tensor tensor, size_t index, bool transpose = false) mutable {
-        tensor = slice(m, tensor, {}, {}, {}, index);
-        tensor = ggml_reshape_4d(m, tensor, c / n_heads, n_heads, n, b);
-        if (transpose) {
-            tensor = ggml_cont(m, ggml_permute(m, tensor, 1, 2, 0, 3));
-        } else {
-            tensor = ggml_cont(m, ggml_permute(m, tensor, 0, 2, 1, 3));
-        }
-        return tensor;
+    auto split = [=](tensor qkv, size_t index, ggml_type type, bool transpose = false) mutable {
+        tensor t = slice(m, qkv, {}, {}, {}, index);
+        t = ggml_reshape_4d(m, t, c / n_heads, n_heads, n, b);
+        t = transpose ? ggml_permute(m, t, 1, 2, 0, 3) : ggml_permute(m, t, 0, 2, 1, 3);
+        return ggml_cast(m, t, type);
     };
-    tensor q = split(qkv, 0);
-    tensor k = split(qkv, 1);
-    tensor v = split(qkv, 2, !(m.flags & model_build_flag::flash_attention));
+    tensor q = split(qkv, 0, GGML_TYPE_F32);
+    tensor k = split(qkv, 1, GGML_TYPE_F16);
+    tensor v = split(qkv, 2, GGML_TYPE_F16, !(m.flags & model_build_flag::flash_attention));
 
     if (m.flags & model_build_flag::flash_attention) {
         x = ggml_flash_attn_ext(m, q, k, v, nullptr, scale, 0.0f, 0.0f);

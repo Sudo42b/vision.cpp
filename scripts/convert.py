@@ -362,6 +362,10 @@ def convert_depth_anything(input_filepath: Path, writer: Writer):
             else:
                 tensor = writer.convert_tensor_2d(tensor)
 
+        if "pos_embed" in name or "cls_token" in name:
+            writer.add_tensor(name, tensor, "f32")
+            continue
+
         writer.add_tensor(name, tensor)
 
 
