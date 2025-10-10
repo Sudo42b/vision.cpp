@@ -87,16 +87,10 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
             x = permute_whcn_to_cwhn(m, x);
 
         } else {
-            x = permute_cwhn_to_whcn(m, x);
-            tensor permuted_weight = permute_cwhn_to_whcn(m, weight);
-            tensor cols = ggml_im2col(
-                m, permuted_weight, x, stride, stride, pad, pad, 1, 1, true, GGML_TYPE_F32);
-            tensor a = ggml_reshape_2d(
-                m, cols, cols->ne[0], cols->ne[1] * cols->ne[2] * cols->ne[3]);
-            tensor b = ggml_reshape_2d(
-                m, weight, weight->ne[0] * weight->ne[1] * weight->ne[2], weight->ne[3]);
-            x = ggml_mul_mat(m, b, a);
-            x = ggml_reshape_4d(m, x, weight->ne[3], cols->ne[1], cols->ne[2], cols->ne[3]);
+            weight = ggml_cont(m, permute_cwhn_to_whcn(m, weight));
+            x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
+            x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, 1, 1);
+            x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
         }
     } else { // WHCN layout
         x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, 1, 1);

@@ -71,6 +71,10 @@ VISP_TEST(test_birefnet_dynamic) {
 }
 
 VISP_BACKEND_TEST(test_depth_anything)(backend_type bt) {
+    if (bt == backend_type::gpu) {
+        throw test_skip{"DepthAnything does not support GPU backend"};
+    }
+
     path model_path = test_dir().models / "DepthAnythingV2-Small-F16.gguf";
     path input_path = test_dir().input / "cat-and-hat.jpg";
     std::string name = "depth-anything";
