@@ -475,7 +475,7 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
 
     # Convert weights
     from tqdm import tqdm
-
+    processed_keys = set()
     for idx, (conv_suffix, bn_suffix) in tqdm(enumerate(conv_bn_pairs)):
         # List[conv_suffix, bn_suffix]
         # 220 detect.cv3.2.1.conv detect.cv3.2.1.bn
@@ -504,8 +504,40 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
             exit()
         writer.add_tensor(f"{conv_suffix}.weight", tensor)
         writer.add_tensor(f"{conv_suffix}.bias", fused_bias)
+        
+        processed_keys.add(f"{conv_suffix}.weight")
+        processed_keys.add(f"{conv_suffix}.bias")
+  
         print(f"{conv_suffix}, {bn_suffix}")
-    print(f"\n✓ Conversion complete. Processed {len(conv_bn_pairs)} tensors.")
+    # === 추가: Detect head의 마지막 레이어만 저장 ===
+    print("\n=== Finding Detect head final layers (nn.Conv2d) ===")
+    
+    import re
+    # detect.cv2.[0-2].2 와 detect.cv3.[0-2].2 패턴만 매칭
+    detect_pattern = re.compile(r'^detect\.cv[23]\.[0-2]\.2\.(weight|bias)$')
+    
+    detect_layers = {}
+    for key in model.keys():
+        if detect_pattern.match(key):
+            detect_layers[key] = model[key]
+    
+    print(f"Found {len(detect_layers)} detect head final layer parameters")
+    
+    for key, value in tqdm(sorted(detect_layers.items())):
+        if key.endswith('.weight'):
+            tensor = writer.convert_tensor_2d(value)
+            writer.add_tensor(key, tensor)
+            print(f"Detect layer: {key} {value.shape}")
+        elif key.endswith('.bias'):
+            writer.add_tensor(key, value)
+            print(f"Detect layer: {key} {value.shape}")
+    
+    total_detect_layers = len([k for k in detect_layers.keys() if k.endswith('.weight')])
+    
+    print(f"\n✓ Conversion complete:")
+    print(f"  - {len(conv_bn_pairs)} Conv-BN pairs (fused)")
+    print(f"  - {total_detect_layers} Detect head final Conv2d layers")
+    print(f"  - Total: {len(conv_bn_pairs) + total_detect_layers} layers")
 #
 # Main
 #######

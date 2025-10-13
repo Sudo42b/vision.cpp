@@ -668,19 +668,33 @@ tensor slice(model_ref const& m, tensor x, slice_t s0, slice_t s1, slice_t s2, s
     return ggml_view_4d(m, x, ne[0], ne[1], ne[2], ne[3], nb[1], nb[2], nb[3], offset);
 }
 
+// tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim) {
+//     int n = (int)std::count_if(src.begin(), src.end(), [](tensor t) { return t != nullptr; });
+//     if (m.flags & model_build_flag::concat_n) {
+//         return ggml_concat_n(m, src.data(), n, dim);
+//     } else {
+//         tensor x = src[0];
+//         for (int i = 1; i < n; ++i) {
+//             x = ggml_concat(m, x, src[i], dim);
+//         }
+//         return x;
+//     }
+// }
 tensor concat(model_ref const& m, std::array<tensor, GGML_MAX_SRC> src, int dim) {
+    // Count non-null tensors
     int n = (int)std::count_if(src.begin(), src.end(), [](tensor t) { return t != nullptr; });
-    if (m.flags & model_build_flag::concat_n) {
-        return ggml_concat_n(m, src.data(), n, dim);
-    } else {
-        tensor x = src[0];
-        for (int i = 1; i < n; ++i) {
-            x = ggml_concat(m, x, src[i], dim);
-        }
-        return x;
+    GGML_ASSERT(n > 0 && "At least one tensor is required for concat");
+    
+    // Start with the first tensor
+    tensor result = src[0];
+    
+    // Concatenate remaining tensors one by one
+    for (int i = 1; i < n; ++i) {
+        result = ggml_concat(m, result, src[i], dim);
     }
+    
+    return result;
 }
-
 tensor interpolate(model_ref const& m, tensor x, i64x2 target, int32_t mode) {
     if ((m.flags & model_build_flag::cwhn) && mode == GGML_SCALE_MODE_NEAREST) {
         return ggml_interpolate(m, x, x->ne[0], target[0], target[1], x->ne[3], mode);

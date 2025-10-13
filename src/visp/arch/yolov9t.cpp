@@ -842,7 +842,133 @@ tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug) {
     // Result: [4, num_anchors, 1, 1]
     return result;
 }
+/*
+tensor inference(model_ref m, 
+                std::vector<tensor> features, // List of feature maps from different detection layers.
+                std::vector<int> ch, 
+                int reg_max, 
+                int nc) {
+    // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
+    std::vector<tensor> reshaped_outputs;
 
+    for (size_t i = 0; i < features.size(); ++i) {
+        tensor x = features[i];
+        auto ne = nelements(x);
+        
+        int64_t C, H, W;
+        if (m.flags & model_build_flag::cwhn) {
+            C = ne[0]; W = ne[1]; H = ne[2];
+            printf("C: %ld, W: %ld, H: %ld\n", C, W, H);
+        } else {
+            W = ne[0]; H = ne[1]; C = ne[2];
+            printf("W: %ld, H: %ld, C: %ld\n", W, H, C);
+        }
+        
+        // Ensure CWHN layout
+        if (!(m.flags & model_build_flag::cwhn)) {
+            x = permute_whcn_to_cwhn(m, x);
+        }
+        
+        // Flatten: [C, H*W, 1, 1]
+        tensor flat = ggml_reshape_4d(m, x, C, H * W, 1, 1);
+        printf("flat shape: [%ld,%ld,%ld,%ld]\n", flat->ne[0], flat->ne[1], flat->ne[2], flat->ne[3]);
+        flat = ggml_cont(m, flat);
+        
+        reshaped_outputs.push_back(flat);
+    }
+    
+    
+    // Concat along anchor dimension (dim 1)
+    std::array<tensor, GGML_MAX_SRC> concat_array = {};
+    for (size_t i = 0; i < reshaped_outputs.size(); ++i) {
+        concat_array[i] = reshaped_outputs[i];
+    }
+    tensor x_cat = concat(m, concat_array, 1);
+    
+    int64_t total_channels = x_cat->ne[0];
+    int64_t total_anchors = x_cat->ne[1];
+    
+    printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
+    // Done!
+    // === Generate anchors inline ===
+    std::vector<float> strides_vec;
+    for (size_t i = 0; i < features.size(); ++i) {
+        strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
+    }
+
+    // Create anchor tensors
+    tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
+    tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
+
+    ggml_set_name(anchor_points, "anchor_points");
+    ggml_set_name(stride_tensor, "stride_tensor");
+    ggml_set_input(anchor_points);
+    ggml_set_input(stride_tensor);
+
+    // Build into graph
+    ggml_build_forward_expand(m.graph, anchor_points);
+    ggml_build_forward_expand(m.graph, stride_tensor);
+
+    // Prepare data
+    std::vector<float> anchor_data(total_anchors * 2);
+    std::vector<float> stride_data(total_anchors);
+
+    int64_t offset = 0;
+    for (size_t i = 0; i < features.size(); ++i) {
+        auto [c, w, h, n] = nelements_whcn(m, features[i]);
+        float stride = strides_vec[i];
+        
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                int64_t idx = offset + y * w + x;
+                anchor_data[idx * 2 + 0] = x + 0.5f;
+                anchor_data[idx * 2 + 1] = y + 0.5f;
+                stride_data[idx] = stride;
+            }
+        }
+        offset += h * w;
+    }
+
+    // Transfer will happen after graph allocation
+    // Store data for later transfer
+    out.anchor_data = std::move(anchor_data);
+    out.stride_data = std::move(stride_data);
+
+    // Split into box and cls
+    tensor box = ggml_view_4d(m, x_cat,
+        reg_max * 4, total_anchors, 1, 1,
+        x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
+        0);
+
+    tensor cls = ggml_view_4d(m, x_cat,
+        nc, total_anchors, 1, 1,
+        x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
+        reg_max * 4 * x_cat->nb[0]);
+
+    // Apply DFL
+    tensor dfl_output = dfl_forward(m, box, reg_max, false);
+
+    // Decode bounding boxes
+    tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
+
+    // Multiply by strides
+    tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
+    dbox = ggml_mul(m, dbox, strides_bc);
+
+    // Apply sigmoid to classes
+    cls = ggml_sigmoid(m, cls);
+
+    // Concatenate
+    tensor predictions = concat(m, {dbox, cls}, 0);
+
+    out.predictions = predictions;
+    out.anchor_points = anchor_points;
+    out.strides = stride_tensor;
+
+    return predictions;
+}
+
+*/
 DetectOutput detect_forward(model_ref m, 
                             std::vector<tensor> features, 
                             std::vector<int> ch, 
@@ -857,113 +983,169 @@ DetectOutput detect_forward(model_ref m,
     std::string cls_base = std::string("detect.cv3");
 
     for (size_t i = 0; i < features.size(); ++i) {
-        std::string idx_str = std::to_string(i);
+        // printf("features[%d] shape: [%d,%d,%d,%d]\n", (int)i, (int)features[i]->ne[0], (int)features[i]->ne[1], (int)features[i]->ne[2], (int)features[i]->ne[3]);
+        
+        // std::string idx_str = std::to_string(i);
+        tensor_name old_prefix_i = m.prefix;
         // Regression head: two convs, second outputs 4*reg_max channels
-        tensor r0 = Conv(m, features[i], reg_base + ".0." + std::to_string(i), ch[i], c2, 3, 1, -1, true, false);
-        tensor r1 = Conv(m, r0,          reg_base + ".1." + std::to_string(i), c2, c2, 3, 1, -1, true, false);
-        tensor r2 = conv_2d(m[std::string(reg_base + ".2." + idx_str).c_str()], r1, 1, 0, 1);  // stride=1, pad=0, dilate=1
-
+        tensor r0 = Conv(m, features[i], reg_base + "."+std::to_string(i)+".0.conv", ch[i], c2, 3, 1, -1, true, false);
+        
+        tensor r1 = Conv(m, r0          ,reg_base + "."+std::to_string(i)+".1.conv", c2, c2, 3, 1, -1, true, false);
+        
+        // Final regression conv: outputs 4*reg_max channels
+        // Final regression conv: nn.Conv2d (NO .conv suffix)
+        m.prefix = tensor_name((reg_base + "."+std::to_string(i)+".2").c_str());
+        tensor r2 = conv_2d(m, r1, 1, 0, 1);
+        
         if (!ggml_is_contiguous(r2)) r2 = ggml_cont(m, r2);
-
+        
         // Classification head: two convs, second outputs nc channels
-        tensor c0 = Conv(m, features[i], cls_base + ".0." + std::to_string(i), ch[i], c3, 3, 1, -1, true, false);
-        tensor c1 = Conv(m, c0,          cls_base + ".1." + std::to_string(i), c3, c3, 3, 1, -1, true, false);
-        tensor c2 = conv_2d(m[std::string(cls_base + ".2." + idx_str).c_str()], c1, 1, 0, 1);  // stride=1, pad=0, dilate=1
+        // m.prefix = old_prefix_i;
+        tensor c0 = Conv(m, features[i], cls_base + "."+std::to_string(i)+".0.conv", ch[i], c3, 3, 1, -1, true, false);
+        tensor c1 = Conv(m, c0,          cls_base + "."+std::to_string(i)+".1.conv", c3, c3, 3, 1, -1, true, false);
+        // Final classification conv: nn.Conv2d (NO .conv suffix)
+        
+        m.prefix = tensor_name((cls_base + "." + std::to_string(i) + ".2").c_str());
+        tensor c2 = conv_2d(m, c1, 1, 0, 1);
+        
         if (!ggml_is_contiguous(c2)) c2 = ggml_cont(m, c2);
-
+        
+        
         // Combine along channel dim and flatten spatial dims to anchors
         tensor combined = Concat(m, r2, c2, 0);
-        out.raw_outputs.push_back(combined);
+        out.raw_outputs.push_back(combined);  // <-- 수정: out.raw_outputs에 push!
+        // torch.Size([1, 144, 80, 80])
+        // torch.Size([1, 144, 40, 40])
+        // torch.Size([1, 144, 20, 20])
+        // printf("Shape: [%d,%d,%d,%d]\n", (int)combined->ne[0], (int)combined->ne[1], (int)combined->ne[2], (int)combined->ne[3]);
+        
+        m.prefix = old_prefix_i;
     }
 
     if (training) {
         out.predictions = nullptr;
         return out;
     }
-    std::vector<tensor> reshaped_outputs;
     
-    for (size_t i = 0; i < out.raw_outputs.size(); ++i) {
-        tensor x = out.raw_outputs[i];
-        auto ne = nelements(x);  // Get raw dimensions
+    // tensor out_tensor = inference(m, out.raw_outputs, ch, reg_max, nc);
+    // out.predictions = out_tensor;
+    // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
+    std::vector<tensor> reshaped_outputs;
+
+    for (size_t i = 0; i < features.size(); ++i) {
+        tensor x = features[i];
+        auto ne = nelements(x);
         
         int64_t C, H, W;
         if (m.flags & model_build_flag::cwhn) {
             C = ne[0]; W = ne[1]; H = ne[2];
-            //N = ne[3];
+            printf("C: %ld, W: %ld, H: %ld\n", C, W, H);
         } else {
-            W = ne[0]; H = ne[1]; C = ne[2]; 
-            //N = ne[3];
+            W = ne[0]; H = ne[1]; C = ne[2];
+            printf("W: %ld, H: %ld, C: %ld\n", W, H, C);
         }
         
-        // Ensure CWHN layout and flatten spatial dimensions
+        // Ensure CWHN layout
         if (!(m.flags & model_build_flag::cwhn)) {
             x = permute_whcn_to_cwhn(m, x);
         }
         
         // Flatten: [C, H*W, 1, 1]
         tensor flat = ggml_reshape_4d(m, x, C, H * W, 1, 1);
+        printf("flat shape: [%ld,%ld,%ld,%ld]\n", flat->ne[0], flat->ne[1], flat->ne[2], flat->ne[3]);
         flat = ggml_cont(m, flat);
+        //여기이후에서 오류남.
+        //! TODO: /mnt/e/6_LLM/ggml-python/vendor/ggml/src/ggml.c:2455: GGML_ASSERT(a->ne[d] == b->ne[d]) failed
+        
         reshaped_outputs.push_back(flat);
     }
     
-    // Concat along anchor dimension (dim 1): [4*reg_max + nc, total_anchors, 1, 1]
+    
+    // Concat along anchor dimension (dim 1)
     std::array<tensor, GGML_MAX_SRC> concat_array = {};
     for (size_t i = 0; i < reshaped_outputs.size(); ++i) {
         concat_array[i] = reshaped_outputs[i];
     }
     tensor x_cat = concat(m, concat_array, 1);
-    int64_t total_channels = x_cat->ne[0];  // 4*reg_max + nc
+    
+    int64_t total_channels = x_cat->ne[0];
     int64_t total_anchors = x_cat->ne[1];
     
-    // 2. Generate anchors and strides
+    printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
+    // Done!
+    // === Generate anchors inline ===
     std::vector<float> strides_vec;
     for (size_t i = 0; i < features.size(); ++i) {
-        strides_vec.push_back(8.0f * std::pow(2.0f, (float)i)); // [8, 16, 32]
+        strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
     }
-    auto anchor_result = make_anchors(m, features, strides_vec, 0.5f);
-    tensor anchor_points = anchor_result.first;
-    tensor stride_tensor = anchor_result.second;
-    
-    // 3. Split into box and cls
-    // box: [reg_max*4, total_anchors, 1, 1]
+
+    // Create anchor tensors
+    tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
+    tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
+
+    ggml_set_name(anchor_points, "anchor_points");
+    ggml_set_name(stride_tensor, "stride_tensor");
+    ggml_set_input(anchor_points);
+    ggml_set_input(stride_tensor);
+
+    // Build into graph
+    ggml_build_forward_expand(m.graph, anchor_points);
+    ggml_build_forward_expand(m.graph, stride_tensor);
+
+    // Prepare data
+    std::vector<float> anchor_data(total_anchors * 2);
+    std::vector<float> stride_data(total_anchors);
+
+    int64_t offset = 0;
+    for (size_t i = 0; i < features.size(); ++i) {
+        auto [c, w, h, n] = nelements_whcn(m, features[i]);
+        float stride = strides_vec[i];
+        
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                int64_t idx = offset + y * w + x;
+                anchor_data[idx * 2 + 0] = x + 0.5f;
+                anchor_data[idx * 2 + 1] = y + 0.5f;
+                stride_data[idx] = stride;
+            }
+        }
+        offset += h * w;
+    }
+
+    // Transfer will happen after graph allocation
+    // Store data for later transfer
+    out.anchor_data = std::move(anchor_data);
+    out.stride_data = std::move(stride_data);
+
+    // Split into box and cls
     tensor box = ggml_view_4d(m, x_cat,
         reg_max * 4, total_anchors, 1, 1,
         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
         0);
-    
-    // cls: [nc, total_anchors, 1, 1]
+
     tensor cls = ggml_view_4d(m, x_cat,
         nc, total_anchors, 1, 1,
         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
         reg_max * 4 * x_cat->nb[0]);
-    
-    // 4. Apply DFL to box predictions
-    // DFL: [reg_max*4, total_anchors] -> [4, total_anchors]
-    tensor dfl_output = dfl_forward(m, box, reg_max);
-    
-    // 5. Decode bounding boxes
-    // anchor_points is [2, total_anchors], need to reshape for dist2bbox
-    // dist2bbox expects anchor_points compatible with bbox operations
-    tensor dbox = dist2bbox(m, dfl_output, anchor_points, false); // xyxy format
-    
-    // 6. Multiply by strides
-    // stride_tensor: [1, total_anchors] -> broadcast multiply
-    // Reshape to [1, total_anchors, 1, 1] for proper broadcasting
+
+    // Apply DFL
+    tensor dfl_output = dfl_forward(m, box, reg_max, false);
+
+    // Decode bounding boxes
+    tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
+
+    // Multiply by strides
     tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
-    
-    // Broadcast stride to match dbox shape [4, total_anchors, 1, 1]
     dbox = ggml_mul(m, dbox, strides_bc);
-    
-    // 7. Apply sigmoid to class predictions
+
+    // Apply sigmoid to classes
     cls = ggml_sigmoid(m, cls);
-    
-    // 8. Concatenate dbox and cls: [4 + nc, total_anchors, 1, 1]
+
+    // Concatenate
     tensor predictions = concat(m, {dbox, cls}, 0);
-    
+
     out.predictions = predictions;
-    out.anchor_points = anchor_points;
-    out.strides = stride_tensor;
-    
+
     return out;
 }
 
@@ -1045,7 +1227,6 @@ def make_anchors(feats:Tensor, strides:Tensor, grid_cell_offset:float=0.5) -> Tu
 //     tensor anchor_points;  // [total_anchors, 2]
 //     tensor stride_tensor;  // [total_anchors, 1]
 // };
-
 std::pair<tensor, tensor> make_anchors(
     model_ref m, 
     std::vector<tensor> const& features,
@@ -1055,86 +1236,52 @@ std::pair<tensor, tensor> make_anchors(
     GGML_ASSERT(features.size() == strides.size());
     GGML_ASSERT(!features.empty());
     
-    std::vector<tensor_data> anchor_points_list;
-    std::vector<tensor_data> stride_tensor_list;
-    
-    int64_t total_anchors = 0;
-    
     // Calculate total number of anchors
-    for (size_t i = 0, total_anchors = 0; i < features.size(); ++i) {
+    int64_t total_anchors = 0;
+    for (size_t i = 0; i < features.size(); ++i) {
         auto [c, w, h, n] = nelements_whcn(m, features[i]);
         total_anchors += h * w;
     }
     
-    // Generate anchor points and stride tensors for each feature level
+    // Create output tensors in graph context
+    tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
+    tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
+    
+    // Allocate temporary CPU memory for data
+    tensor_data anchor_data = tensor_alloc(anchor_points);
+    tensor_data stride_data = tensor_alloc(stride_tensor);
+    
+    auto anchor_ptr = anchor_data.as_f32();
+    auto stride_ptr = stride_data.as_f32();
+    
+    // Fill data
+    int64_t offset = 0;
     for (size_t i = 0; i < features.size(); ++i) {
         auto [c, w, h, n] = nelements_whcn(m, features[i]);
         float stride = strides[i];
-        int64_t num_points = h * w;
         
-        // Create anchor points [num_points, 2]
-        tensor anchor_t = ggml_new_tensor_2d(m, GGML_TYPE_F32, 2, num_points);
-        tensor_data anchor_data = tensor_alloc(anchor_t);
-        auto anchor_ptr = anchor_data.as_f32();
-        
-        // Create stride tensor [num_points, 1]
-        tensor stride_t = ggml_new_tensor_2d(m, GGML_TYPE_F32, 1, num_points);
-        tensor_data stride_data = tensor_alloc(stride_t);
-        auto stride_ptr = stride_data.as_f32();
-        
-        // Generate meshgrid with offset
-        int idx = 0;
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
-                float sx = x + grid_cell_offset;
-                float sy = y + grid_cell_offset;
+                int64_t idx = offset + y * w + x;
                 
-                // anchor_points: [sx, sy]
-                anchor_ptr[idx * 2 + 0] = sx;
-                anchor_ptr[idx * 2 + 1] = sy;
+                // anchor_points: [sx, sy] in first dimension
+                anchor_ptr[idx * 2 + 0] = x + grid_cell_offset;
+                anchor_ptr[idx * 2 + 1] = y + grid_cell_offset;
                 
-                // stride_tensor: [stride]
+                // stride_tensor
                 stride_ptr[idx] = stride;
-                
-                ++idx;
             }
         }
-        
-        anchor_points_list.push_back(std::move(anchor_data));
-        stride_tensor_list.push_back(std::move(stride_data));
+        offset += h * w;
     }
     
-    // Concatenate all anchor points
-    tensor anchor_points;
-    if (features.size() == 1) {
-        anchor_points = anchor_points_list[0].x;
-        transfer_to_backend(anchor_points_list[0]);
-    } else {
-        std::array<tensor, GGML_MAX_SRC> anchor_tensors = {};
-        for (size_t i = 0; i < anchor_points_list.size(); ++i) {
-            anchor_tensors[i] = anchor_points_list[i].x;
-            transfer_to_backend(anchor_points_list[i]);
-        }
-        anchor_points = concat(m, anchor_tensors, 1); // concat along dimension 1 (num_points)
-    }
-    
-    // Concatenate all stride tensors
-    tensor stride_tensor;
-    if (features.size() == 1) {
-        stride_tensor = stride_tensor_list[0].x;
-        transfer_to_backend(stride_tensor_list[0]);
-    } else {
-        std::array<tensor, GGML_MAX_SRC> stride_tensors = {};
-        for (size_t i = 0; i < stride_tensor_list.size(); ++i) {
-            stride_tensors[i] = stride_tensor_list[i].x;
-            transfer_to_backend(stride_tensor_list[i]);
-        }
-        stride_tensor = concat(m, stride_tensors, 1); // concat along dimension 1 (num_points)
-    }
-    
+    // Transfer to backend
+    transfer_to_backend(anchor_data);
+    transfer_to_backend(stride_data);
+    printf("anchor_points shape: [%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1]);
+    printf("stride_tensor shape: [%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1]);
     return std::make_pair(anchor_points, stride_tensor);
 }
-
 
 /*
 def check_img_size(imgsz, s=32, floor=0):

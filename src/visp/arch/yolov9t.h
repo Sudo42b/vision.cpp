@@ -34,8 +34,10 @@ struct DetectOutput {
     std::vector<tensor> raw_outputs;
     std::map<int, tensor> features;   // Selected backbone/neck features exposed for dumping
     tensor predictions;  // [batch, 4+nc, num_anchors]
-    tensor anchor_points;  // 추가
-    tensor strides;        // 추가
+    tensor anchor_points;
+    tensor strides;
+    std::vector<float> anchor_data;  // 추가
+    std::vector<float> stride_data;        // 추가
 };
 // Image preprocessing for YOLOv9t
 struct PreprocessResult {
