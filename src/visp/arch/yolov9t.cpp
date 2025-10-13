@@ -302,47 +302,19 @@ tensor RepConv(
     } else {
         // Training mode: PyTorch structure with conv1 (3x3) + conv2 (1x1)
         
-        // cv11: 3x3 convolution with k=3, p=1 (융합된 가중치)
-        // name이 이미 "model.4.cv2.0.m.0.cv1" 형태이므로 ".cv1"을 ".cv11"로 교체
         std::string cv11_name = name;
-        if (cv11_name.length() >= 4 && cv11_name.substr(cv11_name.length() - 4) == ".cv1") {
-            cv11_name = cv11_name.substr(0, cv11_name.length() - 4) + ".cv11";
+        // suffix가 .cv1이면 .cv1.conv1로 교체
+        tensor conv1_out = Conv(m, x, cv11_name + ".conv1.conv", c1, c2, k, s, p, false, debug);
+        
+        
+        tensor conv2_out = Conv(m, x, cv11_name + ".conv2.conv", c1, c2, 1, s, (p-k)/2, false, debug);  // stride, pad=1, dilate=1
+        
+        // id_out
+        if (bn){
+            printf("batchnorm 처리해야함\n");
         }
-        
-        // 직접 가중치 로드하여 convolution 수행
-        tensor_name old_prefix = m.prefix;
-        m.prefix = tensor_name(cv11_name.c_str());
-        tensor conv1_weight = m.weights("weight");
-        tensor conv1_bias = m.weights("bias");
-        
-        // Apply convolution for conv1 (3x3)
-        tensor conv1_out = conv_2d(m, x, s, 1, 1);  // stride, pad=1, dilate=1
-        conv1_out = ggml_add(m, conv1_out, conv1_bias);
-        
-        // cv12: 1x1 convolution with k=1, p=0 (융합된 가중치)
-        std::string cv12_name = name;
-        if (cv12_name.length() >= 4 && cv12_name.substr(cv12_name.length() - 4) == ".cv1") {
-            cv12_name = cv12_name.substr(0, cv12_name.length() - 4) + ".cv12";
-        }
-        
-        m.prefix = tensor_name(cv12_name.c_str());
-        tensor conv2_weight = m.weights("weight");
-        tensor conv2_bias = m.weights("bias");
-        
-        // Apply convolution for conv2 (1x1)
-        tensor conv2_out = conv_2d(m, x, s, 0, 1);  // stride, pad=0, dilate=1
-        conv2_out = ggml_add(m, conv2_out, conv2_bias);
-        
-        // Restore prefix
-        m.prefix = old_prefix;
-        
         // Add conv1 + conv2
         output = ggml_add(m, conv1_out, conv2_out);
-        
-        // Add identity if conditions are met (bn=true and c2==c1 and s==1)
-        if (bn && c2 == c1 && s == 1) {
-            output = ggml_add(m, output, x); // Add identity
-        }
         
         // Apply activation
         if (act) {
@@ -607,8 +579,10 @@ tensor SPPELAN(model_ref m, tensor x, std::string const& name, int c1, int c2, i
     // if (!ggml_is_contiguous(cv4)) {
     //     cv4 = ggml_cont(m, cv4);
     // }
-    tensor tensors[4] = { cv1_out, cv2, cv3, cv4 };
-    tensor y = ggml_concat_n(m, tensors, 4, 0); // Channel dimension concat in CWHN
+    // tensor tensors[4] = { cv1_out, cv2, cv3, cv4 };
+    tensor y = ggml_concat(m, cv1_out, cv2, 0); // Channel dimension concat in CWHN
+    y = ggml_concat(m, y, cv3, 0);
+    y = ggml_concat(m, y, cv4, 0);
     // printf("After concat: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
         //    (int)y->ne[0], (int)y->ne[1], (int)y->ne[2], (int)y->ne[3]);
     // y = contiguous_2d_to_cwhn(m, y);
@@ -646,6 +620,7 @@ tensor Concat(model_ref m, tensor a, tensor b, int axis, bool debug) {
     output = ggml_cont(m, output); // Ensure contiguous memory
     return output;
 }
+
 // YOLOv9t backbone implementation (matching Python structure)
 // std::vector<tensor> yolov9t_backbone(model_ref m, tensor x) {
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
@@ -770,167 +745,224 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     // return {x15, x18, x21};
     return features;
 }
+/*
+
+*/
+
 
 // Convert distance predictions to bounding boxes
+/*pytorch Code
+def dist2bbox(distance:Tensor, anchor_points:Tensor, xywh:bool=True, dim:int=-1) -> Tensor:
+    """Transform distance(ltrb) to box(xywh or xyxy)."""
+    lt, rb = torch.split(distance, 2, dim)
+    x1y1 = anchor_points - lt
+    x2y2 = anchor_points + rb
+    if xywh:
+        c_xy = (x1y1 + x2y2) / 2
+        wh = x2y2 - x1y1
+        return torch.concatenate((c_xy, wh), dim)  # xywh bbox
+    return torch.concatenate((x1y1, x2y2), dim)  # xyxy bbox
+*/
 tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh = true) {
-    // distance: [batch, 4, num_anchors]
-    // anchor_points: [num_anchors, 2]
-
-    // Split distance into left-top and right-bottom
-    int64_t batch = distance->ne[2];
-    int64_t num_anchors = distance->ne[0];
-
-    // lt = distance[:, :2]  (left-top)
-    tensor lt = ggml_view_3d(
-        m, distance, num_anchors, 2, batch, distance->nb[0], distance->nb[1], 0);
-
-    // rb = distance[:, 2:]  (right-bottom)
-    tensor rb = ggml_view_3d(
-        m, distance, num_anchors, 2, batch, distance->nb[0], distance->nb[1], 2 * distance->nb[1]);
-
+    // PyTorch: distance [..., 4], anchor_points [..., 2]
+    // GGML:    distance [4, ..., batch], anchor_points [2, ..., batch]
+    
+    GGML_ASSERT(distance->ne[0] == 4);
+    GGML_ASSERT(anchor_points->ne[0] == 2);
+    
+    // Split distance into lt (first 2) and rb (last 2) along dimension 0
+    tensor lt = ggml_view_4d(m, distance, 
+        2, distance->ne[1], distance->ne[2], distance->ne[3],
+        distance->nb[1], distance->nb[2], distance->nb[3], 
+        0);
+    
+    tensor rb = ggml_view_4d(m, distance,
+        2, distance->ne[1], distance->ne[2], distance->ne[3],
+        distance->nb[1], distance->nb[2], distance->nb[3], 
+        2 * distance->nb[0]);  // offset by 2 elements in first dimension
+    
     // x1y1 = anchor_points - lt
     tensor x1y1 = ggml_sub(m, anchor_points, lt);
-
+    
     // x2y2 = anchor_points + rb
     tensor x2y2 = ggml_add(m, anchor_points, rb);
-
+    
     if (xywh) {
-        // Convert to center format
         // c_xy = (x1y1 + x2y2) / 2
         tensor c_xy = ggml_scale(m, ggml_add(m, x1y1, x2y2), 0.5f);
-
+        
         // wh = x2y2 - x1y1
         tensor wh = ggml_sub(m, x2y2, x1y1);
-
-        // Concatenate [c_xy, wh]
-        return ggml_concat(m, c_xy, wh, 1);
+        
+        // Concatenate [c_xy, wh] along dimension 0
+        return ggml_concat(m, c_xy, wh, 0);
     } else {
         // Return xyxy format
-        return ggml_concat(m, x1y1, x2y2, 1);
+        return ggml_concat(m, x1y1, x2y2, 0);
     }
 }
-
 
 // DFL (Distribution Focal Loss) layer implementation
 tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug) {
-    // PyTorch DFL forward equivalent
-    // Input : [4*reg_max(64), 8400, 1, 1]
+    // PyTorch DFL forward equivalent (softmax over bins + expected value)
+    // Input: x [4*reg_max, A, 1, 1] in CWHN where A = H*W
     if (debug) {
         printf("x shape: [%d,%d,%d,%d]\n", (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }
-    int64_t C = x->ne[0];
-    int64_t H = x->ne[1];
-    int64_t W = x->ne[2];
-    int64_t N = x->ne[3];
-
-    //[64, 8400, 1, 1] -> [64, 4, 16, 8400]
-    tensor reshaped = ggml_reshape_4d(m, x, reg_max, H, C/reg_max, N);
-    reshaped = ggml_cont(m, reshaped);
-    if (debug) {
-        printf("reshaped shape: [%d,%d,%d,%d]\n", (int)reshaped->ne[0], (int)reshaped->ne[1], (int)reshaped->ne[2], (int)reshaped->ne[3]);
-    }
-
-    // [8400, 64, 1, 1] -> [8400, 4, 16, 1]
-    tensor permuted = ggml_permute(m, reshaped, 0, 2, 1, 3);
-    permuted = ggml_cont(m, permuted);
-    if (debug) {
-        printf("permuted shape: [%d,%d,%d,%d]\n", (int)permuted->ne[0], (int)permuted->ne[1], (int)permuted->ne[2], (int)permuted->ne[3]);
-    }
-
-    // Softmax over reg_max dimension
-    tensor softmaxed = ggml_soft_max(m, permuted);
-    softmaxed = ggml_cont(m, softmaxed);
-    if (debug) {
-        printf("softmaxed shape: [%d,%d,%d,%d]\n", (int)softmaxed->ne[0], (int)softmaxed->ne[1], (int)softmaxed->ne[2], (int)softmaxed->ne[3]);
-    }
+    // x(box): [reg_max*4, num_anchors, 1, 1]
+    // Split into 4 coordinates, apply softmax on reg_max bins, then weighted sum
+    // Output: [4, num_anchors, 1, 1]
     
-    // Set prefix to the layer name so conv_2d can find "weight" and "bias"
-    std::string weight_name = "detect.dfl.conv";
-    m.prefix = tensor_name(weight_name.c_str());
-    tensor weight = m.weights("weight");
-    tensor weights_conv = conv_2d(m, softmaxed);
-    weights_conv = ggml_cont(m, weights_conv);
-    return weights_conv;
+    int64_t num_anchors = x->ne[1];
+    
+    // Reshape: [reg_max, 4, num_anchors, 1]
+    tensor reshaped = ggml_reshape_4d(m, x, reg_max, 4, num_anchors, 1);
+    
+    // Softmax along reg_max dimension (dim 0)
+    tensor softmaxed = ggml_soft_max_ext(m, reshaped, nullptr, 1.0f, 0.0f);
+    
+    // Create projection weights [0, 1, 2, ..., reg_max-1]
+    tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
+    tensor_data proj_data = tensor_alloc(proj);
+    auto proj_ptr = proj_data.as_f32();
+    for (int i = 0; i < reg_max; ++i) {
+        proj_ptr[i] = (float)i;
+    }
+    transfer_to_backend(proj_data);
+    
+    // Reshape for broadcasting: [reg_max, 1, 1, 1]
+    proj = ggml_reshape_4d(m, proj, reg_max, 1, 1, 1);
+    
+    // Weighted sum: element-wise multiply and sum along dim 0
+    tensor weighted = ggml_mul(m, softmaxed, proj);
+    
+    // Sum along reg_max dimension
+    tensor result = ggml_sum_rows(m, weighted);
+    
+    // Result: [4, num_anchors, 1, 1]
+    return result;
 }
+
 DetectOutput detect_forward(model_ref m, 
                             std::vector<tensor> features, 
                             std::vector<int> ch, 
-                            // std::string base_name, 
                             int nc,
                             bool training) {
     int reg_max = 16; // DFL bins
-    int c2 = std::max({16, 64 / 4, reg_max * 4});
-    int c3 = std::max(64, std::min(nc, 100));
+    int c2 = std::max({16, ch[0] / 4, reg_max * 4});
+    int c3 = std::max(ch[0], std::min(nc, 100));
     DetectOutput out;
+
+    std::string reg_base = std::string("detect.cv2");
+    std::string cls_base = std::string("detect.cv3");
+
     for (size_t i = 0; i < features.size(); ++i) {
-        std::string base_name = std::to_string(i);
-        // [cv2] Regression head: Conv -> Conv -> 1x1
-        std::string reg_base = std::string("detect.cv2.") + base_name;
-        tensor r0 = Conv(m, features[i], reg_base + ".0", ch[i], c2, 3, 1, -1, true, false);
-        tensor r1 = Conv(m, r0,       reg_base + ".1", c2, c2, 3, 1, -1, true, false);
-        tensor_name old_prefix = m.prefix;
-        m.prefix = tensor_name((reg_base + ".2").c_str());
-        tensor r2 = conv_2d(m, r1);
+        std::string idx_str = std::to_string(i);
+        // Regression head: two convs, second outputs 4*reg_max channels
+        tensor r0 = Conv(m, features[i], reg_base + ".0." + std::to_string(i), ch[i], c2, 3, 1, -1, true, false);
+        tensor r1 = Conv(m, r0,          reg_base + ".1." + std::to_string(i), c2, c2, 3, 1, -1, true, false);
+        tensor r2 = conv_2d(m[std::string(reg_base + ".2." + idx_str).c_str()], r1, 1, 0, 1);  // stride=1, pad=0, dilate=1
+
         if (!ggml_is_contiguous(r2)) r2 = ggml_cont(m, r2);
-        // 64, 80, 80, 1
 
-        // [cv3] Classification head: Conv -> Conv -> 1x1
-        std::string cls_base = std::string("detect.cv3.") + base_name;
-        // printf("features shape: [%d,%d,%d,%d]\n", (int)features->ne[0], (int)features->ne[1], (int)features->ne[2], (int)features->ne[3]);
-        tensor c0 = Conv(m, features[i], cls_base + ".0", ch[i], c3, 3, 1, -1, true, false);
-        // printf("c0 shape: [%d,%d,%d,%d]\n", (int)c0->ne[0], (int)c0->ne[1], (int)c0->ne[2], (int)c0->ne[3]);
-        tensor c1 = Conv(m, c0,       cls_base + ".1", c3, c3, 3, 1, -1, true, false);
-        // printf("c1 shape: [%d,%d,%d,%d]\n", (int)c1->ne[0], (int)c1->ne[1], (int)c1->ne[2], (int)c1->ne[3]);
-        m.prefix = tensor_name((cls_base + ".2").c_str());
-        tensor c2_out = conv_2d(m, c1);
-        // 80, 80, 80, 1
-        // printf("c2_out shape: [%d,%d,%d,%d]\n", (int)c2_out->ne[0], (int)c2_out->ne[1], (int)c2_out->ne[2], (int)c2_out->ne[3]);
-        if (!ggml_is_contiguous(c2_out)) {
-            c2_out = ggml_cont(m, c2_out);
-        }
-        // restore prefix
-        m.prefix = old_prefix;
+        // Classification head: two convs, second outputs nc channels
+        tensor c0 = Conv(m, features[i], cls_base + ".0." + std::to_string(i), ch[i], c3, 3, 1, -1, true, false);
+        tensor c1 = Conv(m, c0,          cls_base + ".1." + std::to_string(i), c3, c3, 3, 1, -1, true, false);
+        tensor c2 = conv_2d(m[std::string(cls_base + ".2." + idx_str).c_str()], c1, 1, 0, 1);  // stride=1, pad=0, dilate=1
+        if (!ggml_is_contiguous(c2)) c2 = ggml_cont(m, c2);
 
-        // Combine raw outputs along channel dim
-        tensor combined = Concat(m, r2, c2_out, 0);
-        // 144, 80, 80, 1
-        int64_t C = combined->ne[0] ;
-        int64_t H = combined->ne[1];
-        int64_t W = combined->ne[2];
-        int64_t N = combined->ne[3];
-        printf("combined shape: [%d,%d,%d,%d]\n", (int)combined->ne[0], (int)combined->ne[1], (int)combined->ne[2], (int)combined->ne[3]); // [144, 80, 80, 1] = [C, H, W, N]
-        // C H W N -> C, H*W, 1, N
-        tensor flat = ggml_reshape_3d(m, combined, C, H*W, N);
-        printf("flat shape: [%d,%d,%d,%d]\n", (int)flat->ne[0], (int)flat->ne[1], (int)flat->ne[2], (int)flat->ne[3]); // [144, 80, 80, 1] = [C, H, W, N]
-        flat = ggml_cont(m, flat);
-        out.raw_outputs.push_back(flat);
-        
+        // Combine along channel dim and flatten spatial dims to anchors
+        tensor combined = Concat(m, r2, c2, 0);
+        out.raw_outputs.push_back(combined);
     }
+
     if (training) {
         out.predictions = nullptr;
         return out;
     }
+    std::vector<tensor> reshaped_outputs;
     
-    // Complete Detect head forward pass
-    printf("out.raw_outputs size: [%d]\n", (int)out.raw_outputs.size());
-    // out.raw_outputs[0] shape: [144,6400,1,1]
-    // out.raw_outputs[1] shape: [144,1600,1,1]
-    // out.raw_outputs[2] shape: [144,400,1,1]
-    // Concat -> [144, 8400, 1, 1]
-    tensor tensors_to_concat[3] = {out.raw_outputs[0], out.raw_outputs[1], out.raw_outputs[2]};
-    tensor concatenated_output = ggml_concat_n(m, tensors_to_concat, out.raw_outputs.size(), 1);
-    concatenated_output = ggml_cont(m, concatenated_output);
-    printf("concatenated_output shape: [%d,%d,%d,%d]\n", (int)concatenated_output->ne[0], (int)concatenated_output->ne[1], (int)concatenated_output->ne[2], (int)concatenated_output->ne[3]);
-    // [144, 8400, 1, 1] split to [[64, 8400, 1, 1], [80, 8400, 1, 1]]
-    int64_t box_channels = reg_max * 4;
-    int64_t cls_channels = nc;
-    tensor box = ggml_view_3d(m, concatenated_output, box_channels, concatenated_output->ne[1], concatenated_output->ne[2], concatenated_output->nb[1], concatenated_output->nb[2], 0);
-    box = ggml_cont(m, box);
-    printf("box shape: [%d,%d,%d,%d]\n", (int)box->ne[0], (int)box->ne[1], (int)box->ne[2], (int)box->ne[3]);
-    tensor cls = ggml_view_3d(m, concatenated_output, cls_channels, concatenated_output->ne[1], concatenated_output->ne[2], concatenated_output->nb[1], concatenated_output->nb[2], box_channels * concatenated_output->nb[1]);
-    cls = ggml_cont(m, cls);
-    printf("cls shape: [%d,%d,%d,%d]\n", (int)cls->ne[0], (int)cls->ne[1], (int)cls->ne[2], (int)cls->ne[3]);
-    out.predictions = dfl_forward(m, box, reg_max);
+    for (size_t i = 0; i < out.raw_outputs.size(); ++i) {
+        tensor x = out.raw_outputs[i];
+        auto ne = nelements(x);  // Get raw dimensions
+        
+        int64_t C, H, W;
+        if (m.flags & model_build_flag::cwhn) {
+            C = ne[0]; W = ne[1]; H = ne[2];
+            //N = ne[3];
+        } else {
+            W = ne[0]; H = ne[1]; C = ne[2]; 
+            //N = ne[3];
+        }
+        
+        // Ensure CWHN layout and flatten spatial dimensions
+        if (!(m.flags & model_build_flag::cwhn)) {
+            x = permute_whcn_to_cwhn(m, x);
+        }
+        
+        // Flatten: [C, H*W, 1, 1]
+        tensor flat = ggml_reshape_4d(m, x, C, H * W, 1, 1);
+        flat = ggml_cont(m, flat);
+        reshaped_outputs.push_back(flat);
+    }
+    
+    // Concat along anchor dimension (dim 1): [4*reg_max + nc, total_anchors, 1, 1]
+    std::array<tensor, GGML_MAX_SRC> concat_array = {};
+    for (size_t i = 0; i < reshaped_outputs.size(); ++i) {
+        concat_array[i] = reshaped_outputs[i];
+    }
+    tensor x_cat = concat(m, concat_array, 1);
+    int64_t total_channels = x_cat->ne[0];  // 4*reg_max + nc
+    int64_t total_anchors = x_cat->ne[1];
+    
+    // 2. Generate anchors and strides
+    std::vector<float> strides_vec;
+    for (size_t i = 0; i < features.size(); ++i) {
+        strides_vec.push_back(8.0f * std::pow(2.0f, (float)i)); // [8, 16, 32]
+    }
+    auto anchor_result = make_anchors(m, features, strides_vec, 0.5f);
+    tensor anchor_points = anchor_result.first;
+    tensor stride_tensor = anchor_result.second;
+    
+    // 3. Split into box and cls
+    // box: [reg_max*4, total_anchors, 1, 1]
+    tensor box = ggml_view_4d(m, x_cat,
+        reg_max * 4, total_anchors, 1, 1,
+        x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
+        0);
+    
+    // cls: [nc, total_anchors, 1, 1]
+    tensor cls = ggml_view_4d(m, x_cat,
+        nc, total_anchors, 1, 1,
+        x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
+        reg_max * 4 * x_cat->nb[0]);
+    
+    // 4. Apply DFL to box predictions
+    // DFL: [reg_max*4, total_anchors] -> [4, total_anchors]
+    tensor dfl_output = dfl_forward(m, box, reg_max);
+    
+    // 5. Decode bounding boxes
+    // anchor_points is [2, total_anchors], need to reshape for dist2bbox
+    // dist2bbox expects anchor_points compatible with bbox operations
+    tensor dbox = dist2bbox(m, dfl_output, anchor_points, false); // xyxy format
+    
+    // 6. Multiply by strides
+    // stride_tensor: [1, total_anchors] -> broadcast multiply
+    // Reshape to [1, total_anchors, 1, 1] for proper broadcasting
+    tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
+    
+    // Broadcast stride to match dbox shape [4, total_anchors, 1, 1]
+    dbox = ggml_mul(m, dbox, strides_bc);
+    
+    // 7. Apply sigmoid to class predictions
+    cls = ggml_sigmoid(m, cls);
+    
+    // 8. Concatenate dbox and cls: [4 + nc, total_anchors, 1, 1]
+    tensor predictions = concat(m, {dbox, cls}, 0);
+    
+    out.predictions = predictions;
+    out.anchor_points = anchor_points;
+    out.strides = stride_tensor;
     
     return out;
 }
@@ -946,8 +978,7 @@ DetectOutput yolov9t_forward(model_ref m, tensor x) {
     
     
     printf("features size: [%d]\n", (int)features.size());
-    DetectOutput outputs = {0};
-
+    
     // channels for N3, N4, N5
     std::vector<int> channels = {64, 96, 128};
     // std::string base_name = std::to_string(i);
@@ -992,9 +1023,120 @@ std::vector<std::string> const& get_coco_class_names() {
         "hair drier",    "toothbrush"};
     return class_names;
 }
-
 /*
 
+def make_anchors(feats:Tensor, strides:Tensor, grid_cell_offset:float=0.5) -> Tuple[Tensor, Tensor]:
+    """Generate anchors from features."""
+    anchor_points, stride_tensor = [], []
+    assert feats is not None
+    dtype, device = feats[0].dtype, feats[0].device
+    for i, stride in enumerate(strides):
+        _, _, h, w = feats[i].shape
+        sx = torch.arange(end=w, device=device, dtype=dtype) + grid_cell_offset  # shift x
+        sy = torch.arange(end=h, device=device, dtype=dtype) + grid_cell_offset  # shift y
+        sy, sx = torch.meshgrid(sy, sx, indexing='ij')
+        anchor_points.append(torch.stack((sx, sy), -1).reshape(-1, 2))
+        stride_tensor.append(torch.full((h * w, 1), fill_value=stride, dtype=dtype, device=device))
+    return torch.concatenate(anchor_points), torch.concatenate(stride_tensor)
+
+*/
+
+// struct anchor_result {
+//     tensor anchor_points;  // [total_anchors, 2]
+//     tensor stride_tensor;  // [total_anchors, 1]
+// };
+
+std::pair<tensor, tensor> make_anchors(
+    model_ref m, 
+    std::vector<tensor> const& features,
+    std::vector<float> const& strides,
+    float grid_cell_offset) {
+    
+    GGML_ASSERT(features.size() == strides.size());
+    GGML_ASSERT(!features.empty());
+    
+    std::vector<tensor_data> anchor_points_list;
+    std::vector<tensor_data> stride_tensor_list;
+    
+    int64_t total_anchors = 0;
+    
+    // Calculate total number of anchors
+    for (size_t i = 0, total_anchors = 0; i < features.size(); ++i) {
+        auto [c, w, h, n] = nelements_whcn(m, features[i]);
+        total_anchors += h * w;
+    }
+    
+    // Generate anchor points and stride tensors for each feature level
+    for (size_t i = 0; i < features.size(); ++i) {
+        auto [c, w, h, n] = nelements_whcn(m, features[i]);
+        float stride = strides[i];
+        int64_t num_points = h * w;
+        
+        // Create anchor points [num_points, 2]
+        tensor anchor_t = ggml_new_tensor_2d(m, GGML_TYPE_F32, 2, num_points);
+        tensor_data anchor_data = tensor_alloc(anchor_t);
+        auto anchor_ptr = anchor_data.as_f32();
+        
+        // Create stride tensor [num_points, 1]
+        tensor stride_t = ggml_new_tensor_2d(m, GGML_TYPE_F32, 1, num_points);
+        tensor_data stride_data = tensor_alloc(stride_t);
+        auto stride_ptr = stride_data.as_f32();
+        
+        // Generate meshgrid with offset
+        int idx = 0;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                float sx = x + grid_cell_offset;
+                float sy = y + grid_cell_offset;
+                
+                // anchor_points: [sx, sy]
+                anchor_ptr[idx * 2 + 0] = sx;
+                anchor_ptr[idx * 2 + 1] = sy;
+                
+                // stride_tensor: [stride]
+                stride_ptr[idx] = stride;
+                
+                ++idx;
+            }
+        }
+        
+        anchor_points_list.push_back(std::move(anchor_data));
+        stride_tensor_list.push_back(std::move(stride_data));
+    }
+    
+    // Concatenate all anchor points
+    tensor anchor_points;
+    if (features.size() == 1) {
+        anchor_points = anchor_points_list[0].x;
+        transfer_to_backend(anchor_points_list[0]);
+    } else {
+        std::array<tensor, GGML_MAX_SRC> anchor_tensors = {};
+        for (size_t i = 0; i < anchor_points_list.size(); ++i) {
+            anchor_tensors[i] = anchor_points_list[i].x;
+            transfer_to_backend(anchor_points_list[i]);
+        }
+        anchor_points = concat(m, anchor_tensors, 1); // concat along dimension 1 (num_points)
+    }
+    
+    // Concatenate all stride tensors
+    tensor stride_tensor;
+    if (features.size() == 1) {
+        stride_tensor = stride_tensor_list[0].x;
+        transfer_to_backend(stride_tensor_list[0]);
+    } else {
+        std::array<tensor, GGML_MAX_SRC> stride_tensors = {};
+        for (size_t i = 0; i < stride_tensor_list.size(); ++i) {
+            stride_tensors[i] = stride_tensor_list[i].x;
+            transfer_to_backend(stride_tensor_list[i]);
+        }
+        stride_tensor = concat(m, stride_tensors, 1); // concat along dimension 1 (num_points)
+    }
+    
+    return std::make_pair(anchor_points, stride_tensor);
+}
+
+
+/*
 def check_img_size(imgsz, s=32, floor=0):
     def make_divisible(x, divisor):
         # Returns nearest x divisible by divisor

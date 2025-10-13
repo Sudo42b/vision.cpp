@@ -29,20 +29,14 @@ struct detected_obj {
     float class_confidence; // Class confidence
 };
 
-// Make anchors for each scale
-struct AnchorGrid {
-    tensor anchors;
-    tensor strides;
-    int num_anchors;
-};
-
 // Complete Detect head forward pass
 struct DetectOutput {
-    tensor predictions;  // [batch, 4+nc, num_anchors]
-    std::vector<tensor> raw_outputs;  // For training
+    std::vector<tensor> raw_outputs;
     std::map<int, tensor> features;   // Selected backbone/neck features exposed for dumping
+    tensor predictions;  // [batch, 4+nc, num_anchors]
+    tensor anchor_points;  // 추가
+    tensor strides;        // 추가
 };
-
 // Image preprocessing for YOLOv9t
 struct PreprocessResult {
     tensor input_tensor;
@@ -111,12 +105,14 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x);
 // Detection head components
 tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug=false);
 
-AnchorGrid make_anchors(model_ref m, const std::vector<tensor> features, 
-                        const std::vector<float> strides);
+std::pair<tensor, tensor> make_anchors(
+    model_ref m, 
+    std::vector<tensor> const& features,
+    std::vector<float> const& strides,
+    float grid_cell_offset=0.5f);
 tensor dist2bbox(model_ref m, tensor dists, tensor anchors, bool xywh);
-// Detect head for a single scale feature map.
-// base_name is the scale index as string: "0", "1", or "2" to select weights detect.cv{2,3}.<idx>.*
-DetectOutput detect_forward(model_ref m, tensor features, int ch, std::string base_name, int nc, bool training);
+// Detect head over multi-scale features
+DetectOutput detect_forward(model_ref m, std::vector<tensor> features, std::vector<int> ch, int nc, bool training);
 // Main forward pass
 DetectOutput yolov9t_forward(model_ref m, tensor x);
 
