@@ -93,6 +93,14 @@ class Writer(GGUFWriter):
             self.add_array(f"{self.arch}.conv2d_weights", self.conv2d_weights)
 
 
+def load_model(path: Path) -> dict[str, Tensor]:
+    if path.suffix in [".safetensors", ".safetensor"]:
+        weights = safetensors.safe_open(path, "pt")
+        return {k: weights.get_tensor(k) for k in weights.keys()}
+    else:
+        return torch.load(path, map_location="cpu", weights_only=True)
+
+
 batch_norm_eps = 1e-5
 
 
@@ -349,20 +357,43 @@ def convert_depth_anything(input_filepath: Path, writer: Writer):
     writer.add_license("apache-2.0")
     writer.set_tensor_layout_default(TensorLayout.nchw)
 
-    model: dict[str, Tensor] = torch.load(input_filepath, map_location="cpu", weights_only=True)
+    model: dict[str, Tensor] = load_model(input_filepath)
+
+    if "pretrained.cls_token" in model:
+        print("The converter is written for the transformers (.safetensors) version of the model.")
+        print("The original weights (.pth) are currently not supported.")
+        raise ValueError("Weights not supported")
+
+    shape = model["backbone.embeddings.patch_embeddings.projection.weight"].shape
+    writer.add_int32("dino.patch_size", shape[2])
+    writer.add_int32("dino.embed_dim", shape[0])
+    writer.add_int32("depthanything.image_size", 518)
+    match shape[0]:
+        case 384:  # Small
+            writer.add_int32("dino.n_heads", 6)
+            writer.add_int32("dino.n_layers", 12)
+            writer.add_array("depthanything.feature_layers", [2, 5, 8, 11])
+        case 768:  # Base
+            writer.add_int32("dino.n_heads", 12)
+            writer.add_int32("dino.n_layers", 12)
+            writer.add_array("depthanything.feature_layers", [2, 5, 8, 11])
+        case 1024:  # Large
+            writer.add_int32("dino.n_heads", 16)
+            writer.add_int32("dino.n_layers", 24)
+            writer.add_array("depthanything.feature_layers", [4, 11, 17, 23])
 
     for key, tensor in model.items():
         name = key
 
         if is_conv_2d(name, tensor):
-            if "patch_embed" in name or "projects" in name:
+            if "patch_embeddings" in name or ("projection" in name and "fusion" not in name):
                 tensor = conv_2d_to_nhwc(tensor)
-            elif "resize_layers.0" in name or "resize_layers.1" in name:
+            elif "0.resize" in name or "1.resize" in name:
                 pass  # ConvTranspose2D, don't change layout
             else:
                 tensor = writer.convert_tensor_2d(tensor)
 
-        if "pos_embed" in name or "cls_token" in name:
+        if "position_embeddings" in name or "cls_token" in name:
             writer.add_tensor(name, tensor, "f32")
             continue
 

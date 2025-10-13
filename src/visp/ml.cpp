@@ -200,6 +200,18 @@ int model_file::get_int(char const* key_name) const {
     return gguf_get_val_i32(gguf.get(), key(key_name));
 }
 
+void model_file::get_array(char const* key_name, span<int> out_values) const {
+    int64_t key_id = key(key_name);
+    if (gguf_get_arr_n(gguf.get(), key_id) != out_values.size()) {
+        throw except("Array size mismatch for key '{}' in model file {}", key_name, path);
+    }
+    if (gguf_get_arr_type(gguf.get(), key_id) != GGUF_TYPE_INT32) {
+        throw except("Array type mismatch for key '{}' in model file {}, expected int32", key_name, path);
+    }
+    auto ptr = (int const*)gguf_get_arr_data(gguf.get(), key_id);
+    std::copy(ptr, ptr + out_values.size(), out_values.data());
+}
+
 std::string_view model_file::arch() const {
     return get_string("general.architecture");
 }

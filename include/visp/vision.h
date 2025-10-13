@@ -176,6 +176,7 @@ struct depthany_params {
     int image_size = 518;
     int image_multiple = 14;
     i32x2 image_extent = {518, 518};
+    float max_depth = 1;
     std::array<int, 4> feature_layers = {2, 5, 8, 11};
     dino_params dino;
 };

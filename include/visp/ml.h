@@ -88,6 +88,7 @@ struct model_file {
     VISP_API int64_t key(char const* name) const;
     VISP_API int get_int(char const* name) const;
     VISP_API std::string_view get_string(char const* name) const;
+    VISP_API void get_array(char const* name, span<int> out_values) const;
 };
 
 // Opens a .gguf file and reads its contents into memory.
@@ -303,11 +304,12 @@ VISP_API swin_params swin_detect_params(model_file const&);
 
 struct dino_params {
     int patch_size = 16;
-    int embed_dim = 384;
-    int n_blocks = 12;
-    int n_heads = 6;
-    int mlp_ratio = 4;
+    int embed_dim = 768;
+    int n_layers = 12;
+    int n_heads = 12;
 };
+
+VISP_API dino_params dino_detect_params(model_file const&);
 
 VISP_API std::vector<tensor> dino_get_intermediate_layers(
     model_ref, tensor image, std::span<int const> layers, dino_params const&);

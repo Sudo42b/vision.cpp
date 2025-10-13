@@ -438,14 +438,14 @@ DEF(dino_attention)(model_ref m, span<tensor> input, param_dict const& p) {
 DEF(dino_block)(model_ref m, span<tensor> input, param_dict const& p) {
     dino_params params{};
     params.n_heads = p.get("n_heads", 8);
-    return {dino::block(m, input[0], params)};
+    return {dino::layer(m, input[0], params)};
 }
 
 DEF(dino_intermediate_layers)(model_ref m, span<tensor> input, param_dict const& p) {
     dino_params params{};
     params.patch_size = 4;
     params.embed_dim = 6;
-    params.n_blocks = 4;
+    params.n_layers = 4;
     params.n_heads = 3;
     auto layers = std::array{0, 1, 2, 3};
     return dino::get_intermediate_layers(m, input[0], layers, params);
@@ -467,7 +467,9 @@ DEF(depthany_feature_fusion)(model_ref m, span<tensor> input, param_dict const& 
 DEF(depthany_head)(model_ref m, span<tensor> input, param_dict const& p) {
     int patch_w = p.get("patch_w", 8);
     int patch_h = p.get("patch_h", 8);
-    return {dpt::head(m, input, patch_w, patch_h)};
+    tensor fused = dpt::neck(m, input, patch_w, patch_h);
+    tensor depth = dpt::head(m, fused, patch_w * 14, patch_h * 14, 1.0f);
+    return {depth};
 }
 
 //

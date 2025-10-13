@@ -101,7 +101,7 @@ bench_timings benchmark_depth_anything(path model_path, backend_device& backend)
     image_data input_data = depthany_process_input(input, model.params);
 
     depthany_compute(model, input);
-    return run_benchmark(model.graph, backend, 8, {{model.input, input_data}});
+    return run_benchmark(model.graph, backend, 12, {{model.input, input_data}});
 }
 
 bench_timings benchmark_migan(path model_path, backend_device& backend) {
@@ -184,7 +184,7 @@ bench_result benchmark_model(
         result.time = benchmark_birefnet(model_path, backend);
 
     } else if (arch == "depthany") {
-        path model_path = select_model(model, "DepthAnythingV2-Small-F16.gguf");
+        path model_path = select_model(model, "Depth-Anything-V2-Small-F16.gguf");
         result.time = benchmark_depth_anything(model_path, backend);
 
     } else if (arch == "migan") {

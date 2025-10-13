@@ -12,7 +12,7 @@ tensor prepare_tokens(model_ref m, tensor x, int patch_size);
 tensor layer_scale(model_ref m, tensor x);
 tensor mlp(model_ref m, tensor x);
 tensor attention(model_ref m, tensor x, int n_heads);
-tensor block(model_ref m, tensor x, dino_params const& p);
+tensor layer(model_ref m, tensor x, dino_params const& p);
 
 std::vector<tensor> get_intermediate_layers(
     model_ref m, tensor x, std::span<int const> layers, dino_params const& p);

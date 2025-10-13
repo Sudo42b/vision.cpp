@@ -7,7 +7,7 @@ namespace visp {
 namespace dino {
 
 tensor interpolate_pos_encoding(model_ref m, tensor x, int64_t w, int64_t h, int patch_size) {
-    tensor pos_embed = m.weights("pos_embed");
+    tensor pos_embed = m.weights("position_embeddings");
     int64_t n_patch = x->ne[1] - 1;
     int64_t n = pos_embed->ne[1] - 1;
     if (n_patch == n && w == h) {
@@ -30,7 +30,7 @@ tensor interpolate_pos_encoding(model_ref m, tensor x, int64_t w, int64_t h, int
 
 tensor prepare_tokens(model_ref m, tensor x, int patch_size) {
     auto [c, w, h, n] = nelements(x);
-    x = patch_embed(m["patch_embed"], x, patch_size);
+    x = patch_embed(m["patch_embeddings"], x, patch_size);
     x = ggml_reshape_3d(m, x, x->ne[0], x->ne[1] * x->ne[2], x->ne[3]);
 
     tensor cls_token = m.weights("cls_token");
@@ -45,7 +45,7 @@ tensor prepare_tokens(model_ref m, tensor x, int patch_size) {
 }
 
 tensor layer_scale(model_ref m, tensor x) {
-    return ggml_mul(m, x, m.weights("gamma"));
+    return ggml_mul(m, x, m.weights("lambda1"));
 }
 
 tensor mlp(model_ref m, tensor x) {
@@ -58,22 +58,21 @@ tensor mlp(model_ref m, tensor x) {
 tensor attention(model_ref m, tensor x, int n_heads) {
     auto [c, n, b, _] = nelements(x);
     float scale = 1.0f / std::sqrt(float(c) / float(n_heads));
+    bool flash_attn = bool(m.flags & model_build_flag::flash_attention);
+    ggml_type kv_type = flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
 
-    tensor qkv = linear(m["qkv"], x);
-    qkv = ggml_reshape_4d(m, qkv, c / n_heads, n_heads, 3, n * b);
-    qkv = ggml_cont(m, ggml_permute(m, qkv, 0, 1, 3, 2));
-
-    auto split = [=](tensor qkv, size_t index, ggml_type type, bool transpose = false) mutable {
-        tensor t = slice(m, qkv, {}, {}, {}, index);
-        t = ggml_reshape_4d(m, t, c / n_heads, n_heads, n, b);
-        t = transpose ? ggml_permute(m, t, 1, 2, 0, 3) : ggml_permute(m, t, 0, 2, 1, 3);
-        return ggml_cast(m, t, type);
+    auto split = [=](model_ref m, tensor x, ggml_type type, bool transpose = false) mutable {
+        x = linear(m, x);
+        x = ggml_reshape_4d(m, x, c / n_heads, n_heads, n, b);
+        x = transpose ? ggml_permute(m, x, 1, 2, 0, 3) : ggml_permute(m, x, 0, 2, 1, 3);
+        return ggml_cast(m, x, type);
     };
-    tensor q = split(qkv, 0, GGML_TYPE_F32);
-    tensor k = split(qkv, 1, GGML_TYPE_F16);
-    tensor v = split(qkv, 2, GGML_TYPE_F16, !(m.flags & model_build_flag::flash_attention));
 
-    if (m.flags & model_build_flag::flash_attention) {
+    tensor q = split(m["attention.query"], x, GGML_TYPE_F32);
+    tensor k = split(m["attention.key"], x, kv_type);
+    tensor v = split(m["attention.value"], x, kv_type, !flash_attn);
+
+    if (flash_attn) {
         x = ggml_flash_attn_ext(m, q, k, v, nullptr, scale, 0.0f, 0.0f);
     } else {
         tensor attn = ggml_mul_mat(m, k, q);
@@ -84,21 +83,21 @@ tensor attention(model_ref m, tensor x, int n_heads) {
     }
 
     x = ggml_reshape_3d(m, x, c, n, b);
-    x = linear(m["proj"], x);
+    x = linear(m["output.dense"], x);
     return named(m, x);
 }
 
-tensor block(model_ref m, tensor x, dino_params const& p) {
+tensor layer(model_ref m, tensor x, dino_params const& p) {
     tensor attn = x;
     attn = layer_norm(m["norm1"], attn, 1e-6f);
-    attn = attention(m["attn"], attn, p.n_heads);
-    attn = layer_scale(m["ls1"], attn);
+    attn = attention(m["attention"], attn, p.n_heads);
+    attn = layer_scale(m["layer_scale1"], attn);
     x = ggml_add(m, x, attn);
 
     tensor ffn = x;
     ffn = layer_norm(m["norm2"], ffn, 1e-6f);
     ffn = mlp(m["mlp"], ffn);
-    ffn = layer_scale(m["ls2"], ffn);
+    ffn = layer_scale(m["layer_scale2"], ffn);
     x = ggml_add(m, x, ffn);
 
     return named(m, x);
@@ -112,15 +111,15 @@ bool contains(std::span<const T> r, T const& value) {
 std::vector<tensor> get_intermediate_layers(
     model_ref m, tensor x, std::span<const int> layers, dino_params const& p) {
 
-    x = prepare_tokens(m, x, p.patch_size);
+    x = prepare_tokens(m["embeddings"], x, p.patch_size);
 
     std::vector<tensor> outputs;
-    model_ref blocks = m["blocks"];
-    for (int i = 0; i < p.n_blocks; ++i) {
-        x = block(blocks[i], x, p);
+    model_ref encoder = m["encoder.layer"];
+    for (int i = 0; i < p.n_layers; ++i) {
+        x = layer(encoder[i], x, p);
 
         if (contains(layers, i)) {
-            tensor out = layer_norm(m["norm"], x, 1e-6f);
+            tensor out = layer_norm(m["layernorm"], x, 1e-6f);
             ggml_format_name(out, "dino_layer_%d", i);
             ggml_build_forward_expand(m.graph, out);
             outputs.push_back(out);
@@ -134,6 +133,15 @@ std::vector<tensor> get_intermediate_layers(
 std::vector<tensor> dino_get_intermediate_layers(
     model_ref m, tensor x, std::span<const int> layers, dino_params const& p) {
     return dino::get_intermediate_layers(m, x, layers, p);
+}
+
+dino_params dino_detect_params(model_file const& file) {
+    dino_params p{};
+    p.patch_size = file.get_int("dino.patch_size");
+    p.embed_dim = file.get_int("dino.embed_dim");
+    p.n_heads = file.get_int("dino.n_heads");
+    p.n_layers = file.get_int("dino.n_layers");
+    return p;
 }
 
 } // namespace visp
