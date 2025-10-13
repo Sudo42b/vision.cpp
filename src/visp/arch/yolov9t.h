@@ -3,6 +3,8 @@
 #include "visp/image.h"
 #include "visp/ml.h"
 #include "visp/util.h"
+#include "visp/vision.h"
+
 #include <map>
 #include <array>
 #include <vector>
@@ -11,7 +13,7 @@ namespace visp::yolov9t {
 
 // YOLOv9t Parameters
 struct yolov9t_params {
-    float scale = 1.0/255.0f;
+    float scale = 1.0f;
     float offset = 0.0f;
     int num_classes = 80;
     int input_size = 640;
@@ -38,6 +40,7 @@ struct AnchorGrid {
 struct DetectOutput {
     tensor predictions;  // [batch, 4+nc, num_anchors]
     std::vector<tensor> raw_outputs;  // For training
+    std::map<int, tensor> features;   // Selected backbone/neck features exposed for dumping
 };
 
 // Image preprocessing for YOLOv9t
@@ -59,6 +62,8 @@ struct NMSParams {
 
 // functions
 
+float resize_longest_side(i32x2 extent, int target_longest_side);
+image_data yolov9t_process_input(image_view image, yolov9t_params const& p);
 // Detection parameters
 yolov9t_params yolov9t_detect_params(model_file const& file);
 // Core modules - actual layer implementations
@@ -163,4 +168,10 @@ void draw_detections(
     image_data& img,
     std::vector<detected_obj> const& detections,
     std::vector<std::string> const& class_names);
+
+// Utilities: save selected feature maps to text files using base path prefix
+void save_features_to_txt(DetectOutput const& out, char const* base_path, std::vector<int> const& keys = {});
+
+// Save preprocessed input (float32 RGB, CWHN tensor) to a text file
+void save_input_to_txt(tensor input, char const* filepath);
 } // namespace visp::yolov9t

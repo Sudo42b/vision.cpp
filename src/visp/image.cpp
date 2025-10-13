@@ -212,6 +212,9 @@ void image_save(image_view const& img, char const* filepath) {
 //
 // image conversion (uint8 <-> float32)
 
+// 각 픽셀별 src 위치(i_src), dst 위치(i), 변환 전후의 값을 출력하도록 수정
+#include <cstdio>
+
 template <typename Src, typename Dst>
 void convert(
     image_source<Src> src, image_target<Dst> dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {
@@ -220,10 +223,32 @@ void convert(
         for (int x = 0; x < dst.extent[0]; ++x) {
             i32x2 i = {x, y};
             i32x2 i_src = min(i + tile_offset, src.extent - i32x2{1, 1});
+            // auto src_val = src.load(i_src);
+            // auto dst_val = (src_val + offset) * scale;
+            
+            // src값과 dst값이 벡터 타입일 수도 있으므로, 지원하는 타입들에 대해 출력
+            // printf("dst[%d,%d] = (src[%d,%d] = ", i[0], i[1], i_src[0], i_src[1]);
+            // print_pixel(src_val);
+            // printf(") + offset) * scale = ");
+            // print_pixel(dst_val);
+            // printf("\n");
+            // dst.store(i, dst_val);
             dst.store(i, (src.load(i_src) + offset) * scale);
         }
     }
 }
+
+// pixel 타입마다 value를 print하는 helper 함수
+// float 단일 채널
+inline void print_pixel(float v) { printf("%g", v); }
+// uint8_t 단일 채널
+inline void print_pixel(uint8_t v) { printf("%u", v); }
+// f32x3(예: {r, g, b})
+inline void print_pixel(const f32x3& v) { printf("{%g,%g,%g}", v[0], v[1], v[2]); }
+inline void print_pixel(const u8x3& v) { printf("{%u,%u,%u}", v[0], v[1], v[2]); }
+// f32x4(예: {r, g, b, a})
+inline void print_pixel(const f32x4& v) { printf("{%g,%g,%g,%g}", v[0], v[1], v[2], v[3]); }
+inline void print_pixel(const u8x4& v) { printf("{%u,%u,%u,%u}", v[0], v[1], v[2], v[3]); }
 
 void image_u8_to_f32(
     image_view const& src, image_span const& dst, f32x4 offset, f32x4 scale, i32x2 tile_offset) {

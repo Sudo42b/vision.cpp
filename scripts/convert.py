@@ -559,7 +559,7 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
     writer.set_tensor_layout_default(TensorLayout.nchw)
 
     checkpoint = torch.load(input_filepath, map_location="cpu", weights_only=False)
-    
+
     # Extract state dict from checkpoint
     if isinstance(checkpoint, dict) and not any(k.startswith('model.') or k.startswith('detect.') for k in checkpoint.keys()):
         if 'model' in checkpoint:

@@ -1,5 +1,6 @@
 #include "util/math.h"
 #include "util/string.h"
+#include "visp/ml.h"
 #include "visp/vision.h"
 #include "visp/arch/yolov9t.h"
 #include "visp/nn.h"
@@ -31,6 +32,9 @@ struct cli_args {
 
     char const* composite = nullptr; // --composite
     int tile_size = -1;              // --tile
+    // Debug dump options
+    bool dump_all = false;               // --dump-all
+    std::vector<int> dump_keys;          // --dump-keys <k1> <k2> ...
 };
 
 void print_usage() {
@@ -159,6 +163,13 @@ cli_args cli_parse(int argc, char** argv) {
             r.composite = next_arg(argc, argv, i);
         } else if (arg == "--tile") {
             r.tile_size = parse_int(next_arg(argc, argv, i));
+        } else if (arg == "--dump-all") {
+            r.dump_all = true;
+        } else if (arg == "--dump-keys") {
+            auto keys = collect_args(argc, argv, i);
+            for (char const* k : keys) {
+                r.dump_keys.push_back(parse_int(k));
+            }
         } else if (arg.starts_with("-")) {
             throw except("Unknown argument: {}\n{}", arg, short_usage);
         }
@@ -553,11 +564,13 @@ void run_yolov9t(cli_args const& args) {
            (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
     
     timer t_preprocess;
-    image_data resized_image = letterbox(std::move(input_image), 
-                                    {params.input_size, params.input_size}, 
-                                    {114, 114, 114}, 
-                                    true, false, true, params.stride);
-    image_data processed_f32 = image_u8_to_f32(resized_image, image_format::rgb_f32, params.offset, params.scale);
+    // image_data resized_image = letterbox(std::move(input_image), 
+    //                                 {params.input_size, params.input_size}, 
+    //                                 {114, 114, 114}, 
+    //                                 true, false, true, params.stride);
+    // input_image convert to 0~1.0f
+    // image_data processed_f32 = image_u8_to_f32(input_image, image_format::rgb_f32, params.offset, params.scale);
+    image_data processed_f32 = yolov9t_process_input(input_image, params);
     
     printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
     printf("Preprocessing complete (%s)\n", t_preprocess.elapsed_str());
@@ -566,7 +579,7 @@ void run_yolov9t(cli_args const& args) {
     model_ref m(weights, graph);
     
     tensor input = compute_graph_input(m, GGML_TYPE_F32, 
-                                        {3, img_sz, img_sz, 1});
+                                        {3, img_sz, img_sz, 1}, "input");
     printf("Running YOLOv9t inference...\n");
     DetectOutput outputs = yolov9t_forward(m, input);
     // 그래프 완료
@@ -583,9 +596,44 @@ void run_yolov9t(cli_args const& args) {
     compute_graph_allocate(graph, backend);
                                         
     transfer_to_backend(input, processed_f32);
-    
+    // Save preprocessed input tensor when dumping is requested
+    if (args.dump_all || !args.dump_keys.empty()) {
+        std::string base = args.output ? std::string(args.output) : std::string("output.png");
+        size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos) base = base.substr(0, dot);
+        std::string in_txt = base + "_input.txt";
+        save_input_to_txt(input, in_txt.c_str());
+    }
     compute_timed(graph, backend);
-    
+
+    // Save selected feature maps to text files for debugging/analysis
+    if (args.dump_all || !args.dump_keys.empty()) {
+        std::string base = args.output ? std::string(args.output) : std::string("output.png");
+        size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos) base = base.substr(0, dot);
+        base += "_features";
+        // If dump_all -> save all layers (empty keys). Otherwise, save specified keys.
+        if (args.dump_all) {
+            std::vector<int> empty_keys;
+            save_features_to_txt(outputs, base.c_str(), empty_keys);
+        } else {
+            save_features_to_txt(outputs, base.c_str(), args.dump_keys);
+        }
+        // Additionally dump predictions and raw outputs for full comparison
+        if (args.dump_all) {
+            if (outputs.predictions) {
+                std::string pred_txt = base + std::string("_predictions.txt");
+                save_input_to_txt(outputs.predictions, pred_txt.c_str());
+            }
+            if (!outputs.raw_outputs.empty()) {
+                for (size_t i = 0; i < outputs.raw_outputs.size(); ++i) {
+                    std::string raw_txt = base + std::string("_raw_") + std::to_string(i) + std::string(".txt");
+                    save_input_to_txt(outputs.raw_outputs[i], raw_txt.c_str());
+                }
+            }
+        }
+    }
+
     timer t_post;
     printf("Postprocessing... skipped (no renderer yet)\n");
     
