@@ -7,6 +7,7 @@ target_sources(visioncpp PRIVATE
   arch/esrgan.cpp
   arch/migan.cpp
   arch/mobile-sam.cpp
+  arch/swin.cpp
   image.cpp
   ml.cpp
   nn.cpp

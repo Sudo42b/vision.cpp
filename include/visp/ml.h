@@ -278,43 +278,6 @@ VISP_API tensor concat(model_ref const&, std::array<tensor, GGML_MAX_SRC> src, i
 VISP_API tensor interpolate(model_ref const&, tensor x, i64x2 target, int32_t mode);
 
 //
-// SWIN Transformer
-
-struct swin_layer_t {
-    int depth;
-    int n_heads;
-    int n_features;
-    bool downsample;
-};
-
-struct swin_params {
-    static constexpr int n_layers = 4;
-
-    int embed_dim;
-    int window_size;
-    std::array<swin_layer_t, n_layers> layers;
-};
-
-extern swin_params const swin_t_params;
-extern swin_params const swin_l_params;
-VISP_API swin_params swin_detect_params(model_file const&);
-
-//
-// DINO
-
-struct dino_params {
-    int patch_size = 16;
-    int embed_dim = 768;
-    int n_layers = 12;
-    int n_heads = 12;
-};
-
-VISP_API dino_params dino_detect_params(model_file const&);
-
-VISP_API std::vector<tensor> dino_get_intermediate_layers(
-    model_ref, tensor image, std::span<int const> layers, dino_params const&);
-
-//
 // implementation
 
 constexpr model_build_flags operator|(model_build_flag lhs, model_build_flag rhs) {

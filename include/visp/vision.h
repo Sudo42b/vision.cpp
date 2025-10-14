@@ -79,6 +79,42 @@
 
 namespace visp {
 
+// SWIN - vision transformer for feature extraction
+
+constexpr int swin_n_layers = 4;
+
+struct swin_layer_t {
+    int depth;
+    int n_heads;
+    int n_features;
+};
+
+struct swin_params {
+    int embed_dim;
+    int window_size;
+    std::array<swin_layer_t, swin_n_layers> layers;
+};
+
+using swin_buffers = std::array<tensor_data, swin_n_layers + 2>;
+using swin_result = std::array<tensor, swin_n_layers>;
+
+VISP_API swin_params swin_detect_params(model_file const&);
+VISP_API swin_buffers swin_precompute(model_ref, i32x2 image_extent, swin_params const&);
+VISP_API swin_result swin_encode(model_ref, tensor image, swin_params const&);
+
+// DINO - vision transformer for feature extraction
+
+struct dino_params {
+    int patch_size = 16;
+    int embed_dim = 768;
+    int n_layers = 12;
+    int n_heads = 12;
+};
+
+VISP_API dino_params dino_detect_params(model_file const&);
+VISP_API std::vector<tensor> dino_get_intermediate_layers(
+    model_ref, tensor image, span<int const> layers_ids, dino_params const&);
+
 //
 // Mobile SAM - image segmentation with prompt (point or box)
 
@@ -148,7 +184,7 @@ struct birefnet_params {
     swin_params encoder;
 };
 
-using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
+using birefnet_buffers = swin_buffers;
 
 VISP_API birefnet_params birefnet_detect_params(
     model_file const&, i32x2 dynamic_extent = {}, size_t max_alloc = SIZE_MAX);

@@ -740,8 +740,8 @@ def test_encode():
     expected = forward_enc(x, xs, xs_low)
 
     state = {}
-    state.update({f"input{i}": to_nhwc(xs[i]) for i in range(4)})
-    state.update({f"input_low{i}": to_nhwc(xs_low[i]) for i in range(4)})
+    state.update({f"xs{i}": to_nhwc(xs[i]) for i in range(4)})
+    state.update({f"xs_low{i}": to_nhwc(xs_low[i]) for i in range(4)})
 
     results = workbench.invoke_test("biref_encode", x, state, nhwc_layout)
 

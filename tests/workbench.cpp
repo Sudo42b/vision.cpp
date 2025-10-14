@@ -5,6 +5,7 @@
 #include "visp/arch/esrgan.h"
 #include "visp/arch/migan.h"
 #include "visp/arch/mobile-sam.h"
+#include "visp/arch/swin.h"
 #include "visp/nn.h"
 
 #include <ggml-blas.h>
@@ -247,40 +248,40 @@ DEF(biref_patch_embed)(model_ref m, span<tensor> input, param_dict const& p) {
 
 DEF(biref_relative_position_index)(model_ref m, span<tensor> input, param_dict const& p) {
     auto dst = span(reinterpret_cast<int32_t*>(input[0]->data), ggml_nelements(input[0]));
-    birefnet::compute_relative_position_index(dst, 3);
+    swin::compute_relative_position_index(dst, 3);
     return {input[0]};
 }
 
 DEF(biref_window_attention)(model_ref m, span<tensor> input, param_dict const& p) {
     int window_size = 3;
     tensor mask = m.find("mask");
-    auto rel_pos_index = birefnet::create_relative_position_index(m, window_size);
+    auto rel_pos_index = swin::create_relative_position_index(m, window_size);
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
-    return {birefnet::window_attention(m, input[0], mask, 2, window_size)};
+    return {swin::window_attention(m, input[0], mask, 2, window_size)};
 }
 
 DEF(biref_swin_block)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_block_params block;
+    swin::block_params block;
     block.n_heads = 2;
     block.window_size = 3;
     block.w = 6;
     block.h = 6;
     block.shift = 0;
     tensor mask = m.find("mask");
-    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
+    auto rel_pos_index = swin::create_relative_position_index(m, 3);
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
-    return {birefnet::swin_block(m, input[0], mask, block)};
+    return {swin::block(m, input[0], mask, block)};
 }
 
 DEF(biref_patch_merging)(model_ref m, span<tensor> input, param_dict const& p) {
-    return {birefnet::patch_merging(m, input[0], 6, 4)};
+    return {swin::patch_merging(m, input[0], 6, 4)};
 }
 
 DEF(biref_attention_mask)(model_ref m, span<tensor> input, param_dict const& p) {
     auto dst = span((float*)input[0]->data, ggml_nelements(input[0]));
-    birefnet::compute_attention_mask(dst, 18, 18, 6);
+    swin::compute_attention_mask(dst, 18, 18, 6);
     return {input[0]};
 }
 
@@ -289,13 +290,12 @@ DEF(biref_swin_layer)(model_ref m, span<tensor> input, param_dict const& p) {
     layer.depth = 2;
     layer.n_heads = 2;
     layer.n_features = 8;
-    layer.downsample = true;
-    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
-    auto attn_mask = birefnet::create_attention_mask(m, 6, 6, 3);
+    auto rel_pos_index = swin::create_relative_position_index(m, 3);
+    auto attn_mask = swin::create_attention_mask(m, 6, 6, 3);
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
     transfer_to_backend(attn_mask);
-    auto result = birefnet::swin_layer(m, input[0], 6, 6, layer, 3);
+    auto result = swin::layer(m, input[0], 6, 6, layer, 3, true);
     ASSERT(result.w_down == 3 && result.h_down == 3);
     return {result.x_down};
 }
@@ -305,29 +305,29 @@ DEF(biref_swin_transformer)(model_ref m, span<tensor> input, param_dict const& p
         .embed_dim = 8,
         .window_size = 3,
         .layers = {
-            swin_layer_t{2, 2, 8 * 1, true},
-            swin_layer_t{2, 2, 8 * 2, true},
-            swin_layer_t{2, 4, 8 * 4, true},
-            swin_layer_t{2, 2, 8 * 8, false},
+            swin_layer_t{2, 2, 8 * 1},
+            swin_layer_t{2, 2, 8 * 2},
+            swin_layer_t{2, 4, 8 * 4},
+            swin_layer_t{2, 2, 8 * 8},
         }};
-    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
+    auto rel_pos_index = swin::create_relative_position_index(m, 3);
     auto attn_masks = std::array{
-        birefnet::create_attention_mask(m, 8, 8, 3), birefnet::create_attention_mask(m, 4, 4, 3),
-        birefnet::create_attention_mask(m, 2, 2, 3), birefnet::create_attention_mask(m, 1, 1, 3)};
+        swin::create_attention_mask(m, 8, 8, 3), swin::create_attention_mask(m, 4, 4, 3),
+        swin::create_attention_mask(m, 2, 2, 3), swin::create_attention_mask(m, 1, 1, 3)};
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
     for (auto&& attn_mask : attn_masks) {
         transfer_to_backend(attn_mask);
     }
-    auto result = birefnet::swin_transformer(m, input[0], swinp);
+    auto result = swin_encode(m, input[0], swinp);
     return {result[0], result[1], result[2], result[3]};
 }
 
 DEF(biref_encode)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_result xs, xs_low;
+    swin_result xs, xs_low;
     for (int i = 0; i < 4; ++i) {
-        xs[i] = m.find(format<tensor_name>("input{}", i).c_str());
-        xs_low[i] = m.find(format<tensor_name>("input_low{}", i).c_str());
+        xs[i] = m.find(format<tensor_name>("xs{}", i).c_str());
+        xs_low[i] = m.find(format<tensor_name>("xs_low{}", i).c_str());
     }
     birefnet::encode_concat(m, xs, xs_low);
     return std::vector{xs[0], xs[1], xs[2], xs[3]};
@@ -354,7 +354,7 @@ DEF(biref_image_to_patches_2)(model_ref m, span<tensor> input, param_dict const&
 }
 
 DEF(biref_decode)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_result features;
+    swin_result features;
     for (int i = 0; i < 4; ++i) {
         features[i] = m.find(format<tensor_name>("x{}", i + 1).c_str());
     }

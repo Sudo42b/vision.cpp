@@ -2,6 +2,7 @@
 
 #include "util/math.h"
 #include "visp/ml.h"
+#include "visp/vision.h"
 
 #include <vector>
 
