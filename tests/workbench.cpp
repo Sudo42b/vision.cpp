@@ -10,7 +10,7 @@
 #include <ggml-cpu.h>
 #include <ggml-vulkan.h>
 #include <ggml.h>
-
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <exception>

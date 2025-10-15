@@ -32,12 +32,13 @@ struct detected_obj {
 // Complete Detect head forward pass
 struct DetectOutput {
     std::vector<tensor> raw_outputs;
-    std::map<int, tensor> features;   // Selected backbone/neck features exposed for dumping
+    std::vector<tensor>features;   // Selected backbone/neck features exposed for dumping
+    std::map<int, tensor> features_map;
     tensor predictions;  // [batch, 4+nc, num_anchors]
     tensor anchor_points;
-    tensor strides;
-    std::vector<float> anchor_data;  // 추가
-    std::vector<float> stride_data;        // 추가
+    tensor strides_points;
+    // std::vector<float> anchor_data;  // 추가
+    // std::vector<float> stride_data;        // 추가
 };
 // Image preprocessing for YOLOv9t
 struct PreprocessResult {
@@ -109,9 +110,9 @@ tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug=false);
 
 std::pair<tensor, tensor> make_anchors(
     model_ref m, 
-    std::vector<tensor> const& features,
+    std::vector<tensor> features,
     std::vector<float> const& strides,
-    float grid_cell_offset=0.5f);
+    float grid_cell_offset=0.5f) ;
 tensor dist2bbox(model_ref m, tensor dists, tensor anchors, bool xywh);
 // Detect head over multi-scale features
 DetectOutput detect_forward(model_ref m, std::vector<tensor> features, std::vector<int> ch, int nc, bool training);

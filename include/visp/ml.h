@@ -269,7 +269,8 @@ VISP_API tensor slice(
     model_ref const&, tensor x, slice_t s0, slice_t s1 = {}, slice_t s2 = {}, slice_t s3 = {});
 
 // Concatenate multiple tensors along a specified dimension.
-VISP_API tensor concat(model_ref const&, std::array<tensor, GGML_MAX_SRC> src, int dim);
+VISP_API tensor concat(model_ref const&, std::span<tensor> src, int dim);
+VISP_API tensor concat(model_ref const&, std::vector<tensor> src, int dim);
 
 // Up- or downsample a 2D tensor (WHCN) to target width x height.
 VISP_API tensor interpolate(model_ref const&, tensor x, i64x2 target, int32_t mode);

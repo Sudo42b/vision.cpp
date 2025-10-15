@@ -3,6 +3,7 @@
 #include "util/string.h"
 #include "visp/nn.h"
 #include "visp/vision.h"
+#include "visp/ml.h"
 
 #include <ggml.h>
 
