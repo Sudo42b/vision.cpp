@@ -63,52 +63,59 @@ tensor window_reverse(model_ref m, tensor x, int64_t w, int64_t h, int window) {
     return x;
 }
 
-tensor window_attention(model_ref m, tensor x, tensor mask, int num_heads, int window) {
+tensor window_attention(model_ref m, tensor x, tensor mask, int n_heads, int window) {
     auto [c, n, b, _] = nelements(x);
+    float scale = 1.0f / std::sqrt(float(c / n_heads));
+    bool flash_attn = bool(m.flags & model_build_flag::flash_attention);
+    ggml_type kv_type = flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
 
     tensor qkv = linear(m["qkv"], x);
-    qkv = ggml_reshape_4d(m, qkv, c / num_heads, num_heads, 3, n * b);
+    qkv = ggml_reshape_4d(m, qkv, c / n_heads, n_heads, 3, n * b);
     qkv = ggml_cont(m, ggml_permute(m, qkv, 0, 1, 3, 2));
 
-    auto split = [=](tensor tensor, size_t index, bool transpose = false) mutable {
-        tensor = slice(m, tensor, {}, {}, {}, index);
-        tensor = ggml_reshape_4d(m, tensor, c / num_heads, num_heads, n, b);
-        if (transpose) {
-            tensor = ggml_cont(m, ggml_permute(m, tensor, 1, 2, 0, 3));
-        } else {
-            tensor = ggml_cont(m, ggml_permute(m, tensor, 0, 2, 1, 3));
-        }
-        return tensor;
+    auto split = [=](tensor t, size_t index, ggml_type type, bool transpose = false) mutable {
+        t = slice(m, t, {}, {}, {}, index);
+        t = ggml_reshape_4d(m, t, c / n_heads, n_heads, n, b);
+        t = transpose ? ggml_permute(m, t, 1, 2, 0, 3) : ggml_permute(m, t, 0, 2, 1, 3);
+        t = ggml_cast(m, t, type); // TODO: future flash attention supports f32 and permutations
+        return t;
     };
-    tensor q = split(qkv, 0);
-    tensor k = split(qkv, 1);
-    tensor v = split(qkv, 2, true);
-
-    q = ggml_scale_inplace(m, q, 1.0f / std::sqrt(float(c / num_heads)));
-
-    tensor attn = ggml_mul_mat(m, k, q);
+    tensor q = split(qkv, 0, GGML_TYPE_F32);
+    tensor k = split(qkv, 1, kv_type);
+    tensor v = split(qkv, 2, kv_type, !flash_attn);
 
     tensor_name rel_pos_name = format<tensor_name>("window_attention_{}.rel_pos_index", window);
     tensor rel_pos_index = ggml_get_tensor(m, rel_pos_name.c_str());
     tensor rel_pos_table = m.weights("relative_position_bias_table");
     tensor rel_pos_bias = ggml_get_rows(m, rel_pos_table, rel_pos_index);
-    rel_pos_bias = ggml_reshape_4d(m, rel_pos_bias, num_heads, window * window, window * window, 1);
-    rel_pos_bias = ggml_cont(m, ggml_permute(m, rel_pos_bias, 2, 0, 1, 3));
-    attn = ggml_add_inplace(m, attn, rel_pos_bias);
+    rel_pos_bias = ggml_reshape_4d(m, rel_pos_bias, n_heads, n, n, 1);
+    rel_pos_bias = ggml_permute(m, rel_pos_bias, 2, 0, 1, 3); // [n, n, n_heads, 1]
+    rel_pos_bias = ggml_cast(m, rel_pos_bias, GGML_TYPE_F16); // get_rows result is always f32
 
+    tensor attn_mask = rel_pos_bias;
     if (mask) {
-        int64_t nw = mask->ne[2];
-        attn = ggml_reshape_4d(m, attn, n * n, num_heads, nw, b / nw);
-        mask = ggml_reshape_4d(m, mask, n * n, 1, nw, 1);
-        attn = ggml_add_inplace(m, attn, mask);
-        attn = ggml_reshape_4d(m, attn, n, n, num_heads, b);
+        int64_t n_windows = mask->ne[2];
+        if (b > n_windows) { // if there are multiple images in the batch
+            mask = ggml_reshape_4d(m, mask, n, n, n_windows, 1);
+            mask = ggml_repeat_4d(m, mask, n, n, n_windows, b / n_windows);
+        }
+        mask = ggml_reshape_4d(m, mask, n, n, 1, b);
+        mask = ggml_repeat_4d(m, mask, n, n, n_heads, b); // can only broadcast one operand in add
+        attn_mask = ggml_add(m, mask, attn_mask);         // [n, n, n_heads, b] + [n, n, n_heads, 1]
     }
-    attn = ggml_soft_max(m, attn);
 
-    x = ggml_mul_mat(m, v, attn);
-    x = ggml_cont(m, ggml_permute(m, x, 0, 2, 1, 3));
+    if (flash_attn) {
+        x = ggml_flash_attn_ext(m, q, k, v, attn_mask, scale, 0.0f, 0.0f);
+        ggml_flash_attn_ext_set_prec(x, GGML_PREC_F32);
+    } else {
+        tensor attn = ggml_mul_mat(m, k, q);
+        attn = ggml_soft_max_ext(m, attn, attn_mask, scale, 0.0f);
+
+        x = ggml_mul_mat(m, v, attn);
+        x = ggml_cont(m, ggml_permute(m, x, 0, 2, 1, 3));
+    }
+
     x = ggml_reshape_3d(m, x, c, n, b);
-
     x = linear(m["proj"], x);
     return named(m, x);
 }
@@ -177,7 +184,10 @@ tensor patch_merging(model_ref m, tensor x, int64_t w, int64_t h) {
     return named(m, x);
 }
 
-void compute_attention_mask(span<float> out, int64_t w, int64_t h, int window_size) {
+constexpr uint16_t neg_inf_f16 = 0xfc00; // -infinity in IEEE 754 half-precision
+
+void compute_attention_mask(span<byte> out_bytes, int64_t w, int64_t h, int window_size) {
+    uint16_t* out = reinterpret_cast<uint16_t*>(out_bytes.data());
     int n = window_size;
     int n2 = n * n;
     int n4 = n2 * n2;
@@ -187,7 +197,7 @@ void compute_attention_mask(span<float> out, int64_t w, int64_t h, int window_si
     int64_t w_pad = nw_x * n;
     int64_t h_pad = nw_y * n;
 
-    std::fill(out.begin(), out.end(), 0.0f);
+    std::memset(out, 0, out_bytes.size());
 
     for (int iw_y = 0; iw_y < nw_y; ++iw_y) {
         for (int iw_x = 0; iw_x < nw_x; ++iw_x) {
@@ -210,10 +220,10 @@ void compute_attention_mask(span<float> out, int64_t w, int64_t h, int window_si
                             // that is: they are both in the shift zone, or both outside
                             bool match_y = (yy0 < h_pad - shift) == (yy1 < h_pad - shift);
                             bool match_x = (xx0 < w_pad - shift) == (xx1 < w_pad - shift);
-                            // If not, set mask to -100 (added to attention before softmax)
+                            // If not, set attention mask to -inf so it is ignored by softmax
                             if (!match_y || !match_x) {
                                 int64_t idx = base + (y0 * n + x0) * n2 + (y1 * n + x1);
-                                out[idx] = -100.f;
+                                out[idx] = neg_inf_f16;
                             }
                         }
                     }
@@ -227,9 +237,9 @@ tensor_data create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int w
     int n = window_size;
     int64_t nw_x = (w + n - 1) / n;
     int64_t nw_y = (h + n - 1) / n;
-    auto result = tensor_alloc(ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n * n, n * n, nw_x * nw_y));
+    auto result = tensor_alloc(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, n * n, n * n, nw_x * nw_y));
     auto name = format<tensor_name>("swin_layer_{}x{}.attn_mask", w, h);
-    compute_attention_mask(result.as_f32(), w, h, window_size);
+    compute_attention_mask(result.as_bytes(), w, h, window_size);
     make_constant(result.x, name);
     return result;
 }

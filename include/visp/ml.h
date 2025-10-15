@@ -218,8 +218,10 @@ struct VISP_API tensor_data {
 
     span<float> as_f32();
     span<int32_t> as_i32();
+    span<byte> as_bytes();
     span<float const> as_f32() const;
     span<int32_t const> as_i32() const;
+    span<byte const> as_bytes() const;
 };
 
 // Allocates data for a tensor in main memory, outside of context and backend buffers.

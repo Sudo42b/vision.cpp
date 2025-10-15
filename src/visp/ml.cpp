@@ -138,13 +138,21 @@ void backend_set_n_threads(backend_device& b, int n_threads) {
 //
 // model_build_flags
 
+model_build_flags flash_attn_flag() {
+    static model_build_flags const flag = []() {
+        char const* env = getenv("VISP_NO_FLASH_ATTENTION");
+        return !env || env[0] == '0' ? model_build_flag::flash_attention : model_build_flags{};
+    }();
+    return flag;
+}
+
 model_build_flags backend_default_flags(backend_type type) {
     using enum model_build_flag;
     switch (type) {
         case backend_type::cpu:
             return conv_2d_direct_cwhn | concat_n | f16_conv_transpose | window_partition |
-                flash_attention;
-        case backend_type::gpu: return flash_attention;
+                flash_attn_flag();
+        case backend_type::gpu: return flash_attn_flag();
     }
     return {};
 }
@@ -206,7 +214,8 @@ void model_file::get_array(char const* key_name, span<int> out_values) const {
         throw except("Array size mismatch for key '{}' in model file {}", key_name, path);
     }
     if (gguf_get_arr_type(gguf.get(), key_id) != GGUF_TYPE_INT32) {
-        throw except("Array type mismatch for key '{}' in model file {}, expected int32", key_name, path);
+        throw except(
+            "Array type mismatch for key '{}' in model file {}, expected int32", key_name, path);
     }
     auto ptr = (int const*)gguf_get_arr_data(gguf.get(), key_id);
     std::copy(ptr, ptr + out_values.size(), out_values.data());
@@ -630,6 +639,14 @@ std::span<int32_t> tensor_data::as_i32() {
 std::span<int32_t const> tensor_data::as_i32() const {
     ASSERT(x->type == GGML_TYPE_I32);
     return span(reinterpret_cast<int32_t const*>(data.get()), ggml_nelements(x));
+}
+
+std::span<byte> tensor_data::as_bytes() {
+    return span(data.get(), ggml_nbytes(x));
+}
+
+std::span<byte const> tensor_data::as_bytes() const {
+    return span(data.get(), ggml_nbytes(x));
 }
 
 void transfer_to_backend(tensor_data const& d) {

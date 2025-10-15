@@ -24,7 +24,7 @@ struct layer_result {
 
 void compute_relative_position_index(span<int32_t> dst, int window_size);
 tensor_data create_relative_position_index(ggml_context* ctx, int window_size);
-void compute_attention_mask(std::span<float> out, int64_t w, int64_t h, int window_size);
+void compute_attention_mask(std::span<byte> out, int64_t w, int64_t h, int window_size);
 tensor_data create_attention_mask(ggml_context* ctx, int64_t w, int64_t h, int window_size);
 
 tensor mlp(model_ref m, tensor x);

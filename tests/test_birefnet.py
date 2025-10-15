@@ -118,7 +118,9 @@ def test_relative_position_index():
 
 
 @pytest.mark.parametrize("masking", ["mask", "no_mask"])
-def test_window_attention(masking: bool):
+@pytest.mark.parametrize("backend", ["cpu", "gpu"])
+@pytest.mark.parametrize("attn", ["default", "flash_attn"])
+def test_window_attention(masking: bool, backend: str, attn: str):
     num_heads = 2
     window_attention = WindowAttention(dim=8, window_size=(3, 3), num_heads=num_heads)
     state = generate_state(window_attention.state_dict())
@@ -132,9 +134,13 @@ def test_window_attention(masking: bool):
         state["mask"] = mask
     expected = window_attention(x, mask)
 
-    result = workbench.invoke_test("biref_window_attention", x, state)
+    del state["relative_position_index"]  # computed in C++
+    if mask is not None:
+        state["mask"] = mask.half()
+        state["relative_position_bias_table"] = state["relative_position_bias_table"].half()
+    result = workbench.invoke_test("biref_window_attention", x, state, {"attn": attn}, backend)
 
-    assert torch.allclose(result, expected)
+    assert torch.allclose(result, expected, rtol=1e-3)
 
 
 def window_partition(x, window_size):

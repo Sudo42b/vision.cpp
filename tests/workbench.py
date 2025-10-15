@@ -32,6 +32,7 @@ class RawParam(ctypes.Structure):
 def torch_to_raw_tensor(name: str, tensor: torch.Tensor):
     tensor_types = {
         torch.float32: 0,  # GGML_TYPE_F32
+        torch.float16: 1,  # GGML_TYPE_F16
         torch.int32: 26,  # GGML_TYPE_I32
     }
     t = tensor.contiguous()

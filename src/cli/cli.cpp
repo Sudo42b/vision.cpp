@@ -271,6 +271,11 @@ std::tuple<model_file, model_weights> load_model_weights(
     return {std::move(file), std::move(weights)};
 }
 
+void print_model_flags(model_ref const& m) {
+    bool flash_attn = !!(m.flags & model_build_flag::flash_attention);
+    printf("- flash attention: %s\n", flash_attn ? "on" : "off");
+}
+
 void compute_timed(compute_graph const& g, backend_device const& b) {
     timer t;
     printf("Running inference... ");
@@ -414,6 +419,7 @@ void run_birefnet(cli_args const& args) {
 
     compute_graph graph = compute_graph_init(6 * 1024);
     model_ref m(weights, graph);
+    print_model_flags(m);
 
     birefnet_buffers buffers = birefnet_precompute(m, params);
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
@@ -456,8 +462,7 @@ void run_depth_anything(cli_args const& args) {
 
     compute_graph graph = compute_graph_init();
     model_ref m(weights, graph);
-    bool flash_attn = !!(m.flags & model_build_flag::flash_attention);
-    printf("- flash attention: %s\n", flash_attn ? "on" : "off");
+    print_model_flags(m);
 
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
     tensor output = depthany_predict(m, input, params);

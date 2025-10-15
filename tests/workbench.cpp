@@ -253,6 +253,11 @@ DEF(biref_relative_position_index)(model_ref m, span<tensor> input, param_dict c
 }
 
 DEF(biref_window_attention)(model_ref m, span<tensor> input, param_dict const& p) {
+    if (p.get("attn", "default") == "flash_attn"sv) {
+        m.flags = m.flags | model_build_flag::flash_attention;
+    } else {
+        m.flags = m.flags & ~model_build_flag::flash_attention;
+    }
     int window_size = 3;
     tensor mask = m.find("mask");
     auto rel_pos_index = swin::create_relative_position_index(m, window_size);
@@ -280,7 +285,7 @@ DEF(biref_patch_merging)(model_ref m, span<tensor> input, param_dict const& p) {
 }
 
 DEF(biref_attention_mask)(model_ref m, span<tensor> input, param_dict const& p) {
-    auto dst = span((float*)input[0]->data, ggml_nelements(input[0]));
+    auto dst = span((byte*)input[0]->data, ggml_nbytes(input[0]));
     swin::compute_attention_mask(dst, 18, 18, 6);
     return {input[0]};
 }
@@ -540,7 +545,7 @@ char const* param_dict::get(char const* name, char const* default_value) const {
 
 struct raw_tensor {
     char const* name;
-    float* data;
+    byte* data;
     int32_t type_;
     int32_t ne[4];
 
@@ -610,7 +615,7 @@ void workbench_run(
 
     model_allocate(weights, w.current_backend);
     for (raw_tensor const& raw : tensors) {
-        transfer_to_backend(m.weights(raw.name), span(raw.data, raw.size()));
+        transfer_to_backend(m.weights(raw.name), span(raw.data, raw.size_bytes()));
     }
 
     param_dict test_params = build_dict(params);
@@ -644,7 +649,7 @@ void workbench_run(
         ggml_backend_tensor_get(outputs[i], data_ptr, 0, ggml_nbytes(outputs[i]));
 
         output_raw[i].name = ggml_get_name(outputs[i]);
-        output_raw[i].data = reinterpret_cast<float*>(data_ptr);
+        output_raw[i].data = reinterpret_cast<byte*>(data_ptr);
         output_raw[i].type_ = int32_t(outputs[i]->type);
         output_raw[i].ne[0] = outputs[i]->ne[0];
         output_raw[i].ne[1] = outputs[i]->ne[1];
