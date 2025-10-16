@@ -1,4 +1,5 @@
 #include "visp/ml.h"
+#include "visp/nn.h"
 #include "util/string.h"
 #include "visp/platform.h"
 
@@ -557,7 +558,9 @@ tensor named(model_ref const& m, tensor tensor) {
 // tensor creation and data handling
 
 tensor compute_graph_input(model_ref const& m, ggml_type type, i64x4 shape, tensor_name name) {
+    // 3, 640, 640, 1
     tensor x = ggml_new_tensor_4d(m, type, shape[0], shape[1], shape[2], shape[3]);
+    x = contiguous_2d_to_cwhn(m, x);
     ggml_set_name(x, name.c_str());
     ggml_set_input(x);
     return x;

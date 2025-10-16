@@ -1,7 +1,10 @@
 # ultralytics yolov9t를 로드해서 sequential 모델로 변환
-import torch
-from modules import *
 from collections import OrderedDict
+import torch
+try:
+    from modules import *
+except:
+    from scripts.modules import *
 
 
 class YOLOv9t_Seq(nn.Module):

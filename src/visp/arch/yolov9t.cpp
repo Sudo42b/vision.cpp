@@ -37,8 +37,6 @@ yolov9t_params yolov9t_detect_params(model_file const& /*file*/) {
     params.input_size = 640;
     params.variant = "tiny";
     // Normalize inputs to [0, 1]
-    params.offset = 0.0f;
-    params.scale = 1.0f / 255.0f;
 
     return params;
 }
@@ -634,7 +632,7 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     ggml_set_output(x0);
 
     // Layer 1: Conv(16, 32, 3, 2) - P2/4
-    tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, false);
+    tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, true);
     features[1] = x1;
     ggml_set_output(x1);
     
@@ -981,12 +979,9 @@ DetectOutput detect_forward(model_ref m,
 DetectOutput yolov9t_forward(model_ref m, tensor x) {
     
     // Run backbone + neck
-    // std::vector<tensor> features = yolov9t_backbone(m, x);
     std::map<int, tensor> features = yolov9t_backbone(m, x);
     
-    // features = [N3(64 channels), N4(96 channels), N5(128 channels)]
-    
-    
+    // features = [N3(64 channels), N4(96 channels), N5(128 channels)]   
     printf("features size: [%d]\n", (int)features.size());
     
     // channels for N3, N4, N5
@@ -1145,26 +1140,28 @@ int check_img_size(int imgsz, int s, int floor) {
     return new_size;
 }
 
-image_data image_add_border(image_data im, int top, int bottom, int left, int right, u8x3 color) {
-    i32x2 new_extent = {im.extent[0] + top + bottom, im.extent[1] + left + right};
+image_data image_add_border(image_data im, int top, int bottom, 
+                           int left, int right, u8x3 color) {
+    i32x2 new_extent = {im.extent[0] + top + bottom, 
+                       im.extent[1] + left + right};
     image_data bordered = image_alloc(new_extent, im.format);
 
-    // 기존 이미지 데이터를 복사하고 테두리를 추가
-    for (int y = 0; y < im.extent[0]; ++y) {
-        for (int x = 0; x < im.extent[1]; ++x) {
+    // 전체 영역을 먼저 테두리 색상으로 채우기
+    for (int y = 0; y < new_extent[0]; ++y) {
+        for (int x = 0; x < new_extent[1]; ++x) {
             for (int c = 0; c < 3; ++c) {
-                bordered.data[(y + top) * new_extent[1] + (x + left) * 3 + c] = im.data[y * im.extent[1] * 3 + x * 3 + c];
+                bordered.data[(y * new_extent[1] + x) * 3 + c] = color[c];
             }
         }
     }
 
-    // 테두리 색상 설정
-    for (int y = 0; y < new_extent[0]; ++y) {
-        for (int x = 0; x < new_extent[1]; ++x) {
-            if (y < top || y >= new_extent[0] - bottom || x < left || x >= new_extent[1] - right) {
-                for (int c = 0; c < 3; ++c) {
-                    bordered.data[y * new_extent[1] * 3 + x * 3 + c] = color[c];
-                }
+    // 원본 이미지를 중앙에 복사
+    for (int y = 0; y < im.extent[0]; ++y) {
+        for (int x = 0; x < im.extent[1]; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                int src_idx = (y * im.extent[1] + x) * 3 + c;
+                int dst_idx = ((y + top) * new_extent[1] + (x + left)) * 3 + c;
+                bordered.data[dst_idx] = im.data[src_idx];
             }
         }
     }
@@ -1172,25 +1169,57 @@ image_data image_add_border(image_data im, int top, int bottom, int left, int ri
     return bordered;
 }
 
-image_data linear_image_resize(image_data im, i32x2 new_shape) {
-    image_data resized = image_alloc(new_shape, im.format);
-
-    // 간단한 선형 보간을 사용하여 이미지 크기 조정
-    float x_ratio = static_cast<float>(im.extent[1]) / new_shape[1];
-    float y_ratio = static_cast<float>(im.extent[0]) / new_shape[0];
-    for (int y = 0; y < new_shape[0]; ++y) {
-        for (int x = 0; x < new_shape[1]; ++x) {
-            int px = static_cast<int>(x * x_ratio);
-            int py = static_cast<int>(y * y_ratio);
+// RGB 이미지를 직접 처리하는 특화된 버전
+void resize_rgb_bilinear(
+    uint8_t* src_data,
+    i32x2 src_extent,
+    uint8_t* dst_data,
+    i32x2 dst_extent) {
+    
+    double inv_scale_x = static_cast<double>(src_extent[0]) / dst_extent[0];
+    double inv_scale_y = static_cast<double>(src_extent[1]) / dst_extent[1];
+    
+    for (int y = 0; y < dst_extent[1]; ++y) {
+        for (int x = 0; x < dst_extent[0]; ++x) {
+            double src_xf = (x + 0.5) * inv_scale_x - 0.5;
+            double src_yf = (y + 0.5) * inv_scale_y - 0.5;
+            
+            src_xf = std::max(0.0, src_xf);
+            src_yf = std::max(0.0, src_yf);
+            
+            int x0 = static_cast<int>(src_xf);
+            int y0 = static_cast<int>(src_yf);
+            int x1 = std::min(x0 + 1, src_extent[0] - 1);
+            int y1 = std::min(y0 + 1, src_extent[1] - 1);
+            
+            double wx = src_xf - x0;
+            double wy = src_yf - y0;
+            double w00 = (1 - wx) * (1 - wy);
+            double w01 = wx * (1 - wy);
+            double w10 = (1 - wx) * wy;
+            double w11 = wx * wy;
+            
+            // 3채널 동시 처리
             for (int c = 0; c < 3; ++c) {
-                resized.data[y * new_shape[1] * 3 + x * 3 + c] = im.data[py * im.extent[1] * 3 + px * 3 + c];
+                double value = 
+                    src_data[(y0 * src_extent[0] + x0) * 3 + c] * w00 +
+                    src_data[(y0 * src_extent[0] + x1) * 3 + c] * w01 +
+                    src_data[(y1 * src_extent[0] + x0) * 3 + c] * w10 +
+                    src_data[(y1 * src_extent[0] + x1) * 3 + c] * w11;
+                    
+                dst_data[(y * dst_extent[0] + x) * 3 + c] = 
+                    static_cast<uint8_t>(std::min(255.0, std::max(0.0, value + 0.5)));
             }
         }
     }
-
-    return resized;
 }
 
+// 사용 예시
+image_data linear_image_resize(image_data im, i32x2 new_shape) {
+    image_data resized = image_alloc(new_shape, im.format);
+    resize_rgb_bilinear(im.data.get(), im.extent, resized.data.get(), new_shape);
+    return resized;
+}
 image_data letterbox(image_data im, i32x2 new_shape, u8x3 color, 
               bool _auto, bool scaleFill, bool scaleup, int stride) {
     i32x2 shape = im.extent;  // 현재 이미지의 크기 [height, width]
@@ -1206,7 +1235,6 @@ image_data letterbox(image_data im, i32x2 new_shape, u8x3 color,
     }
 
     // 패딩 계산
-    // float ratio[2] = {r, r};  // width, height 비율
     i32x2 new_unpad = {static_cast<int>(round(shape[1] * r)), static_cast<int>(round(shape[0] * r))};
     float dw = new_shape[1] - new_unpad[0];
     float dh = new_shape[0] - new_unpad[1];
@@ -1218,16 +1246,16 @@ image_data letterbox(image_data im, i32x2 new_shape, u8x3 color,
         dw = 0.0f;
         dh = 0.0f;
         new_unpad = {new_shape[1], new_shape[0]};
-        // ratio[0] = static_cast<float>(new_shape[1]) / shape[1];
-        // ratio[1] = static_cast<float>(new_shape[0]) / shape[0];
     }
 
     dw /= 2;  // 패딩을 양쪽으로 나눔
     dh /= 2;
 
-    if (shape[1] != new_unpad[0] || shape[0] != new_unpad[1]) {  // 리사이즈
-        im = linear_image_resize(std::move(im), new_unpad);
-    }
+    
+    // im = image_scale(im, new_unpad);  // 이미지 크기 조정
+    // Bilinear interpolation 수행
+    im = linear_image_resize(std::move(im), new_unpad);
+    
 
     int top = static_cast<int>(round(dh - 0.1f));
     int bottom = static_cast<int>(round(dh + 0.1f));
@@ -1789,6 +1817,17 @@ int scale_coord(int coord, float scale) {
 i32x2 scale_extent(i32x2 extent, float scale) {
     return i32x2{scale_coord(extent[0], scale), scale_coord(extent[1], scale)};
 }
+image_data yolov9t_process_input2(image_view image, yolov9t_params const& p) {
+    
+    image_data resized;
+    if (image.extent[0] != p.input_size || image.extent[1] != p.input_size) {
+        resized = image_scale(image, {p.input_size, p.input_size});
+        image = image_view(resized);
+    }
+
+    return image_u8_to_f32(image, image_format::rgb_f32, p.offset, 1.f / p.scale);
+}
+
 image_data yolov9t_process_input(image_data image, yolov9t_params const& p) {
     // 1) letterbox to square (p.input_size)
     image_data lb = letterbox(std::move(image), {p.input_size, p.input_size}, u8x3{114,114,114}, true, false, true, yolov9t_params::stride);
@@ -1809,7 +1848,7 @@ static void write_tensor_txt(tensor t, char const* filename) {
     // Header with shape and type
     fprintf(
         f,
-        "# shape C,H,W,N = %ld,%ld,%ld,%ld\n# type = %s\n",
+        "# %ld,%ld,%ld,%ld\n# %s\n",
         (long)t->ne[0], (long)t->ne[1], (long)t->ne[2], (long)t->ne[3], ggml_type_name(t->type));
 
     // Fetch data from backend

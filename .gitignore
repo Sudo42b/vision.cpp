@@ -25,3 +25,4 @@ uv.lock
 cmake-4.1.1
 depend/ggml*
 .cache/*
+*.txt

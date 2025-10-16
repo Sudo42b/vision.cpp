@@ -33,7 +33,7 @@ struct cli_args {
     char const* composite = nullptr; // --composite
     int tile_size = -1;              // --tile
     // Debug dump options
-    bool dump_all = false;               // --dump-all
+    bool dump_all = true;               // --dump-all
     std::vector<int> dump_keys;          // --dump-keys <k1> <k2> ...
 };
 
@@ -564,15 +564,18 @@ void run_yolov9t(cli_args const& args) {
            (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
     
     timer t_preprocess;
-    image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
+    // image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
+    image_data processed_f32 = yolov9t_process_input2(std::move(input_image), params);
     printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
-    printf("Image shape: torch.Size([1, 3, %d, %d])\n", img_sz, img_sz);
+
     printf("Preprocessing complete (%s)\n", t_preprocess.elapsed_str());
     compute_graph graph = compute_graph_init(ggml_graph_overhead() * ggml_tensor_overhead()*2);
     model_ref m(weights, graph);
     
     tensor input = compute_graph_input(m, GGML_TYPE_F32, 
                                         {3, img_sz, img_sz, 1}, "input");
+    printf("- input tensor shape: %ld, %ld, %ld, %ld\n", 
+           input->ne[0], input->ne[1], input->ne[2], input->ne[3]);
     printf("Running YOLOv9t inference...\n");
     DetectOutput outputs = yolov9t_forward(m, input);
     // 그래프 완료
@@ -607,6 +610,7 @@ void run_yolov9t(cli_args const& args) {
         size_t dot = base.find_last_of('.');
         if (dot != std::string::npos) base = base.substr(0, dot);
         std::string in_txt = base + "_input.txt";
+        printf("Saving input tensor to %s\n", in_txt.c_str());
         save_input_to_txt(input, in_txt.c_str());
     }
     compute_timed(graph, backend);
@@ -634,7 +638,7 @@ void run_yolov9t(cli_args const& args) {
             if (!outputs.raw_outputs.empty()) {
                 for (size_t i = 0; i < outputs.raw_outputs.size(); ++i) {
                     std::string raw_txt = base + std::string("_raw_") + std::to_string(i) + std::string(".txt");
-                    save_input_to_txt(outputs.raw_outputs[i], raw_txt.c_str());
+                    // save_input_to_txt(outputs.raw_outputs[i], raw_txt.c_str());
                 }
             }
         }

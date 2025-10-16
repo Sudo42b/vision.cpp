@@ -1,16 +1,28 @@
 # Yolov9t Sequential model inference demo code
-
-from utils import (non_max_suppression, 
-                   letterbox, 
-                   increment_path, 
-                   yaml_load, 
-                   smart_inference_mode, 
-                   select_device,
-                   scale_boxes, 
-                   Annotator, 
-                   colors, 
-                   check_img_size)
-from yolov9t import YOLOv9t_Seq
+try:
+    from utils import (non_max_suppression, 
+                    letterbox, 
+                    increment_path, 
+                    yaml_load, 
+                    smart_inference_mode, 
+                    select_device,
+                    scale_boxes, 
+                    Annotator, 
+                    colors, 
+                    check_img_size)
+    from yolov9t import YOLOv9t_Seq
+except:
+    from scripts.utils import (non_max_suppression, 
+                    letterbox, 
+                    increment_path, 
+                    yaml_load, 
+                    smart_inference_mode, 
+                    select_device,
+                    scale_boxes, 
+                    Annotator, 
+                    colors, 
+                    check_img_size)
+    from scripts.yolov9t import YOLOv9t_Seq
 from torch import nn, device
 from pathlib import Path
 import numpy as np

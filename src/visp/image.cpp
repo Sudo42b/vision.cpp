@@ -233,7 +233,9 @@ void convert(
             // print_pixel(dst_val);
             // printf("\n");
             // dst.store(i, dst_val);
-            dst.store(i, (src.load(i_src) + offset) * scale);
+            auto src_val = src.load(i_src);
+            auto dst_val = (src_val + offset) * scale;
+            dst.store(i, dst_val);
         }
     }
 }

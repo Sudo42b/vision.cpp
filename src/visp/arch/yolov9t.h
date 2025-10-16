@@ -58,7 +58,7 @@ struct PreprocessResult {
 struct NMSParams {
     float conf_thres = 0.25f;
     float iou_thres = 0.45f;
-    int max_det = 300;
+    int max_det = 1000;
     int max_nms = 30000;
     int max_wh = 7680;
 };
@@ -67,6 +67,7 @@ struct NMSParams {
 
 float resize_longest_side(i32x2 extent, int target_longest_side);
 image_data yolov9t_process_input(image_data image, yolov9t_params const& p);
+image_data yolov9t_process_input2(image_view image, yolov9t_params const& p);
 // Detection parameters
 yolov9t_params yolov9t_detect_params(model_file const& file);
 // Core modules - actual layer implementations

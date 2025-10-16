@@ -110,8 +110,7 @@ def conv_2d_to_nhwc(kernel: Tensor):
     if c_in == 1:  # depthwise
         return kernel.permute(2, 3, 1, 0).contiguous()  # H W 1 C_out
     else:
-        permute=  kernel.permute(0, 2, 3, 1).contiguous()  # C_out H W C_in
-        return permute
+        return kernel.permute(0, 2, 3, 1).contiguous()  # C_out, C_in, Height, Width -> C_out H W C_in # c++ ggml에서 보이는 차원은, C_in, W, H, C_out
 
 
 def conv_transpose_2d_to_nhwc(kernel: Tensor):
@@ -437,10 +436,10 @@ def fuse_conv_bn_weights(conv_w, conv_b, bn_rm, bn_rv, bn_w, bn_b, eps=1e-3):
     if bn_b is None:
         bn_b = torch.zeros_like(bn_rm)
 
-    bn_var_rsqrt = torch.rsqrt(bn_rv + eps)
-
-    conv_w = conv_w * (bn_w * bn_var_rsqrt).reshape([-1] + [1] * (len(conv_w.shape) - 1))
-    conv_b = (conv_b - bn_rm) * bn_var_rsqrt * bn_w + bn_b
+    # bn_var_rsqrt = torch.rsqrt(bn_rv + eps)
+    bn_w = bn_w / torch.sqrt(bn_rv + eps)
+    conv_w = conv_w * bn_w[:, None, None, None]
+    conv_b = (conv_b - bn_rm) * bn_w + bn_b
 
     return conv_w, conv_b
 
@@ -512,9 +511,19 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
         bn_rm = model.get(f"{bn_suffix}.running_mean", None)
         bn_rv = model.get(f"{bn_suffix}.running_var", None)
         eps = model.get(f"{bn_suffix}.eps", 1e-3)
-        
-        # # print(conv_weight.shape, conv_bias.shape, bn_rm.shape, bn_rv.shape, bn_w.shape, bn_b.shape)
-        fused_conv, fused_bias = fuse_conv_bn_weights(conv_weight, 
+        if bn_w is None:
+            # Fusing이 불가능한 경우.
+            tensor = writer.convert_tensor_2d(conv_weight)
+            writer.add_tensor(f"{conv_suffix}.weight", tensor)
+            writer.add_tensor(f"{conv_suffix}.bias", conv_bias)
+            processed_keys.add(f"{conv_suffix}.weight")
+            processed_keys.add(f"{conv_suffix}.bias")
+            print("Cannot fuse:", conv_suffix, bn_suffix)
+            continue
+        else:
+            # Fusing이 가능한 경우.
+            # print(conv_weight.shape, conv_bias.shape, bn_rm.shape, bn_rv.shape, bn_w.shape, bn_b.shape)
+            fused_conv, fused_bias = fuse_conv_bn_weights(conv_weight, 
                                                       conv_bias, 
                                                       bn_rm, 
                                                       bn_rv, 
@@ -545,17 +554,13 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
     
     # detect와 weight가 들어가는 패턴만 매칭
     detect_layers = {}
-    for key in model.keys():
+    for idx, key in enumerate(model.keys()):
         if "detect" in key and ".conv.weight" in key:
-            conv_suffix = key.replace(".conv.weight", ".conv")
-            if f"{conv_suffix}.weight" in detect_layers.keys():
+            if key in detect_layers.keys():
                 continue
             
-            detect_layers[key] = model[f"{conv_suffix}.weight"]
-            
-            # Skip if already processed in Conv-BN pairs
-                
-            print(conv_suffix, key)
+            conv_suffix = key.replace(".conv.weight", ".conv")
+            detect_layers[key] = model[key]
             conv_weight = model.get(f"{conv_suffix}.weight", None)
             conv_bias = model.get(f"{conv_suffix}.bias", None)
             
@@ -566,28 +571,61 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
             bn_rv = model.get(f"{bn_suffix}.running_var", None)
             eps = model.get(f"{bn_suffix}.eps", 1e-3)
             
-            if bn_w == None or bn_b == None or bn_rm == None or bn_rv == None:
+            if bn_w is None or bn_b is None or bn_rm is None or bn_rv is None:
+                # Fusing이 불가능한 경우.
                 tensor = writer.convert_tensor_2d(conv_weight)
+                processed_keys.add(f"{conv_suffix}.weight")
                 writer.add_tensor(f"{conv_suffix}.weight", tensor)
                 if conv_bias is not None:
                     writer.add_tensor(f"{conv_suffix}.bias", conv_bias)
-                
+                    processed_keys.add(f"{conv_suffix}.bias")
             else:
-                
+                # Fusing이 가능한 경우.
                 fused_conv, fused_bias = fuse_conv_bn_weights(conv_weight, 
-                                                        conv_bias, 
-                                                        bn_rm, 
-                                                        bn_rv, 
-                                                        bn_w, 
-                                                        bn_b, 
-                                                        eps)
+                                                    conv_bias, 
+                                                    bn_rm, 
+                                                    bn_rv, 
+                                                    bn_w, 
+                                                    bn_b, 
+                                                    eps)
                 tensor = writer.convert_tensor_2d(fused_conv)
                 writer.add_tensor(f"{conv_suffix}.weight", tensor)
-                writer.add_tensor(f"{conv_suffix}.bias", fused_bias)
+                processed_keys.add(f"{conv_suffix}.weight")
+                if conv_bias is not None:
+                    writer.add_tensor(f"{conv_suffix}.bias", fused_bias)
+                    processed_keys.add(f"{conv_suffix}.bias")
                 
             
-            processed_keys.add(f"{conv_suffix}.weight")
-            processed_keys.add(f"{conv_suffix}.bias")
+            
+            
+        elif 'detect' in key and\
+            ".conv" not in key and\
+            '.bn' not in key and\
+            '.weight' in key:
+            print("Only weight:", key)
+            detect_layers[key] = model[key]
+            conv_weight = model.get(f"{key}", None)
+            
+            bias = key.replace('.weight', '.bias')
+            conv_bias = model.get(f"{bias}", None)
+            
+            tensor = writer.convert_tensor_2d(conv_weight)
+            writer.add_tensor(key, tensor)
+            if conv_bias is not None:
+                writer.add_tensor(bias, conv_bias)
+            # detect.cv2.0.2.weight
+            # detect.cv2.0.2.bias
+            # detect.cv2.1.2.weight
+            # detect.cv2.1.2.bias
+            # detect.cv2.1.2.weight
+            # detect.cv2.1.2.bias
+            # detect.cv2.2.2.weight
+            # detect.cv2.2.2.bias
+            # detect.cv3.0.2.weight
+            # detect.cv3.0.2.bias
+            # detect.cv3.2.2.weight
+            # detect.cv3.2.2.bias
+            # detect.dfl.conv.weight
 
     print(f"Found {len(detect_layers)} detect head final layer parameters")
     
