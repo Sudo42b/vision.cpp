@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(vision.cpp VERSION 0.1.0 LANGUAGES CXX)
+project(vision.cpp VERSION 0.2.0 LANGUAGES CXX)
 
 option(VISP_VULKAN "Enable Vulkan support" OFF)
 option(VISP_DEV "Enable development mode" OFF)
@@ -30,7 +30,7 @@ elseif(CMAKE_BUILD_TYPE)
   endif()
 endif()
 
-# Configure address sanitizer (Clang only)
+# Configure address sanitizer
 
 if(VISP_ASAN)
   if(MSVC)

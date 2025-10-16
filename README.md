@@ -209,6 +209,13 @@ as other frameworks for inference speed, but with:
 | Lite  | cpu  | f32  |      4505 ms | 10900 ms |      6978 ms |
 | Lite  | gpu  | f16  |        85 ms |    84 ms |              |
 
+#### Depth-Anything, 518x714
+
+| Model |      |      | _vision.cpp_ | PyTorch |
+| :---- | :--- | :--- | -----------: | ------: |
+| Small | gpu  | f16  |        11 ms |   10 ms |
+| Base  | gpu  | f16  |        24 ms |   22 ms |
+
 #### MI-GAN, 512x512
 
 | Model       |      |      | _vision.cpp_ | PyTorch |
@@ -218,7 +225,7 @@ as other frameworks for inference speed, but with:
 
 #### Setup
 
-* vision.cpp: using vision-bench, GPU via Vulkan, eg. `vision-bench -m sam -b cpu`
+* vision.cpp: using vision-bench, GPU via Vulkan, eg. `vision-bench -m sam`
 * PyTorch: v2.7.1+cu128, eager eval, GPU via CUDA, average n iterations after warm-up
 
 ## Dependencies (integrated)

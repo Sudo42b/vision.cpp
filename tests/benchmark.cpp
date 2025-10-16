@@ -94,13 +94,13 @@ bench_timings benchmark_birefnet(path model_path, backend_device& backend) {
 }
 
 bench_timings benchmark_depth_anything(path model_path, backend_device& backend) {
-    path input_path = test_dir().input / "cat-and-hat.jpg";
+    path input_path = test_dir().input / "wardrobe.jpg";
 
     depthany_model model = depthany_load_model(model_path.string().c_str(), backend);
     image_data input = image_load(input_path.string().c_str());
-    image_data input_data = depthany_process_input(input, model.params);
-
     depthany_compute(model, input);
+
+    image_data input_data = depthany_process_input(input, model.params);
     return run_benchmark(model.graph, backend, 12, {{model.input, input_data}});
 }
 
