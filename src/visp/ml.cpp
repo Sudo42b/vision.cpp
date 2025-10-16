@@ -138,12 +138,14 @@ void backend_set_n_threads(backend_device& b, int n_threads) {
 //
 // model_build_flags
 
-model_build_flags flash_attn_flag() {
-    static model_build_flags const flag = []() {
-        char const* env = getenv("VISP_NO_FLASH_ATTENTION");
-        return !env || env[0] == '0' ? model_build_flag::flash_attention : model_build_flags{};
-    }();
-    return flag;
+model_build_flags flash_attn_flag(bool default_enabled) {
+    static char const* const env = getenv("VISP_FLASH_ATTENTION");
+    if (env && env[0] == '1') {
+        return model_build_flag::flash_attention;
+    } else if (env && env[0] == '0') {
+        return model_build_flags{};
+    }
+    return default_enabled ? model_build_flag::flash_attention : model_build_flags{};
 }
 
 model_build_flags backend_default_flags(backend_type type) {
@@ -151,8 +153,8 @@ model_build_flags backend_default_flags(backend_type type) {
     switch (type) {
         case backend_type::cpu:
             return conv_2d_direct_cwhn | concat_n | f16_conv_transpose | window_partition |
-                flash_attn_flag();
-        case backend_type::gpu: return flash_attn_flag();
+                flash_attn_flag(false);
+        case backend_type::gpu: return flash_attn_flag(true);
     }
     return {};
 }
