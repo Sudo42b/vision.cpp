@@ -570,12 +570,11 @@ void run_yolov9t(cli_args const& args) {
     //                                 true, false, true, params.stride);
     // input_image convert to 0~1.0f
     // image_data processed_f32 = image_u8_to_f32(input_image, image_format::rgb_f32, params.offset, params.scale);
-    image_data processed_f32 = yolov9t_process_input(input_image, params);
-    
+    image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
     printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
+    printf("Image shape: torch.Size([1, 3, %d, %d])\n", img_sz, img_sz);
     printf("Preprocessing complete (%s)\n", t_preprocess.elapsed_str());
-    
-    compute_graph graph = compute_graph_init(4*1024*1024*2);
+    compute_graph graph = compute_graph_init(ggml_graph_overhead() * ggml_tensor_overhead()*2);
     model_ref m(weights, graph);
     
     tensor input = compute_graph_input(m, GGML_TYPE_F32, 
@@ -583,19 +582,31 @@ void run_yolov9t(cli_args const& args) {
     printf("Running YOLOv9t inference...\n");
     DetectOutput outputs = yolov9t_forward(m, input);
     // 그래프 완료
-    if (outputs.predictions != nullptr) {
-        ggml_build_forward_expand(graph.graph, outputs.predictions);
+    if (outputs.predictions_cls != nullptr && outputs.predictions_bbox != nullptr) {
         printf("outputs.predictions built\n");
+        ggml_build_forward_expand(m.graph, outputs.predictions_cls);
+        ggml_build_forward_expand(m.graph, outputs.predictions_bbox);
     } else if (!outputs.raw_outputs.empty()) {
         printf("outputs.raw_outputs built\n");
-        // training mode인 경우 raw_outputs 사용
         for (auto& raw_out : outputs.raw_outputs) {
-            ggml_build_forward_expand(graph.graph, raw_out);
+            ggml_build_forward_expand(m.graph, raw_out);
         }
     }
     compute_graph_allocate(graph, backend);
-                                        
+
+    // Upload input data
     transfer_to_backend(input, processed_f32);
+
+    // Upload anchors/strides/proj if present
+    if (outputs.anchor_points && !outputs.anchor_host_data.empty()) {
+        transfer_to_backend(outputs.anchor_points, std::span<const float>(outputs.anchor_host_data));
+    }
+    if (outputs.strides_points && !outputs.stride_host_data.empty()) {
+        transfer_to_backend(outputs.strides_points, std::span<const float>(outputs.stride_host_data));
+    }
+    if (outputs.dfl_proj && !outputs.dfl_proj_host_data.empty()) {
+        transfer_to_backend(outputs.dfl_proj, std::span<const float>(outputs.dfl_proj_host_data));
+    }
     // Save preprocessed input tensor when dumping is requested
     if (args.dump_all || !args.dump_keys.empty()) {
         std::string base = args.output ? std::string(args.output) : std::string("output.png");
@@ -605,6 +616,46 @@ void run_yolov9t(cli_args const& args) {
         save_input_to_txt(input, in_txt.c_str());
     }
     compute_timed(graph, backend);
+
+    // Debug: print top-K anchors for specific classes to compare with PyTorch
+    {
+        using namespace visp::yolov9t;
+        std::vector<std::string> const& names = get_coco_class_names();
+        auto find_cls = [&](char const* n) -> int {
+            for (size_t i = 0; i < names.size(); ++i) if (names[i] == n) return (int)i;
+            return -1;
+        };
+        int cls_cat = find_cls("cat");
+        int cls_tv = find_cls("tv");
+        int cls_bed = find_cls("bed");
+        if (outputs.predictions_cls && outputs.anchor_points && cls_cat >= 0 && cls_tv >= 0 && cls_bed >= 0) {
+            tensor_data td_cls = transfer_from_backend(outputs.predictions_cls);
+            tensor_data td_anc = transfer_from_backend(outputs.anchor_points);
+            int64_t na = outputs.predictions_cls->ne[1];
+            auto cls_ptr = td_cls.as_f32();
+            auto anc_ptr = td_anc.as_f32(); // layout [2, na]
+
+            auto print_topk = [&](int c, char const* cname) {
+                struct Item { float s; int j; };
+                std::vector<Item> v;
+                v.reserve((size_t)na);
+                for (int64_t j = 0; j < na; ++j) {
+                    float s = cls_ptr[c * na + j];
+                    v.push_back({s, (int)j});
+                }
+                std::partial_sort(v.begin(), v.begin() + std::min<size_t>(4, v.size()), v.end(), [](Item const& a, Item const& b){return a.s > b.s;});
+                size_t K = std::min<size_t>(4, v.size());
+                for (size_t k = 0; k < K; ++k) {
+                    int j = v[k].j;
+                    float x = anc_ptr[j * 2 + 0]; // anchor x
+                    printf("%.1f %s %.2f\n", x, cname, v[k].s);
+                }
+            };
+            print_topk(cls_cat, "cat");
+            print_topk(cls_tv, "tv");
+            print_topk(cls_bed, "bed");
+        }
+    }
 
     // Save selected feature maps to text files for debugging/analysis
     if (args.dump_all || !args.dump_keys.empty()) {
@@ -621,9 +672,10 @@ void run_yolov9t(cli_args const& args) {
         }
         // Additionally dump predictions and raw outputs for full comparison
         if (args.dump_all) {
-            if (outputs.predictions) {
+            if (outputs.predictions_cls && outputs.predictions_bbox) {
                 std::string pred_txt = base + std::string("_predictions.txt");
-                save_input_to_txt(outputs.predictions, pred_txt.c_str());
+                save_input_to_txt(outputs.predictions_cls, pred_txt.c_str());
+                save_input_to_txt(outputs.predictions_bbox, pred_txt.c_str());
             }
             if (!outputs.raw_outputs.empty()) {
                 for (size_t i = 0; i < outputs.raw_outputs.size(); ++i) {
@@ -638,12 +690,10 @@ void run_yolov9t(cli_args const& args) {
     printf("Postprocessing... skipped (no renderer yet)\n");
     
     NMSParams nms_params;
-    nms_params.conf_thres = 0.25f;
-    nms_params.iou_thres = 0.45f;
-    nms_params.max_det = 300;
+    
     
     std::vector<detected_obj> detections = non_max_suppression(
-        outputs.predictions, nms_params);
+        outputs, nms_params.conf_thres, nms_params.iou_thres, nms_params.max_det, nms_params.max_nms, nms_params.max_wh);
     
     // Scale boxes back to original image size
     scale_boxes(detections, {img_sz, img_sz}, input_image.extent);

@@ -36,6 +36,9 @@ yolov9t_params yolov9t_detect_params(model_file const& /*file*/) {
     params.num_classes = 80;
     params.input_size = 640;
     params.variant = "tiny";
+    // Normalize inputs to [0, 1]
+    params.offset = 0.0f;
+    params.scale = 1.0f / 255.0f;
 
     return params;
 }
@@ -147,11 +150,11 @@ tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, boo
     //       (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
 
     // AConv Pool: torch.Size([1, 32, 159, 159]), k=2, s=1, p=0
-    ggml_tensor* p = ggml_pool_2d(m, x, GGML_OP_POOL_AVG, 2, 2, 1, 1, 0, 0); // k=2, s=1, p=0
+    x = ggml_pool_2d(m, x, GGML_OP_POOL_AVG, 2, 2, 1, 1, 0, 0); // k=2, s=1, p=0
     // printf("AConv AVG POOL OUT: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
     //        (int)p->ne[0], (int)p->ne[1], (int)p->ne[2], (int)p->ne[3]);
     // 3:32, 2:1, 1:159, 0:159
-    x = ggml_permute(m, p, 2, 1, 0, 3); // NCHW -> NHWC
+    x = ggml_permute(m, x, 2, 1, 0, 3); // NCHW -> NHWC
     x = ggml_cont(m, x);                // Ensure contiguous memory
     // Get input channels for debug output
     // int c1 = (int)x->ne[0];
@@ -211,13 +214,13 @@ tensor ELAN1(
     tensor cv3_out = Conv(m, cv2_out, name + ".cv3.conv", c4, c4, 3, 1, -1, true);
 
     // Concatenate: split1(16) + split2(16) + cv2_out(16) + cv3_out(16) = 64 channels
-    tensor cat1 = ggml_concat(m, split1, split2, 0);
-    tensor cat2 = ggml_concat(m, cat1, cv2_out, 0);
-    tensor cat3 = ggml_concat(m, cat2, cv3_out, 0);
+    tensor cat1 = Concat(m, split1, split2, 0);
+    tensor cat2 = Concat(m, cat1, cv2_out, 0);
+    tensor cat3 = Concat(m, cat2, cv3_out, 0);
 
-    // printf("ELAN1 %s: concatenated tensor shape [%d,%d,%d,%d]\n",
-    //        name.c_str(),
-    //        (int)cat3->ne[0], (int)cat3->ne[1], (int)cat3->ne[2], (int)cat3->ne[3]);
+    printf("ELAN1 %s: concatenated tensor shape [%d,%d,%d,%d]\n",
+           name.c_str(),
+           (int)cat3->ne[0], (int)cat3->ne[1], (int)cat3->ne[2], (int)cat3->ne[3]);
 
     // cv4: 1x1 conv to final output channels (64→32)
     tensor cv4 = Conv(m, cat3, name + ".cv4.conv", c3 + (2 * c4), c2, 1, 1, -1, true);
@@ -626,7 +629,7 @@ tensor Concat(model_ref m, tensor a, tensor b, int axis, bool debug) {
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     std::map<int, tensor> features;
     // Layer 0: Conv(3, 16, 3, 2) - P1/2
-    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, true);
+    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, false);
     features[0] = x0;
     ggml_set_output(x0);
 
@@ -641,7 +644,7 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     features[2] = x2;
     
     // Layer 3: AConv(32, 64) - P3/8
-    tensor x3 = AConv(m, x2, "model.3", 32, 64, false);
+    tensor x3 = AConv(m, x2, "model.3", 32, 64, true);
     ggml_set_output(x3);
     features[3] = x3;
 
@@ -750,60 +753,64 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
 */
 
 
-// Convert distance predictions to bounding boxes
-/*pytorch Code
-def dist2bbox(distance:Tensor, anchor_points:Tensor, xywh:bool=True, dim:int=-1) -> Tensor:
-    """Transform distance(ltrb) to box(xywh or xyxy)."""
-    lt, rb = torch.split(distance, 2, dim)
-    x1y1 = anchor_points - lt
-    x2y2 = anchor_points + rb
-    if xywh:
-        c_xy = (x1y1 + x2y2) / 2
-        wh = x2y2 - x1y1
-        return torch.concatenate((c_xy, wh), dim)  # xywh bbox
-    return torch.concatenate((x1y1, x2y2), dim)  # xyxy bbox
-*/
-tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh = true) {
-    // PyTorch: distance [..., 4], anchor_points [..., 2]
-    // GGML:    distance [4, ..., batch], anchor_points [2, ..., batch]
-    
+// PyTorch 코드를 참고해서 GGML로 변환한 dist2bbox 구현
+// PyTorch 코드:
+// def dist2bbox(distance:Tensor, anchor_points:Tensor, xywh:bool=True, dim:int=-1) -> Tensor:
+//     """Transform distance(ltrb) to box(xywh or xyxy)."""
+//     lt, rb = torch.split(distance, 2, dim)
+//     x1y1 = anchor_points - lt
+//     x2y2 = anchor_points + rb
+//     if xywh:
+//         c_xy = (x1y1 + x2y2) / 2
+//         wh = x2y2 - x1y1
+//         return torch.concatenate((c_xy, wh), dim)  # xywh bbox
+//     return torch.concatenate((x1y1, x2y2), dim)  # xyxy bbox
+
+tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh/*=true*/) {
+    // distance: [4, N, ...], anchor_points: [2, N, ...]
+    printf("distance shape: [%ld,%ld,%ld,%ld]\n", distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
+    printf("anchor_points shpe: [%ld,%ld,%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1], anchor_points->ne[2], anchor_points->ne[3]);
+    distance = ggml_reshape_2d(m, distance, distance->ne[1], distance->ne[2]);
+    distance = ggml_cont(m, distance);
     GGML_ASSERT(distance->ne[0] == 4);
     GGML_ASSERT(anchor_points->ne[0] == 2);
-    
-    // Split distance into lt (first 2) and rb (last 2) along dimension 0
-    tensor lt = ggml_view_4d(m, distance, 
+
+    // lt, rb = torch.split(distance, 2, dim=0)
+    // lt = distance[0:2, ...], rb = distance[2:4, ...]
+    tensor lt = ggml_view_4d(
+        m, distance,
         2, distance->ne[1], distance->ne[2], distance->ne[3],
-        distance->nb[1], distance->nb[2], distance->nb[3], 
-        0);
-    
-    tensor rb = ggml_view_4d(m, distance,
+        distance->nb[1], distance->nb[2], distance->nb[3],
+        0
+    );
+    tensor rb = ggml_view_4d(
+        m, distance,
         2, distance->ne[1], distance->ne[2], distance->ne[3],
-        distance->nb[1], distance->nb[2], distance->nb[3], 
-        2 * distance->nb[0]);  // offset by 2 elements in first dimension
-    
+        distance->nb[1], distance->nb[2], distance->nb[3],
+        2 * distance->nb[0]
+    );
+
     // x1y1 = anchor_points - lt
     tensor x1y1 = ggml_sub(m, anchor_points, lt);
-    
+
     // x2y2 = anchor_points + rb
     tensor x2y2 = ggml_add(m, anchor_points, rb);
-    
+
     if (xywh) {
         // c_xy = (x1y1 + x2y2) / 2
         tensor c_xy = ggml_scale(m, ggml_add(m, x1y1, x2y2), 0.5f);
-        
         // wh = x2y2 - x1y1
         tensor wh = ggml_sub(m, x2y2, x1y1);
-        
-        // Concatenate [c_xy, wh] along dimension 0
+        // return torch.concatenate((c_xy, wh), dim=0)
         return ggml_concat(m, c_xy, wh, 0);
     } else {
-        // Return xyxy format
+        // return torch.concatenate((x1y1, x2y2), dim=0)
         return ggml_concat(m, x1y1, x2y2, 0);
     }
 }
 
 // DFL (Distribution Focal Loss) layer implementation
-tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug) {
+tensor dfl_forward(model_ref m, tensor x, int reg_max, tensor& proj, bool debug) {
     // PyTorch DFL forward equivalent (softmax over bins + expected value)
     // Input: x [4*reg_max, A, 1, 1] in CWHN where A = H*W
     if (debug) {
@@ -821,16 +828,7 @@ tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug) {
     // Softmax along reg_max dimension (dim 0)
     tensor softmaxed = ggml_soft_max_ext(m, reshaped, nullptr, 1.0f, 0.0f);
     
-    // Create projection weights [0, 1, 2, ..., reg_max-1]
-    tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
-    tensor_data proj_data = tensor_alloc(proj);
-    auto proj_ptr = proj_data.as_f32();
-    for (int i = 0; i < reg_max; ++i) {
-        proj_ptr[i] = (float)i;
-    }
-    transfer_to_backend(proj_data);
-    
-    // Reshape for broadcasting: [reg_max, 1, 1, 1]
+    // Reshape provided projection weights for broadcasting: [reg_max, 1, 1, 1]
     proj = ggml_reshape_4d(m, proj, reg_max, 1, 1, 1);
     
     // Weighted sum: element-wise multiply and sum along dim 0
@@ -851,7 +849,7 @@ DetectOutput inference(model_ref m,
 
     std::vector<tensor> reshaped_outputs;
     // Concat along anchor dimension (dim 1)
-    tensor x_cat = concat(m, out.raw_outputs, 1); // [144, 8400, 1]
+    tensor x_cat = concat(m, out.features, 1); // [144, 8400, 1]
     printf("x_cat shape: [%ld,%ld,%ld, %ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
 
     // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
@@ -862,41 +860,58 @@ DetectOutput inference(model_ref m,
     // Done!
     // === Generate anchors inline ===
     std::vector<float> strides_vec;
-    for (size_t i = 0; i < out.raw_outputs.size(); ++i) {
+    for (size_t i = 0; i < out.features.size(); ++i) {
         strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
     }
-    auto [anchor_points, stride_tensor] = make_anchors(m, out.raw_outputs, strides_vec, 0.5f); // out.features is std::map<int, tensor>
+    std::vector<float> anchor_host;
+    std::vector<float> stride_host;
+    auto [anchor_points, stride_tensor] = make_anchors(m, out, anchor_host, stride_host, strides_vec, 0.5f);
 
     // Split into box and cls
     tensor box = ggml_view_4d(m, x_cat,
         reg_max * 4, total_anchors, 1, 1,
         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
         0);
-
+        
+    box = ggml_cont(m, box);
     tensor cls = ggml_view_4d(m, x_cat,
         nc, total_anchors, 1, 1,
         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
         reg_max * 4 * x_cat->nb[0]);
-
+    cls = ggml_cont(m, cls);
+    
+    // Prepare DFL projection tensor and host data
+    tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
+    ggml_set_name(proj, "dfl_proj");
+    out.dfl_proj = proj;
+    out.dfl_proj_host_data.resize(reg_max);
+    for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
+    out.reg_max = reg_max;
+    printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
+    
     // Apply DFL
-    tensor dfl_output = dfl_forward(m, box, reg_max, false);
-
+    tensor dfl_output = dfl_forward(m, box, reg_max, proj, false);
+    printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
     // Decode bounding boxes
     tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
-
+    printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
     // Multiply by strides
     tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
+
     dbox = ggml_mul(m, dbox, strides_bc);
+    printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
 
     // Apply sigmoid to classes
     cls = ggml_sigmoid(m, cls);
+    printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
+    
 
-    // Concatenate
-    tensor predictions = concat(m, {dbox, cls}, 0);
-
-    out.predictions = predictions;
-    out.anchor_points = anchor_points;
-    out.strides_points = stride_tensor;
+    out.predictions_bbox = std::move(dbox);
+    out.predictions_cls = std::move(cls);
+    out.anchor_points = std::move(anchor_points);
+    out.strides_points = std::move(stride_tensor);
+    out.anchor_host_data = std::move(anchor_host);
+    out.stride_host_data = std::move(stride_host);
 
     return out;
 }
@@ -947,11 +962,13 @@ DetectOutput detect_forward(model_ref m,
         // Combine along channel dim and flatten spatial dims to anchors
         tensor combined = Concat(m, r2, c2, 0);
         // xi.view(shape[0], self.no, -1)
-        combined = ggml_reshape_2d(m, combined, combined->ne[0], combined->ne[1]*combined->ne[2]); 
+        tensor reshaped_combined = ggml_reshape_2d(m, combined, combined->ne[0], combined->ne[1]*combined->ne[2]); 
         //reshaped to [144, H, W, N] -> [144, H*W, N] (144, 8400, 1)
 
         combined = ggml_cont(m, combined);
-        out.raw_outputs.push_back(std::move(combined));  // <-- 수정: out.raw_outputs에 push!
+        reshaped_combined = ggml_cont(m, reshaped_combined);
+        out.raw_outputs.push_back(std::move(combined));
+        out.features.push_back(std::move(reshaped_combined));
         // torch.Size([1, 144, 80, 80])
         // torch.Size([1, 144, 40, 40])
         // torch.Size([1, 144, 20, 20])
@@ -960,91 +977,14 @@ DetectOutput detect_forward(model_ref m,
     }
 
     if (training) {
-        out.predictions = nullptr;
+        out.predictions_cls = nullptr;
+        out.predictions_bbox = nullptr;
         return out;
     }
     // Inference function
     DetectOutput detect = inference(m, out, ch, reg_max, nc);
-    // out.predictions = out_tensor;
-    // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
-    // std::vector<tensor> reshaped_outputs;
-
-    // for (size_t i = 0; i < features.size(); ++i) {
-    //     tensor x = features[i];
-    //     auto ne = nelements(x);
-        
-    //     int64_t C, H, W;
-    //     if (m.flags & model_build_flag::cwhn) {
-    //         C = ne[0]; W = ne[1]; H = ne[2];
-    //         // printf("C: %ld, W: %ld, H: %ld\n", C, W, H);
-    //     } else {
-    //         W = ne[0]; H = ne[1]; C = ne[2];
-    //         // printf("W: %ld, H: %ld, C: %ld\n", W, H, C);
-    //     }
-        
-    //     // Ensure CWHN layout
-    //     if (!(m.flags & model_build_flag::cwhn)) {
-    //         x = permute_whcn_to_cwhn(m, x);
-    //     }
-        
-    //     // Flatten: [C, H*W, 1, 1]
-    //     tensor flat = ggml_cont(m, ggml_reshape_4d(m, x, C, H * W, 1, 1));
-    //     // printf("flat shape: [%ld,%ld,%ld,%ld]\n", flat->ne[0], flat->ne[1], flat->ne[2], flat->ne[3]);
-    //     // flat = ggml_dup(m, flat);
-    //     reshaped_outputs.push_back(std::move(flat));
-    // }
-    // // Concat along anchor dimension (dim 1)
     
-    // tensor x_cat = concat(m, reshaped_outputs, 1);
-    // x_cat = ggml_cont(m, x_cat);
-    // // printf("x_cat shape: [%ld,%ld,%ld,%ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
-    // int64_t total_channels = x_cat->ne[0];
-    // int64_t total_anchors = x_cat->ne[1];
-    
-    // // printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
-    // // ! make_anchors
-    // // === Generate anchors inline ===
-    // std::vector<float> strides_vec;
-    // for (size_t i = 0; i < features.size(); ++i) {
-    //     strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
-    // }
-    // auto [anchor_points, stride_tensor] = make_anchors(m, features, strides_vec, 0.5f);
-
-    // // Transfer will happen after graph allocation
-    // // Store data for later transfer
-    // out.anchor_points = std::move(anchor_points);
-    // out.strides_points = std::move(stride_tensor);
-
-    // // Split into box and cls
-    // tensor box = ggml_view_4d(m, x_cat,
-    //     reg_max * 4, total_anchors, 1, 1,
-    //     x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
-    //     0);
-
-    // tensor cls = ggml_view_4d(m, x_cat,
-    //     nc, total_anchors, 1, 1,
-    //     x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
-    //     reg_max * 4 * x_cat->nb[0]);
-
-    // // Apply DFL
-    // tensor dfl_output = dfl_forward(m, box, reg_max, false);
-
-    // // Decode bounding boxes
-    // tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
-
-    // // Multiply by strides
-    // tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
-    // dbox = ggml_mul(m, dbox, strides_bc);
-
-    // // Apply sigmoid to classes
-    // cls = ggml_sigmoid(m, cls);
-
-    // // Concatenate
-    // tensor predictions = concat(m, {dbox, cls}, 0);
-
-    // out.predictions = predictions;
-
-    return out;
+    return detect;
 }
 
 // Main YOLOv9t forward pass with complete Detect head
@@ -1127,8 +1067,10 @@ def make_anchors(feats:Tensor, strides:Tensor, grid_cell_offset:float=0.5) -> Tu
 //     tensor stride_tensor;  // [total_anchors, 1]
 // };
 std::pair<tensor, tensor> make_anchors(
-    model_ref m, 
-    DetectOutput out,
+    model_ref m,
+    DetectOutput const& out,
+    std::vector<float>& anchor_host,
+    std::vector<float>& stride_host,
     std::vector<float> const& strides,
     float grid_cell_offset) {
     
@@ -1138,49 +1080,47 @@ std::pair<tensor, tensor> make_anchors(
     // Calculate total number of anchors
     int64_t total_anchors = 0;
     for (size_t i = 0; i < out.raw_outputs.size(); ++i) {
-        auto [c, w, h, n] = nelements_whcn(m, out.raw_outputs[i]);
-        total_anchors += h * w;
+        auto ne = nelements(out.raw_outputs[i]);
+        total_anchors += ne[1] * ne[2]; // w * h
+    }
+
+
+    // CPU에서 먼저 데이터 준비
+    std::vector<float> anchor_data(2 * total_anchors);
+    std::vector<float> stride_data(total_anchors);
+    
+    int64_t offset = 0;
+    for (size_t i = 0; i < strides.size(); ++i) {
+        int64_t w = out.raw_outputs[i]->ne[1];
+        int64_t h = out.raw_outputs[i]->ne[2];
+        
+        for (int64_t y = 0; y < h; ++y) {
+            for (int64_t x = 0; x < w; ++x) {
+                int64_t idx = offset + y * w + x;
+                anchor_data[idx * 2 + 0] = x + grid_cell_offset;
+                anchor_data[idx * 2 + 1] = y + grid_cell_offset;
+                stride_data[idx] = strides[i];
+            }
+        }
+        offset += w * h;
     }
     
-    // Create output tensors in graph context
+    // graph_context에 tensor 생성 (no_alloc이므로 data는 nullptr)
     tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
     tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
     
-    // Allocate temporary CPU memory for data
-    tensor_data anchor_data = tensor_alloc(anchor_points);
-    tensor_data stride_data = tensor_alloc(stride_tensor);
+    ggml_set_name(anchor_points, "anchor_points");
+    ggml_set_name(stride_tensor, "stride_tensor");
     
-    auto anchor_ptr = anchor_data.as_f32();
-    auto stride_ptr = stride_data.as_f32();
-    // --- C++ version of the Python code in the comment above ---
-    int64_t offset = 0;
-    for (size_t i = 0; i < strides.size(); ++i) {
-        // Get H, W from features[i] as WHCN order
-        auto [c, w, h, n] = nelements_whcn(m, out.raw_outputs[i]);
-        // x 방향: 0 ~ w-1, y 방향: 0 ~ h-1
-        // meshgrid (sy, sx) with 'ij' indexing
-        // sx: shape [h, w], sy: shape [h, w]
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                int64_t idx = offset + y * w + x;
-                // sx = x + grid_cell_offset, sy = y + grid_cell_offset
-                anchor_ptr[idx * 2 + 0] = x + grid_cell_offset;
-                anchor_ptr[idx * 2 + 1] = y + grid_cell_offset;
-                stride_ptr[idx] = strides[i];
-            }
-        }
-        offset += h * w;
-    }
+    // Save host data to upload later after graph allocation
+    anchor_host = std::move(anchor_data);
+    stride_host = std::move(stride_data);
     
-    // Transfer to backend
-    transfer_to_backend(anchor_data);
-    transfer_to_backend(stride_data);
     printf("anchor_points shape: [%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1]);
     printf("stride_tensor shape: [%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1]);
-    exit(EXIT_SUCCESS);
+    
     return std::make_pair(anchor_points, stride_tensor);
 }
-
 /*
 def check_img_size(imgsz, s=32, floor=0):
     def make_divisible(x, divisor):
@@ -1307,190 +1247,246 @@ image_data letterbox(image_data im, i32x2 new_shape, u8x3 color,
 
     return im;
 }
-// 1. xywh를 xyxy로 변환
-void xywh2xyxy(float* boxes, int n) {
-    // boxes: [n, 4] where each row is [x_center, y_center, width, height]
+
+// 1. xywh -> xyxy box conversion, inplace
+inline void xywh2xyxy(float* boxes, int n) {
+    // inplace conversion. boxes: n x 4 [x,y,w,h]
     for (int i = 0; i < n; ++i) {
         float x = boxes[i * 4 + 0];
         float y = boxes[i * 4 + 1];
         float w = boxes[i * 4 + 2];
         float h = boxes[i * 4 + 3];
-        
-        boxes[i * 4 + 0] = x - w / 2.0f;  // x1
-        boxes[i * 4 + 1] = y - h / 2.0f;  // y1
-        boxes[i * 4 + 2] = x + w / 2.0f;  // x2
-        boxes[i * 4 + 3] = y + h / 2.0f;  // y2
+        boxes[i * 4 + 0] = x - w / 2.0f;
+        boxes[i * 4 + 1] = y - h / 2.0f;
+        boxes[i * 4 + 2] = x + w / 2.0f;
+        boxes[i * 4 + 3] = y + h / 2.0f;
     }
-}
-// 2. IoU 계산
-float box_iou(float const* box1, float const* box2) {
-    // box format: [x1, y1, x2, y2]
-    float x1_min = box1[0], y1_min = box1[1], x1_max = box1[2], y1_max = box1[3];
-    float x2_min = box2[0], y2_min = box2[1], x2_max = box2[2], y2_max = box2[3];
-    
-    // Intersection area
-    float inter_x1 = std::max(x1_min, x2_min);
-    float inter_y1 = std::max(y1_min, y2_min);
-    float inter_x2 = std::min(x1_max, x2_max);
-    float inter_y2 = std::min(y1_max, y2_max);
-    
-    float inter_w = std::max(0.0f, inter_x2 - inter_x1);
-    float inter_h = std::max(0.0f, inter_y2 - inter_y1);
-    float inter_area = inter_w * inter_h;
-    
-    // Union area
-    float area1 = (x1_max - x1_min) * (y1_max - y1_min);
-    float area2 = (x2_max - x2_min) * (y2_max - y2_min);
-    float union_area = area1 + area2 - inter_area;
-    
-    return (union_area > 0.0f) ? (inter_area / union_area) : 0.0f;
-}
-// 3. NMS 구현
-std::vector<int> nms(
-    std::vector<detected_obj> const& detections,
-    float iou_threshold,
-    bool agnostic,
-    int max_wh) {
-    
-    if (detections.empty()) {
-        return {};
-    }
-    
-    // Sort by confidence (descending)
-    std::vector<int> indices(detections.size());
-    std::iota(indices.begin(), indices.end(), 0);
-    std::sort(indices.begin(), indices.end(), [&](int i, int j) {
-        return detections[i].confidence > detections[j].confidence;
-    });
-    
-    std::vector<bool> suppressed(detections.size(), false);
-    std::vector<int> keep;
-    
-    for (size_t i = 0; i < indices.size(); ++i) {
-        int idx = indices[i];
-        if (suppressed[idx]) continue;
-        
-        keep.push_back(idx);
-        
-        detected_obj const& det1 = detections[idx];
-        float box1[4] = {det1.x1, det1.y1, det1.x2, det1.y2};
-        
-        // Add class offset if not agnostic
-        if (!agnostic) {
-            box1[0] += det1.class_id * max_wh;
-            box1[2] += det1.class_id * max_wh;
-        }
-        
-        for (size_t j = i + 1; j < indices.size(); ++j) {
-            int idx2 = indices[j];
-            if (suppressed[idx2]) continue;
-            
-            detected_obj const& det2 = detections[idx2];
-            float box2[4] = {det2.x1, det2.y1, det2.x2, det2.y2};
-            
-            // Add class offset if not agnostic
-            if (!agnostic) {
-                box2[0] += det2.class_id * max_wh;
-                box2[2] += det2.class_id * max_wh;
-            }
-            
-            float iou = box_iou(box1, box2);
-            if (iou > iou_threshold) {
-                suppressed[idx2] = true;
-            }
-        }
-    }
-    
-    return keep;
 }
 
-// 4. Non-Maximum Suppression 전체 파이프라인
-std::vector<detected_obj> non_max_suppression(
-    tensor prediction,
-    NMSParams const& params) {
-    
-    // prediction shape: [nc+4, num_anchors, 1, 1] in CWHN
-    // where nc is number of classes (80 for COCO)
-    
-    int64_t C = prediction->ne[0];  // nc + 4 (84 for COCO)
-    int64_t num_anchors = prediction->ne[1];  // 8400
-    int nc = C - 4;  // 80 classes
-    
-    printf("Prediction shape: [%d, %d, %d, %d]\n", 
-           (int)C, (int)num_anchors, (int)prediction->ne[2], (int)prediction->ne[3]);
-    
-    float* data = (float*)prediction->data;
-    
-    std::vector<detected_obj> candidates;
-    
-    // Parse predictions
-    for (int i = 0; i < num_anchors; ++i) {
-        // Get class scores (skip first 4 box coordinates)
-        float max_score = -1.0f;
-        int max_cls = -1;
-        
-        for (int c = 0; c < nc; ++c) {
-            float score = data[(4 + c) * num_anchors + i];
-            if (score > max_score) {
-                max_score = score;
-                max_cls = c;
+// IoU(box1, box2) for NMS
+inline float box_iou(const float* b1, const float* b2) {
+    // box: x1, y1, x2, y2
+    float ix1 = std::max(b1[0], b2[0]);
+    float iy1 = std::max(b1[1], b2[1]);
+    float ix2 = std::min(b1[2], b2[2]);
+    float iy2 = std::min(b1[3], b2[3]);
+    float iw = std::max(0.0f, ix2 - ix1);
+    float ih = std::max(0.0f, iy2 - iy1);
+    float inter = iw * ih;
+    float area1 = (b1[2] - b1[0]) * (b1[3] - b1[1]);
+    float area2 = (b2[2] - b2[0]) * (b2[3] - b2[1]);
+    float union_ = area1 + area2 - inter;
+    return union_ > 0.f ? (inter / union_) : 0.f;
+}
+
+// NMS - similar to torchvision.ops.nms (offset by class for agnostic==false!)
+std::vector<int> nms(const std::vector<std::array<float, 4>>& boxes, const std::vector<float>& scores, const std::vector<int>& class_ids, float iou_thres, bool agnostic, int max_wh) {
+    std::vector<int> order(boxes.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return scores[a] > scores[b];
+    });
+    std::vector<bool> keep(boxes.size(), true);
+    std::vector<int> kept;
+    for (size_t i = 0; i < order.size(); ++i) {
+        int idx_i = order[i];
+        if (!keep[idx_i]) continue;
+        kept.push_back(idx_i);
+        const float* b1 = boxes[idx_i].data();
+        int ci = agnostic ? 0 : class_ids[idx_i] * max_wh;
+        for (size_t j = i+1; j < order.size(); ++j) {
+            int idx_j = order[j];
+            if (!keep[idx_j]) continue;
+            int cj = agnostic ? 0 : class_ids[idx_j] * max_wh;
+            float b2[4] = {boxes[idx_j][0]+cj, boxes[idx_j][1], boxes[idx_j][2]+cj, boxes[idx_j][3]};
+            float bb1[4] = {b1[0]+ci, b1[1], b1[2]+ci, b1[3]};
+            if (box_iou(bb1, b2) > iou_thres) {
+                keep[idx_j] = false;
             }
         }
-        
-        // Filter by confidence threshold
-        if (max_score < params.conf_thres) continue;
-        
-        // Get box coordinates (xywh format)
-        float x = data[0 * num_anchors + i];
-        float y = data[1 * num_anchors + i];
-        float w = data[2 * num_anchors + i];
-        float h = data[3 * num_anchors + i];
-        
-        // Convert to xyxy
-        detected_obj det;
-        det.x1 = x - w / 2.0f;
-        det.y1 = y - h / 2.0f;
-        det.x2 = x + w / 2.0f;
-        det.y2 = y + h / 2.0f;
-        det.confidence = max_score;
-        det.class_id = max_cls;
-        det.class_confidence = max_score;
-        
-        candidates.push_back(det);
     }
-    
-    printf("Candidates after confidence filtering: %zu\n", candidates.size());
-    
-    // Limit to max_nms
-    if (candidates.size() > (size_t)params.max_nms) {
-        std::partial_sort(
-            candidates.begin(), 
-            candidates.begin() + params.max_nms, 
-            candidates.end(),
-            [](detected_obj const& a, detected_obj const& b) { 
-                return a.confidence > b.confidence; 
-            }
-        );
-        candidates.resize(params.max_nms);
-    }
-    
-    
-    // Apply NMS
-    std::vector<int> keep = nms(candidates, params.iou_thres, params.agnostic);
-    
-    // Limit to max_det
-    if (keep.size() > (size_t)params.max_det) {
-        keep.resize(params.max_det);
-    }
-    
-    std::vector<detected_obj> output;
-    for (int idx : keep) {
-        output.push_back(candidates[idx]);
-    }
-    
-    printf("Detections after NMS: %zu\n", output.size());
-    return output;
+    return kept;
 }
+
+// PyTorch-like non_max_suppression for YOLOv8/YOLOv9 outputs, closely following PyTorch logic.
+/*
+def non_max_suppression(
+    prediction,
+    conf_thres: float = 0.25,
+    iou_thres: float = 0.45,
+    max_det: int = 300,
+    max_nms: int = 30000,
+    max_wh: int = 7680
+):
+    import torchvision  # scope for faster 'import ultralytics'
+
+    # Checks
+    assert 0 <= conf_thres <= 1, f"Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0"
+    assert 0 <= iou_thres <= 1, f"Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0"
+    if isinstance(prediction, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
+        prediction = prediction[0]  # select only inference output
+    
+    bs = prediction.shape[0]  # batch size (BCN, i.e. 1,84,8400)
+    nc = prediction.shape[1] - 4  # number of classes
+    extra = prediction.shape[1] - nc - 4  # number of extra info
+    mi = 4 + nc  # mask start index
+    xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
+    xinds = torch.stack([torch.arange(len(i), device=prediction.device) for i in xc])[..., None]  # to track idxs
+    
+    # Settings
+    time_limit = 2.0 + 0.05 * bs  # seconds to quit after
+    
+    prediction = prediction.transpose(-1, -2)  # shape(1,84,8400) to shape(1,8400,84)
+    
+    prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # xywh to xyxy
+
+
+    t = time.time()
+    output = [torch.zeros((0, 6 + extra), device=prediction.device)] * bs
+    keepi = [torch.zeros((0, 1), device=prediction.device)] * bs  # to store the kept idxs
+    for xi, (x, xk) in enumerate(zip(prediction, xinds)):  # image index, (preds, preds indices)
+        # Apply constraints
+        # x[((x[:, 2:4] < min_wh) | (x[:, 2:4] > max_wh)).any(1), 4] = 0  # width-height
+        filt = xc[xi]  # confidence
+        x, xk = x[filt], xk[filt]
+        
+        # If none remain process next image
+        if not x.shape[0]:
+            continue
+
+        # Detections matrix nx6 (xyxy, conf, cls)
+        box, cls, mask = x.split((4, nc, extra), 1)
+        
+        conf, j = cls.max(1, keepdim=True)
+        filt = conf.view(-1) > conf_thres
+        x = torch.cat((box, conf, j.float(), mask), 1)[filt]
+        xk = xk[filt]
+
+        # Check shape
+        n = x.shape[0]  # number of boxes
+        if not n:  # no boxes
+            continue
+        if n > max_nms:  # excess boxes
+            filt = x[:, 4].argsort(descending=True)[:max_nms]  # sort by confidence and remove excess boxes
+            x, xk = x[filt], xk[filt]
+        # Batched NMS
+        c = x[:, 5:6] * max_wh  # classes
+        scores = x[:, 4]  # scores
+        boxes = x[:, :4] + c  # boxes (offset by class)
+        i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
+        i = i[:max_det]  # limit detections
+
+        output[xi], keepi[xi] = x[i], xk[i].reshape(-1)
+        if (time.time() - t) > time_limit:
+            break  # time limit exceeded
+
+    return output
+*/
+std::vector<detected_obj> non_max_suppression(
+    DetectOutput const& outputs,
+    float conf_thres,
+    float iou_thres,
+    int max_det,
+    int max_nms,
+    int max_wh
+) {
+    if (!outputs.predictions_cls || !outputs.predictions_bbox) {
+        return {};
+    }
+    if (!(0.0f <= conf_thres && conf_thres <= 1.0f)) {
+        throw std::runtime_error("Invalid Confidence threshold");
+    }
+    if (!(0.0f <= iou_thres && iou_thres <= 1.0f)) {
+        throw std::runtime_error("Invalid IoU threshold");
+    }
+
+    const int64_t num_classes = outputs.predictions_cls->ne[0];
+    const int64_t num_anchors = outputs.predictions_cls->ne[1];
+
+    // Fetch data from backend to host
+    tensor_data td_cls = transfer_from_backend(outputs.predictions_cls);
+    tensor_data td_box = transfer_from_backend(outputs.predictions_bbox);
+    const float* cls_ptr = td_cls.as_f32().data();
+    const float* box_ptr = td_box.as_f32().data();
+
+    // Collect candidates
+    std::vector<std::array<float, 4>> boxes;
+    std::vector<float> scores;
+    std::vector<int> class_ids;
+    boxes.reserve(num_anchors);
+    scores.reserve(num_anchors);
+    class_ids.reserve(num_anchors);
+
+    for (int64_t j = 0; j < num_anchors; ++j) {
+        float best_conf = -1.0f;
+        int best_cls = -1;
+        for (int64_t c = 0; c < num_classes; ++c) {
+            float v = cls_ptr[c * num_anchors + j]; // [nc, N, 1, 1]
+            if (v > best_conf) {
+                best_conf = v;
+                best_cls = (int)c;
+            }
+        }
+        if (best_conf < conf_thres) continue;
+
+        // predictions_bbox is already in xyxy
+        float x1 = box_ptr[0 * num_anchors + j];
+        float y1 = box_ptr[1 * num_anchors + j];
+        float x2 = box_ptr[2 * num_anchors + j];
+        float y2 = box_ptr[3 * num_anchors + j];
+
+        boxes.push_back({x1, y1, x2, y2});
+        scores.push_back(best_conf);
+        class_ids.push_back(best_cls);
+    }
+
+    if (boxes.empty()) return {};
+
+    // Limit candidates for NMS
+    if ((int)boxes.size() > max_nms) {
+        std::vector<int> order(boxes.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::partial_sort(order.begin(), order.begin() + max_nms, order.end(), [&](int a, int b) {
+            return scores[a] > scores[b];
+        });
+        order.resize(max_nms);
+
+        std::vector<std::array<float, 4>> b2;
+        std::vector<float> s2;
+        std::vector<int> c2;
+        b2.reserve(order.size());
+        s2.reserve(order.size());
+        c2.reserve(order.size());
+        for (int idx : order) {
+            b2.push_back(boxes[idx]);
+            s2.push_back(scores[idx]);
+            c2.push_back(class_ids[idx]);
+        }
+        boxes.swap(b2);
+        scores.swap(s2);
+        class_ids.swap(c2);
+    }
+
+    std::vector<int> keep = nms(boxes, scores, class_ids, iou_thres, false, max_wh);
+    if ((int)keep.size() > max_det) keep.resize(max_det);
+
+    std::vector<detected_obj> result;
+    result.reserve(keep.size());
+    for (int idx : keep) {
+        detected_obj o;
+        o.x1 = boxes[idx][0];
+        o.y1 = boxes[idx][1];
+        o.x2 = boxes[idx][2];
+        o.y2 = boxes[idx][3];
+        o.confidence = scores[idx];
+        o.class_id = class_ids[idx];
+        o.class_confidence = scores[idx];
+        result.push_back(o);
+    }
+    return result;
+}
+
+
 
 
 // Scale boxes 함수도 detected_obj에 맞게 수정
@@ -1803,17 +1799,12 @@ int scale_coord(int coord, float scale) {
 i32x2 scale_extent(i32x2 extent, float scale) {
     return i32x2{scale_coord(extent[0], scale), scale_coord(extent[1], scale)};
 }
-image_data yolov9t_process_input(image_view image, yolov9t_params const& p) {
-    std::optional<image_data> resized;
-    float s = yolov9t::resize_longest_side(image.extent, p.input_size);
-    if (s != 1) {
-        resized = image_scale(image, yolov9t::scale_extent(image.extent, s));
-        image = image_view(*resized);
-    }
-
+image_data yolov9t_process_input(image_data image, yolov9t_params const& p) {
+    // 1) letterbox to square (p.input_size)
+    image_data lb = letterbox(std::move(image), {p.input_size, p.input_size}, u8x3{114,114,114}, true, false, true, yolov9t_params::stride);
+    // 2) convert to f32 and normalize to [0,1]
     image_data result = image_alloc({p.input_size, p.input_size}, image_format::rgb_f32);
-    // Normalize to [0,1]: (x + 0) * (1/255)
-    image_u8_to_f32(image, result, p.offset, p.scale);
+    image_u8_to_f32(lb, result, f32x4(p.offset), f32x4(p.scale));
     return result;
 }
 static void write_tensor_txt(tensor t, char const* filename) {

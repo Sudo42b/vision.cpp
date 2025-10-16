@@ -34,9 +34,15 @@ struct DetectOutput {
     std::vector<tensor> raw_outputs;
     std::vector<tensor>features;   // Selected backbone/neck features exposed for dumping
     std::map<int, tensor> features_map;
-    tensor predictions;  // [batch, 4+nc, num_anchors]
+    tensor predictions_cls;  // [nc, num_anchors, 1, bs]
+    tensor predictions_bbox;  // [4, num_anchors, 1, bs]
     tensor anchor_points;
     tensor strides_points;
+    tensor dfl_proj;     // DFL projection weights tensor (reg_max elements)
+    int reg_max = 0;     // number of DFL bins
+    std::vector<float> anchor_host_data;  // host-side buffer to upload after allocation
+    std::vector<float> stride_host_data;  // host-side buffer to upload after allocation
+    std::vector<float> dfl_proj_host_data; // host-side DFL projection weights
     // std::vector<float> anchor_data;  // 추가
     // std::vector<float> stride_data;        // 추가
 };
@@ -54,13 +60,13 @@ struct NMSParams {
     float iou_thres = 0.45f;
     int max_det = 300;
     int max_nms = 30000;
-    bool agnostic = false;
+    int max_wh = 7680;
 };
 
 // functions
 
 float resize_longest_side(i32x2 extent, int target_longest_side);
-image_data yolov9t_process_input(image_view image, yolov9t_params const& p);
+image_data yolov9t_process_input(image_data image, yolov9t_params const& p);
 // Detection parameters
 yolov9t_params yolov9t_detect_params(model_file const& file);
 // Core modules - actual layer implementations
@@ -106,13 +112,15 @@ tensor Bottleneck(
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x);
 
 // Detection head components
-tensor dfl_forward(model_ref m, tensor x, int reg_max, bool debug=false);
+tensor dfl_forward(model_ref m, tensor x, int reg_max, tensor& proj, bool debug=false);
 
 std::pair<tensor, tensor> make_anchors(
-    model_ref m, 
-    std::vector<tensor> features,
+    model_ref m,
+    DetectOutput const& out,
+    std::vector<float>& anchor_host,
+    std::vector<float>& stride_host,
     std::vector<float> const& strides,
-    float grid_cell_offset=0.5f) ;
+    float grid_cell_offset=0.5f);
 tensor dist2bbox(model_ref m, tensor dists, tensor anchors, bool xywh);
 // Detect head over multi-scale features
 DetectOutput detect_forward(model_ref m, std::vector<tensor> features, std::vector<int> ch, int nc, bool training);
@@ -128,16 +136,13 @@ std::vector<DetectOutput> process_outputs(
 );
 
 // Post-processing
-std::vector<DetectOutput> non_max_suppression(
-    std::vector<DetectOutput> const& detections, 
+std::vector<detected_obj> non_max_suppression(
+    DetectOutput const& outputs, 
     float conf_thres=0.25f, 
     float iou_thres=0.45f, 
     int max_det=300, 
-    bool agnostic=false, 
-    int max_wh=7680,
-    bool rotated=false,
-    bool end2end=false,
-    bool return_idxs=false);
+    int max_nms=30000,
+    int max_wh=7680);
 
 image_data hwc_to_chw_f32(image_data const& hwc);
 
@@ -154,9 +159,7 @@ void scale_boxes(
     std::vector<detected_obj>& detections,
     i32x2 model_shape,  // [height, width] of model input
     i32x2 img_shape);
-std::vector<detected_obj> non_max_suppression(
-        tensor prediction,
-        NMSParams const& params);
+
 std::vector<int> nms(
             std::vector<detected_obj> const& detections,
             float iou_threshold,
