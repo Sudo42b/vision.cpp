@@ -57,8 +57,9 @@
 // 7. Run the compute graph.
 // 8. Transfer the output to the host and post-process it.
 //
-// Custom pipelines are simply functions which call the individual steps and extend them
-// where needed. The implementation of the high-level API functions is a good starting point.
+// Custom pipelines can be created simply by writing a function that calls the
+// individual steps. As a starting point, check out or copy the implementation
+// of the high-level API functions. Then adapt them as needed.
 // This allows to:
 // * load model weights from a different source
 // * control exactly when allocation happens
@@ -76,10 +77,11 @@
 
 #include <array>
 #include <span>
+#include <vector>
 
 namespace visp {
 
-// SWIN - vision transformer for feature extraction
+// SWIN v1 - vision transformer for feature extraction
 
 constexpr int swin_n_layers = 4;
 
@@ -102,7 +104,7 @@ VISP_API swin_params swin_detect_params(model_file const&);
 VISP_API swin_buffers swin_precompute(model_ref, i32x2 image_extent, swin_params const&);
 VISP_API swin_result swin_encode(model_ref, tensor image, swin_params const&);
 
-// DINO - vision transformer for feature extraction
+// DINO v2 - vision transformer for feature extraction
 
 struct dino_params {
     int patch_size = 16;
@@ -169,7 +171,9 @@ VISP_API image_data sam_process_mask(
 struct birefnet_model;
 
 // Loads a BiRefNet model from GGUF file onto the backend device.
-// * supports BiRefNet, BiRefNet_lite, BiRefNet_Matting variants at 1024px resolution
+// * supports BiRefNet, BiRefNet-lite, BiRefNet-Matting variants at 1024px resolution
+// * supports BiRefNet-HR variant at 2048px resolution
+// * supports BiRefNet-dynamic variant at arbitrary resolution
 VISP_API birefnet_model birefnet_load_model(char const* filepath, backend_device const&);
 
 // Takes RGB input and computes an alpha mask with foreground as 1.0 and background as 0.0.
@@ -203,7 +207,12 @@ VISP_API tensor birefnet_predict(model_ref, tensor image, birefnet_params const&
 
 struct depthany_model;
 
+// Loads a Depth Anything V2 model from GGUF file onto the backend device.
+// * supports Small/Base/Large variants with flexible input resolution
 VISP_API depthany_model depthany_load_model(char const* filepath, backend_device const&);
+
+// Takes RGB input and computes estimated depth (distance from camera).
+// Output is a single-channel float32 image in range [0, 1.0].
 VISP_API image_data depthany_compute(depthany_model&, image_view image);
 
 // --- Depth Anything pipeline
@@ -222,7 +231,7 @@ VISP_API i32x2 depthany_image_extent(i32x2 input_extent, depthany_params const&)
 
 VISP_API image_data depthany_process_input(image_view image, depthany_params const&);
 image_data depthany_process_output(
-    span<float const> output_data, i32x2 target_extent, depthany_params const&);
+    std::span<float const> output_data, i32x2 target_extent, depthany_params const&);
 
 VISP_API tensor depthany_predict(model_ref, tensor image, depthany_params const&);
 

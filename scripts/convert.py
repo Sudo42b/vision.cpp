@@ -354,7 +354,10 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
 
 
 def convert_depth_anything(input_filepath: Path, writer: Writer):
-    writer.add_license("apache-2.0")
+    if "small" in input_filepath.name.lower():
+        writer.add_license("apache-2.0")
+    else:
+        writer.add_license("cc-by-nc-4.0")
     writer.set_tensor_layout_default(TensorLayout.nchw)
 
     model: dict[str, Tensor] = load_model(input_filepath)

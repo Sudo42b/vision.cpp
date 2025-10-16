@@ -12,13 +12,16 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 
 ### Features
 
-| Model                       | Task             | Backends    |
-| :-------------------------- | :--------------- | :---------- |
-| [**MobileSAM**](#mobilesam) | Segmentation     | CPU, Vulkan |
-| [**BiRefNet**](#birefnet)   | Segmentation     | CPU, Vulkan |
-| [**MI-GAN**](#mi-gan)       | Inpainting       | CPU, Vulkan |
-| [**ESRGAN**](#real-esrgan)  | Super-resolution | CPU, Vulkan |
+| Model                                    | Task                     | Backends    |
+| :--------------------------------------- | :----------------------- | :---------- |
+| [**MobileSAM**](#mobilesam)              | Promptable segmentation  | CPU, Vulkan |
+| [**BiRefNet**](#birefnet)                | Dichotomous segmentation | CPU, Vulkan |
+| [**Depth-Anything**](#depth-anything-v2) | Depth estimation         | CPU, Vulkan |
+| [**MI-GAN**](#mi-gan)                    | Inpainting               | CPU, Vulkan |
+| [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
+
+**Backbones:** SWIN (v1), DINO (v2), TinyViT
 
 ## Get Started
 
@@ -90,6 +93,16 @@ vision-cli sam -m MobileSAM-F16.gguf -i input.png -p 300 200 -o mask.png --compo
 
 ```sh
 vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composite comp.png
+```
+
+#### Depth-Anything V2
+
+<img width="400" height="256" alt="example-depth-anything" src="" />
+
+[Model download](https://huggingface.co/Acly/Depth-Anything-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/abs/2406.09414) | [Repository (GitHub)](https://github.com/DepthAnything/Depth-Anything-V2) | License: Apache-2 / CC-BY-NC-4
+
+```sh
+vision-cli depth-anything -m Depth-Anything-V2-Small-F16.gguf -i input.png -o depth.png
 ```
 
 #### MI-GAN

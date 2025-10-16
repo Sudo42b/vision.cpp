@@ -14,6 +14,13 @@ file(DOWNLOAD
   EXPECTED_HASH "SHA256=7b5397a2c98d66677f8f74317774bbeac49dbb321b8a3dc744af913db71d4fa5"
   SHOW_PROGRESS
 )
+message(STATUS "Checking for models/Depth-Anything-V2-Small-F16.gguf")
+file(DOWNLOAD
+  "https://huggingface.co/Acly/Depth-Anything-V2-GGUF/resolve/main/Depth-Anything-V2-Small-F16.gguf"
+  ${CMAKE_CURRENT_LIST_DIR}/Depth-Anything-V2-Small-F16.gguf
+  EXPECTED_HASH "SHA256=0f83332d6a8b4375cd7fdcc168f3e3636f474f8e84b0959e903f513aace782f5"
+  SHOW_PROGRESS
+)
 message(STATUS "Checking for models/MIGAN-512-places2-F16.gguf")
 file(DOWNLOAD
   "https://huggingface.co/Acly/MIGAN-GGUF/resolve/main/MIGAN-512-places2-F16.gguf"
