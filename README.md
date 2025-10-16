@@ -97,9 +97,9 @@ vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composi
 
 #### Depth-Anything V2
 
-<img width="400" height="256" alt="example-depth-anything" src="" />
+<img width="400" height="256" alt="example-depth-anything" src="https://github.com/user-attachments/assets/62bde481-b898-4c46-a298-644198716953" />
 
-[Model download](https://huggingface.co/Acly/Depth-Anything-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/abs/2406.09414) | [Repository (GitHub)](https://github.com/DepthAnything/Depth-Anything-V2) | License: Apache-2 / CC-BY-NC-4
+[Model download](https://huggingface.co/Acly/Depth-Anything-V2-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/abs/2406.09414) | [Repository (GitHub)](https://github.com/DepthAnything/Depth-Anything-V2) | License: Apache-2 / CC-BY-NC-4
 
 ```sh
 vision-cli depth-anything -m Depth-Anything-V2-Small-F16.gguf -i input.png -o depth.png
