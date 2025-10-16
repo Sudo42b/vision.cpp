@@ -106,6 +106,7 @@ ggml_type backend_device::preferred_float_type() const {
 
 tensor_data_layout backend_device::preferred_layout() const {
     if (type() == backend_type::cpu) {
+        printf("Using CWHN tensor layout for CPU backend\n");
         return tensor_data_layout::cwhn;
     }
     return tensor_data_layout::unknown; // no preference, keep model weight layout

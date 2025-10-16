@@ -22,8 +22,8 @@ import os
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='yolov9t_converted.pth', help='model path')
-    parser.add_argument('--source', type=str, default='./figure/cat-and-hat.jpg', help='image path')
-    parser.add_argument('--data', type=str, default='./figure/coco.yaml', help='model yaml (for class names)')
+    parser.add_argument('--source', type=str, default='../tests/input/cat-and-hat.jpg', help='image path')
+    parser.add_argument('--data', type=str, default='../tests/input/coco.yaml', help='model yaml (for class names)')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='h w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
@@ -82,10 +82,9 @@ if __name__ == "__main__":
         else:
             print("is not list")
             print(p.shape)
-    print_shape(pred)
     
     # NMS
-    pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=None, agnostic=False, max_det=opt.max_det)
+    pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, max_det=opt.max_det)
     # Draw boxes
     annotator = Annotator(im0.copy(), line_width=opt.line_thickness, example=str(list(names.values())))
     
@@ -96,6 +95,8 @@ if __name__ == "__main__":
             c = int(cls)
             cname = names[c] if c in names else str(c)
             label = None if opt.hide_labels else (cname if opt.hide_conf else f'{cname} {conf:.2f}')
+            for i in xyxy:
+                print(i.detach().cpu().numpy(), label)
             annotator.box_label(xyxy, label, color=colors(c, True))
     
     result = annotator.result()

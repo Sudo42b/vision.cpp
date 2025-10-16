@@ -108,9 +108,11 @@ def is_conv_2d(name: str, tensor: Tensor):
 def conv_2d_to_nhwc(kernel: Tensor):
     c_in = kernel.shape[1]
     if c_in == 1:  # depthwise
-        return kernel.permute(2, 3, 1, 0)  # H W 1 C_out
+        return kernel.permute(0, 1, 3, 2).contiguous()  # H W 1 C_out
     else:
-        return kernel.permute(0, 2, 3, 1)  # C_out H W C_in
+        permute=  kernel.permute(0, 1, 3, 2).contiguous()  # C_out H W C_in
+        permute = kernel.contiguous()
+        return permute
 
 
 def conv_transpose_2d_to_nhwc(kernel: Tensor):
@@ -417,6 +419,9 @@ def find_conv_bn_pairs(model: dict[str, Tensor]) -> list[tuple[str, str, str]]:
         conv = conv_key.replace(".conv.weight", ".conv")
         if all(k in model for k in [bn_weight_key, bn_bias_key, bn_mean_key, bn_var_key]):
             conv_bn_pairs.append((conv, bn))
+        else:
+            print(bn, conv + " does not have corresponding BatchNorm parameters.")
+        
     return conv_bn_pairs
 
 
@@ -437,6 +442,21 @@ def fuse_conv_bn_weights(conv_w, conv_b, bn_rm, bn_rv, bn_w, bn_b, eps=1e-3):
 
     return conv_w, conv_b
 
+def fuse_conv_and_bn(conv_weight:torch.Tensor, 
+                     conv_bias:torch.Tensor, bn_weight:torch.Tensor, bn_bias:torch.Tensor, running_mean:torch.Tensor, running_var:torch.Tensor, eps=1e-3):
+    # Fuse Conv2d() and BatchNorm2d() layers https://tehnokv.com/posts/fusing-batchnorm-and-conv/
+
+    # Prepare filters
+    w_conv = conv_weight.clone().view(conv_weight.size(0), -1)  # C_out x (C_in*H*W)
+    w_bn = torch.diag(bn_weight.div(torch.sqrt(eps + running_var)))
+    fused_conv = (torch.mm(w_bn, w_conv))
+    
+    # Prepare spatial bias
+    b_conv = torch.zeros(conv_weight.size(0)) if conv_bias is None else conv_bias
+    b_bn = bn_bias - bn_weight.mul(running_mean).div(torch.sqrt(running_var + eps))
+    fused_bias = torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn
+
+    return fused_conv, fused_bias
 
 # YOLOv9t 변환 함수 수정
 def convert_yolov9t(input_filepath: Path, writer: Writer):
@@ -472,7 +492,8 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
     print("\n=== Finding Conv-BN pairs ===")
     conv_bn_pairs = find_conv_bn_pairs(model)
     print(f"Found {len(conv_bn_pairs)} Conv-BN pairs")
-
+    
+    
     # Convert weights
     from tqdm import tqdm
     processed_keys = set()
@@ -483,18 +504,28 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
         
         conv_weight = model.get(f"{conv_suffix}.weight", None)
         conv_bias = model.get(f"{conv_suffix}.bias", None)
-        bn_rm = model.get(f"{bn_suffix}.running_mean", None)
-        bn_b = model.get(f"{bn_suffix}.bias", None)
-        bn_rv = model.get(f"{bn_suffix}.running_var", None)
         bn_w = model.get(f"{bn_suffix}.weight", None)
+        bn_b = model.get(f"{bn_suffix}.bias", None)
+        bn_rm = model.get(f"{bn_suffix}.running_mean", None)
+        bn_rv = model.get(f"{bn_suffix}.running_var", None)
+        eps = model.get(f"{bn_suffix}.eps", 1e-3)
         
-        # print(conv_weight.shape, conv_bias.shape, bn_rm.shape, bn_rv.shape, bn_w.shape, bn_b.shape)
+        # # print(conv_weight.shape, conv_bias.shape, bn_rm.shape, bn_rv.shape, bn_w.shape, bn_b.shape)
         fused_conv, fused_bias = fuse_conv_bn_weights(conv_weight, 
                                                       conv_bias, 
                                                       bn_rm, 
                                                       bn_rv, 
                                                       bn_w, 
-                                                      bn_b)
+                                                      bn_b, 
+                                                      eps)
+        
+        # fused_conv , fused_bias = fuse_conv_and_bn(conv_weight= conv_weight, 
+        #                                            conv_bias= conv_bias,
+        #                                            bn_weight= bn_w, 
+        #                                            bn_bias= bn_b,
+        #                                            running_mean= bn_rm, 
+        #                                            running_var= bn_rv,  
+        #                                            eps= eps)
         
         tensor = writer.convert_tensor_2d(fused_conv)
         if torch.numel(fused_bias) == 0:
@@ -508,7 +539,7 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
         processed_keys.add(f"{conv_suffix}.weight")
         processed_keys.add(f"{conv_suffix}.bias")
   
-        print(f"{conv_suffix}, {bn_suffix}")
+        # print(f"{conv_suffix}, {bn_suffix}")
     # === 추가: Detect head의 마지막 레이어만 저장 ===
     print("\n=== Finding Detect head final layers (nn.Conv2d) ===")
     
@@ -527,10 +558,10 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
         if key.endswith('.weight'):
             tensor = writer.convert_tensor_2d(value)
             writer.add_tensor(key, tensor)
-            print(f"Detect layer: {key} {value.shape}")
-        elif key.endswith('.bias'):
-            writer.add_tensor(key, value)
-            print(f"Detect layer: {key} {value.shape}")
+            # print(f"Detect layer: {key} {value.shape}")
+        # elif key.endswith('.bias'):
+        #     writer.add_tensor(key, value)
+        #     print(f"Detect layer: {key} {value.shape}")
     
     total_detect_layers = len([k for k in detect_layers.keys() if k.endswith('.weight')])
     
@@ -558,7 +589,7 @@ if __name__ == "__main__":
     parser.add_argument("--arch", choices=list(arch_names.keys()), help="Model architecture")
     parser.add_argument("--input", type=str, help="Path to the input model file")
     parser.add_argument("--output", "-o", type=str, default="models", help="Path to the output directory or file")
-    parser.add_argument("--quantize", "-q", choices=["f16"], default=None, help="Convert float weights to the specified data type")
+    parser.add_argument("--quantize", "-q", choices=["f32"], default=None, help="Convert float weights to the specified data type")
     parser.add_argument("--layout", "-l", choices=["whcn", "cwhn"], default=None, help="Tensor data layout for 2D operations like convolution")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument("--model-name", type=str, default=None, help="Name of the model for metadata")

@@ -87,7 +87,7 @@ tensor Conv(
     }
     m.prefix = tensor_name(weight_name.c_str());
     tensor weight = m.weights("weight");
-
+    
     if (debug) {
         printf("Weight shape: [%d,%d,%d,%d]\n", (int)weight->ne[0], (int)weight->ne[1], (int)weight->ne[2], (int)weight->ne[3]);
         printf("Input shape: [%d,%d,%d,%d]\n", (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
@@ -629,7 +629,7 @@ tensor Concat(model_ref m, tensor a, tensor b, int axis, bool debug) {
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     std::map<int, tensor> features;
     // Layer 0: Conv(3, 16, 3, 2) - P1/2
-    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, false);
+    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, true);
     features[0] = x0;
     ggml_set_output(x0);
 
@@ -644,7 +644,7 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     features[2] = x2;
     
     // Layer 3: AConv(32, 64) - P3/8
-    tensor x3 = AConv(m, x2, "model.3", 32, 64, true);
+    tensor x3 = AConv(m, x2, "model.3", 32, 64, false);
     ggml_set_output(x3);
     features[3] = x3;
 
@@ -769,27 +769,18 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
 tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh/*=true*/) {
     // distance: [4, N, ...], anchor_points: [2, N, ...]
     printf("distance shape: [%ld,%ld,%ld,%ld]\n", distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
-    printf("anchor_points shpe: [%ld,%ld,%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1], anchor_points->ne[2], anchor_points->ne[3]);
-    distance = ggml_reshape_2d(m, distance, distance->ne[1], distance->ne[2]);
+    
+    distance = ggml_cont(m, distance);
+    distance = ggml_permute(m, distance, 2, 0, 1, 3);
+    
     distance = ggml_cont(m, distance);
     GGML_ASSERT(distance->ne[0] == 4);
     GGML_ASSERT(anchor_points->ne[0] == 2);
 
     // lt, rb = torch.split(distance, 2, dim=0)
     // lt = distance[0:2, ...], rb = distance[2:4, ...]
-    tensor lt = ggml_view_4d(
-        m, distance,
-        2, distance->ne[1], distance->ne[2], distance->ne[3],
-        distance->nb[1], distance->nb[2], distance->nb[3],
-        0
-    );
-    tensor rb = ggml_view_4d(
-        m, distance,
-        2, distance->ne[1], distance->ne[2], distance->ne[3],
-        distance->nb[1], distance->nb[2], distance->nb[3],
-        2 * distance->nb[0]
-    );
-
+    tensor lt = slice(m, distance, slice_t{0, 2}, slice_t{}, slice_t{}, slice_t{});
+    tensor rb = slice(m, distance, slice_t{2, 4}, slice_t{}, slice_t{}, slice_t{});
     // x1y1 = anchor_points - lt
     tensor x1y1 = ggml_sub(m, anchor_points, lt);
 
@@ -811,8 +802,7 @@ tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh/*
 
 // DFL (Distribution Focal Loss) layer implementation
 tensor dfl_forward(model_ref m, tensor x, int reg_max, tensor& proj, bool debug) {
-    // PyTorch DFL forward equivalent (softmax over bins + expected value)
-    // Input: x [4*reg_max, A, 1, 1] in CWHN where A = H*W
+    // Input x: [4*reg_max, A, 1, 1] (CWHN). Compute expected value per coordinate.
     if (debug) {
         printf("x shape: [%d,%d,%d,%d]\n", (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }

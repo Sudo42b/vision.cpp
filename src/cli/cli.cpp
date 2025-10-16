@@ -564,12 +564,6 @@ void run_yolov9t(cli_args const& args) {
            (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
     
     timer t_preprocess;
-    // image_data resized_image = letterbox(std::move(input_image), 
-    //                                 {params.input_size, params.input_size}, 
-    //                                 {114, 114, 114}, 
-    //                                 true, false, true, params.stride);
-    // input_image convert to 0~1.0f
-    // image_data processed_f32 = image_u8_to_f32(input_image, image_format::rgb_f32, params.offset, params.scale);
     image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
     printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
     printf("Image shape: torch.Size([1, 3, %d, %d])\n", img_sz, img_sz);
@@ -616,46 +610,6 @@ void run_yolov9t(cli_args const& args) {
         save_input_to_txt(input, in_txt.c_str());
     }
     compute_timed(graph, backend);
-
-    // Debug: print top-K anchors for specific classes to compare with PyTorch
-    {
-        using namespace visp::yolov9t;
-        std::vector<std::string> const& names = get_coco_class_names();
-        auto find_cls = [&](char const* n) -> int {
-            for (size_t i = 0; i < names.size(); ++i) if (names[i] == n) return (int)i;
-            return -1;
-        };
-        int cls_cat = find_cls("cat");
-        int cls_tv = find_cls("tv");
-        int cls_bed = find_cls("bed");
-        if (outputs.predictions_cls && outputs.anchor_points && cls_cat >= 0 && cls_tv >= 0 && cls_bed >= 0) {
-            tensor_data td_cls = transfer_from_backend(outputs.predictions_cls);
-            tensor_data td_anc = transfer_from_backend(outputs.anchor_points);
-            int64_t na = outputs.predictions_cls->ne[1];
-            auto cls_ptr = td_cls.as_f32();
-            auto anc_ptr = td_anc.as_f32(); // layout [2, na]
-
-            auto print_topk = [&](int c, char const* cname) {
-                struct Item { float s; int j; };
-                std::vector<Item> v;
-                v.reserve((size_t)na);
-                for (int64_t j = 0; j < na; ++j) {
-                    float s = cls_ptr[c * na + j];
-                    v.push_back({s, (int)j});
-                }
-                std::partial_sort(v.begin(), v.begin() + std::min<size_t>(4, v.size()), v.end(), [](Item const& a, Item const& b){return a.s > b.s;});
-                size_t K = std::min<size_t>(4, v.size());
-                for (size_t k = 0; k < K; ++k) {
-                    int j = v[k].j;
-                    float x = anc_ptr[j * 2 + 0]; // anchor x
-                    printf("%.1f %s %.2f\n", x, cname, v[k].s);
-                }
-            };
-            print_topk(cls_cat, "cat");
-            print_topk(cls_tv, "tv");
-            print_topk(cls_bed, "bed");
-        }
-    }
 
     // Save selected feature maps to text files for debugging/analysis
     if (args.dump_all || !args.dump_keys.empty()) {

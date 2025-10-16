@@ -731,7 +731,6 @@ class Detect(nn.Module):
             ) for x in ch
         )
         
-        
         # Classification head
         # self.cv3 = nn.ModuleList(
         #     nn.Sequential(
@@ -742,15 +741,15 @@ class Detect(nn.Module):
         # )
         self.cv3 = (
             nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), Conv2d(c3, self.nc, 1)) for x in ch)
-            if self.legacy
-            else nn.ModuleList(
-                nn.Sequential(
-                    nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
-                    nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
-                    Conv2d(c3, self.nc, 1),
-                )
-                for x in ch
-            )
+            # if self.legacy
+            # else nn.ModuleList(
+            #     nn.Sequential(
+            #         nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
+            #         nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
+            #         Conv2d(c3, self.nc, 1),
+            #     )
+            #     for x in ch
+            # )
         )
         
         
@@ -760,43 +759,16 @@ class Detect(nn.Module):
             self.one2one_cv2 = copy.deepcopy(self.cv2)
             self.one2one_cv3 = copy.deepcopy(self.cv3)
     
-    # def forward(self, x):
-    #     """Concatenate and return predicted bounding boxes and class probabilities."""
-    #     # print("cv2")
-    #     # for i in range(self.nl):
-    #     #     print("Input")
-    #     #     print(x[i].shape)
-    #     #     print("Output")
-    #     #     print(self.cv2[i](x[i]).shape)
-    #     # print("cv3")
-    #     # for i in range(self.nl):
-    #     #     print("Input")
-    #     #     print(x[i].shape)
-    #     #     print("Output")
-    #     #     print(self.cv3[i](x[i]).shape)
-    #     # exit()
-    #     for i in range(self.nl):
-    #         x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-    #     if self.training:
-    #         return x
-        
-    #     # Inference
-    #     shape = x[0].shape  # BCHW
-        
-    #     x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2)
-    #     box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
-    #     dbox = self.dfl(box)
-    #     return torch.cat((dbox, cls.sigmoid()), 1), x
-    
-    # 아래는 원본
     def forward(self, x: List[torch.Tensor]) -> Union[List[torch.Tensor], Tuple]:
         """Concatenate and return predicted bounding boxes and class probabilities."""
-        if self.end2end:
-            return self.forward_end2end(x)
+        
+        # if self.end2end:
+        #     return self.forward_end2end(x)
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-        if self.training:  # Training path
-            return x
+        
+        # if self.training:  # Training path
+        #     return x
         y = self._inference(x)
         return y if self.export else (y, x)
 
@@ -838,16 +810,23 @@ class Detect(nn.Module):
         # Inference path
         shape = x[0].shape  # BCHW
         x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2)
-        if self.format != "imx" and (self.dynamic or self.shape != shape):
-            self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
-            self.shape = shape
+        
+        self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+        
+        self.shape = shape
+        # if self.format != "imx" and (self.dynamic or self.shape != shape):
+        #     self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+        #     self.shape = shape    
 
         if self.export and self.format in {"saved_model", "pb", "tflite", "edgetpu", "tfjs"}:  # avoid TF FlexSplitV ops
             box = x_cat[:, : self.reg_max * 4]
             cls = x_cat[:, self.reg_max * 4 :]
+            
         else:
+            # torch.Size([1, 144, 8400]) -> torch.Size([1, 64, 8400]) torch.Size([1, 80, 8400])
             box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
-
+        
+        
         if self.export and self.format in {"tflite", "edgetpu"}:
             # Precompute normalization factor to increase numerical stability
             # See https://github.com/ultralytics/ultralytics/issues/7371
@@ -858,8 +837,11 @@ class Detect(nn.Module):
             dbox = self.decode_bboxes(self.dfl(box) * norm, self.anchors.unsqueeze(0) * norm[:, :2])
         else:
             dbox = self.decode_bboxes(self.dfl(box), self.anchors.unsqueeze(0)) * self.strides
+            # torch.Size([1, 64, 8400]) -> torch.Size([1, 4, 8400])
+
         if self.export and self.format == "imx":
             return dbox.transpose(1, 2), cls.sigmoid().permute(0, 2, 1)
+        
         return torch.cat((dbox, cls.sigmoid()), 1)
 
     def bias_init(self):
@@ -877,6 +859,7 @@ class Detect(nn.Module):
 
     def decode_bboxes(self, bboxes: Tensor, anchors: Tensor, xywh: bool = True) -> Tensor:
         """Decode bounding boxes from predictions."""
+        
         return dist2bbox(bboxes, anchors, xywh=xywh and not (self.end2end or self.xyxy), dim=1)
 
     @staticmethod
