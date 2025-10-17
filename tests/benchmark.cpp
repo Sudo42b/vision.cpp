@@ -93,6 +93,17 @@ bench_timings benchmark_birefnet(path model_path, backend_device& backend) {
     return run_benchmark(model.graph, backend, 8, {{model.input, input_data}});
 }
 
+bench_timings benchmark_depth_anything(path model_path, backend_device& backend) {
+    path input_path = test_dir().input / "wardrobe.jpg";
+
+    depthany_model model = depthany_load_model(model_path.string().c_str(), backend);
+    image_data input = image_load(input_path.string().c_str());
+    depthany_compute(model, input);
+
+    image_data input_data = depthany_process_input(input, model.params);
+    return run_benchmark(model.graph, backend, 12, {{model.input, input_data}});
+}
+
 bench_timings benchmark_migan(path model_path, backend_device& backend) {
     path image_path = test_dir().input / "bench-image.jpg";
     path mask_path = test_dir().input / "bench-mask.png";
@@ -171,6 +182,10 @@ bench_result benchmark_model(
     } else if (arch == "birefnet") {
         path model_path = select_model(model, "BiRefNet-lite-F16.gguf");
         result.time = benchmark_birefnet(model_path, backend);
+
+    } else if (arch == "depthany") {
+        path model_path = select_model(model, "Depth-Anything-V2-Small-F16.gguf");
+        result.time = benchmark_depth_anything(model_path, backend);
 
     } else if (arch == "migan") {
         path model_path = select_model(model, "MIGAN-512-places2-F16.gguf");

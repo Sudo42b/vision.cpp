@@ -12,13 +12,16 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 
 ### Features
 
-| Model                       | Task             | Backends    |
-| :-------------------------- | :--------------- | :---------- |
-| [**MobileSAM**](#mobilesam) | Segmentation     | CPU, Vulkan |
-| [**BiRefNet**](#birefnet)   | Segmentation     | CPU, Vulkan |
-| [**MI-GAN**](#mi-gan)       | Inpainting       | CPU, Vulkan |
-| [**ESRGAN**](#real-esrgan)  | Super-resolution | CPU, Vulkan |
+| Model                                    | Task                     | Backends    |
+| :--------------------------------------- | :----------------------- | :---------- |
+| [**MobileSAM**](#mobilesam)              | Promptable segmentation  | CPU, Vulkan |
+| [**BiRefNet**](#birefnet)                | Dichotomous segmentation | CPU, Vulkan |
+| [**Depth-Anything**](#depth-anything-v2) | Depth estimation         | CPU, Vulkan |
+| [**MI-GAN**](#mi-gan)                    | Inpainting               | CPU, Vulkan |
+| [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
+
+**Backbones:** SWIN (v1), DINO (v2), TinyViT
 
 ## Get Started
 
@@ -90,6 +93,16 @@ vision-cli sam -m MobileSAM-F16.gguf -i input.png -p 300 200 -o mask.png --compo
 
 ```sh
 vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composite comp.png
+```
+
+#### Depth-Anything V2
+
+<img width="400" height="256" alt="example-depth-anything" src="https://github.com/user-attachments/assets/62bde481-b898-4c46-a298-644198716953" />
+
+[Model download](https://huggingface.co/Acly/Depth-Anything-V2-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/abs/2406.09414) | [Repository (GitHub)](https://github.com/DepthAnything/Depth-Anything-V2) | License: Apache-2 / CC-BY-NC-4
+
+```sh
+vision-cli depth-anything -m Depth-Anything-V2-Small-F16.gguf -i input.png -o depth.png
 ```
 
 #### MI-GAN
@@ -191,10 +204,17 @@ as other frameworks for inference speed, but with:
 
 | Model |      |      | _vision.cpp_ |  PyTorch | ONNX Runtime |
 | :---- | :--- | :--- | -----------: | -------: | -----------: |
-| Full  | cpu  | f32  |     16333 ms | 18800 ms |              |
-| Full  | gpu  | f16  |       243 ms |   140 ms |              |
+| Full  | cpu  | f32  |     16333 ms | 18290 ms |              |
+| Full  | gpu  | f16  |       208 ms |   190 ms |              |
 | Lite  | cpu  | f32  |      4505 ms | 10900 ms |      6978 ms |
-| Lite  | gpu  | f16  |        86 ms |    59 ms |              |
+| Lite  | gpu  | f16  |        85 ms |    84 ms |              |
+
+#### Depth-Anything, 518x714
+
+| Model |      |      | _vision.cpp_ | PyTorch |
+| :---- | :--- | :--- | -----------: | ------: |
+| Small | gpu  | f16  |        11 ms |   10 ms |
+| Base  | gpu  | f16  |        24 ms |   22 ms |
 
 #### MI-GAN, 512x512
 
@@ -205,7 +225,7 @@ as other frameworks for inference speed, but with:
 
 #### Setup
 
-* vision.cpp: using vision-bench, GPU via Vulkan, eg. `vision-bench -m sam -b cpu`
+* vision.cpp: using vision-bench, GPU via Vulkan, eg. `vision-bench -m sam`
 * PyTorch: v2.7.1+cu128, eager eval, GPU via CUDA, average n iterations after warm-up
 
 ## Dependencies (integrated)

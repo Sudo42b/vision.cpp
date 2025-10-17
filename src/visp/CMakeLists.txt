@@ -2,9 +2,12 @@ add_library(visioncpp SHARED)
 
 target_sources(visioncpp PRIVATE
   arch/birefnet.cpp
+  arch/depth-anything.cpp
+  arch/dino.cpp
   arch/esrgan.cpp
   arch/migan.cpp
   arch/mobile-sam.cpp
+  arch/swin.cpp
   arch/yolov9t.cpp
   image.cpp
   ml.cpp

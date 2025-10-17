@@ -16,7 +16,7 @@
 namespace visp {
 using std::filesystem::path;
 
-enum class cli_command { none, sam, birefnet, migan, esrgan, yolov9t };
+enum class cli_command { none, sam, birefnet, depth_anything, migan, esrgan, yolov9t };
 
 struct cli_args {
     cli_command command = cli_command::none;
@@ -44,6 +44,7 @@ Usage: vision-cli <command> [options]
 Commands:
     sam       - MobileSAM image segmentation
     birefnet  - BirefNet background removal
+    depthany  - Depth-Anything depth estimation
     migan     - MI-GAN inpainting
     esrgan    - ESRGAN/Real-ESRGAN upscaling
     yolov9t   - YOLOv9t object detection
@@ -127,8 +128,12 @@ cli_args cli_parse(int argc, char** argv) {
         r.command = cli_command::sam;
     } else if (arg1 == "birefnet") {
         r.command = cli_command::birefnet;
+    } else if (arg1 == "depthany" || arg1 == "depth-anything") {
+        r.command = cli_command::depth_anything;
     } else if (arg1 == "migan") {
         r.command = cli_command::migan;
+    } else if (arg1 == "yolov9t") {
+        r.command = cli_command::yolov9t;
     } else if (arg1 == "esrgan") {
         r.command = cli_command::esrgan;
     } else if (arg1 == "yolov9t") {
@@ -179,6 +184,7 @@ cli_args cli_parse(int argc, char** argv) {
 
 void run_sam(cli_args const&);
 void run_birefnet(cli_args const&);
+void run_depth_anything(cli_args const&);
 void run_migan(cli_args const&);
 void run_esrgan(cli_args const&);
 void run_yolov9t(cli_args const&);
@@ -197,7 +203,9 @@ int main(int argc, char** argv) {
         switch (args.command) {
             case cli_command::sam: run_sam(args); break;
             case cli_command::birefnet: run_birefnet(args); break;
+            case cli_command::depth_anything: run_depth_anything(args); break;
             case cli_command::migan: run_migan(args); break;
+            case cli_command::depth_anything: run_depth_anything(args); break;
             case cli_command::esrgan: run_esrgan(args); break;
             case cli_command::yolov9t: run_yolov9t(args); break;
             case cli_command::none: break;
@@ -283,6 +291,11 @@ std::tuple<model_file, model_weights> load_model_weights(
         printf("- tensor layout: %s\n", to_string(preferred_layout));
     }
     return {std::move(file), std::move(weights)};
+}
+
+void print_model_flags(model_ref const& m) {
+    bool flash_attn = !!(m.flags & model_build_flag::flash_attention);
+    printf("- flash attention: %s\n", flash_attn ? "on" : "off");
 }
 
 void compute_timed(compute_graph const& g, backend_device const& b) {
@@ -428,6 +441,7 @@ void run_birefnet(cli_args const& args) {
 
     compute_graph graph = compute_graph_init(6 * 1024);
     model_ref m(weights, graph);
+    print_model_flags(m);
 
     birefnet_buffers buffers = birefnet_precompute(m, params);
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
@@ -449,6 +463,42 @@ void run_birefnet(cli_args const& args) {
     printf("-> mask saved to %s\n", args.output);
 
     composite_image_with_mask(image, mask_resized, args.composite);
+}
+
+//
+// Depth Anything
+
+void run_depth_anything(cli_args const& args) {
+    backend_device backend = backend_init(args);
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/DepthAnythingV2-Small-F32.gguf", 0, backend.preferred_layout());
+
+    require_inputs(args.inputs, 1, "<image>");
+    image_data image = image_load(args.inputs[0]);
+    depthany_params params = depthany_detect_params(file, image.extent);
+    image_data input_data = depthany_process_input(image, params);
+
+    i32x2 extent = params.image_extent;
+    printf("- model image size: %d\n", params.image_size);
+    printf("- inference image size: %dx%d\n", params.image_extent[0], params.image_extent[1]);
+
+    compute_graph graph = compute_graph_init();
+    model_ref m(weights, graph);
+    print_model_flags(m);
+
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
+    tensor output = depthany_predict(m, input, params);
+
+    compute_graph_allocate(graph, backend);
+    transfer_to_backend(input, input_data);
+
+    compute_timed(graph, backend);
+
+    tensor_data output_data = transfer_from_backend(output);
+    image_data depth_raw = depthany_process_output(output_data.as_f32(), image.extent, params);
+    image_data depth_image = image_f32_to_u8(depth_raw, image_format::alpha_u8);
+    image_save(depth_image, args.output);
+    printf("-> depth image saved to %s\n", args.output);
 }
 
 //
@@ -670,4 +720,127 @@ void run_yolov9t(cli_args const& args) {
     printf("Found %zu objects\n", detections.size());
 }
 
+// YOLOv9t
+    using namespace visp::yolov9t;
+    
+    backend_device backend = backend_init(args);
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/yolov9t_converted.gguf", 0, backend.preferred_layout());
+    
+    yolov9t_params params = yolov9t_detect_params(file);
+    printf("- model input size: %dx%d\n", params.input_size, params.input_size);
+    int img_sz = check_img_size(params.input_size, params.stride);
+    require_inputs(args.inputs, 1, "<image>");
+    image_data input_image = image_load(args.inputs[0]);
+    printf("- input image size: %dx%d\n", input_image.extent[0], input_image.extent[1]);
+    printf("- tensor layout: %s\n", 
+           (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
+    
+    timer t_preprocess;
+    // image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
+    image_data processed_f32 = yolov9t_process_input2(std::move(input_image), params);
+    printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
+
+    printf("Preprocessing complete (%s)\n", t_preprocess.elapsed_str());
+    compute_graph graph = compute_graph_init(ggml_graph_overhead() * ggml_tensor_overhead()*2);
+    model_ref m(weights, graph);
+    
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, 
+                                        {3, img_sz, img_sz, 1}, "input");
+    printf("- input tensor shape: %ld, %ld, %ld, %ld\n", 
+           input->ne[0], input->ne[1], input->ne[2], input->ne[3]);
+    printf("Running YOLOv9t inference...\n");
+    DetectOutput outputs = yolov9t_forward(m, input);
+    // 그래프 완료
+    if (outputs.predictions_cls != nullptr && outputs.predictions_bbox != nullptr) {
+        printf("outputs.predictions built\n");
+        ggml_build_forward_expand(m.graph, outputs.predictions_cls);
+        ggml_build_forward_expand(m.graph, outputs.predictions_bbox);
+    } else if (!outputs.raw_outputs.empty()) {
+        printf("outputs.raw_outputs built\n");
+        for (auto& raw_out : outputs.raw_outputs) {
+            ggml_build_forward_expand(m.graph, raw_out);
+        }
+    }
+    compute_graph_allocate(graph, backend);
+
+    // Upload input data
+    transfer_to_backend(input, processed_f32);
+
+    // Upload anchors/strides/proj if present
+    if (outputs.anchor_points && !outputs.anchor_host_data.empty()) {
+        transfer_to_backend(outputs.anchor_points, std::span<const float>(outputs.anchor_host_data));
+    }
+    if (outputs.strides_points && !outputs.stride_host_data.empty()) {
+        transfer_to_backend(outputs.strides_points, std::span<const float>(outputs.stride_host_data));
+    }
+    if (outputs.dfl_proj && !outputs.dfl_proj_host_data.empty()) {
+        transfer_to_backend(outputs.dfl_proj, std::span<const float>(outputs.dfl_proj_host_data));
+    }
+    // Save preprocessed input tensor when dumping is requested
+    if (args.dump_all || !args.dump_keys.empty()) {
+        std::string base = args.output ? std::string(args.output) : std::string("output.png");
+        size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos) base = base.substr(0, dot);
+        std::string in_txt = base + "_input.txt";
+        printf("Saving input tensor to %s\n", in_txt.c_str());
+        save_input_to_txt(input, in_txt.c_str());
+    }
+    compute_timed(graph, backend);
+
+    // Save selected feature maps to text files for debugging/analysis
+    if (args.dump_all || !args.dump_keys.empty()) {
+        std::string base = args.output ? std::string(args.output) : std::string("output.png");
+        size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos) base = base.substr(0, dot);
+        base += "_features";
+        // If dump_all -> save all layers (empty keys). Otherwise, save specified keys.
+        if (args.dump_all) {
+            std::vector<int> empty_keys;
+            save_features_to_txt(outputs, base.c_str(), empty_keys);
+        } else {
+            save_features_to_txt(outputs, base.c_str(), args.dump_keys);
+        }
+        // Additionally dump predictions and raw outputs for full comparison
+        if (args.dump_all) {
+            if (outputs.predictions_cls && outputs.predictions_bbox) {
+                std::string pred_txt = base + std::string("_predictions.txt");
+                save_input_to_txt(outputs.predictions_cls, pred_txt.c_str());
+                save_input_to_txt(outputs.predictions_bbox, pred_txt.c_str());
+            }
+            if (!outputs.raw_outputs.empty()) {
+                for (size_t i = 0; i < outputs.raw_outputs.size(); ++i) {
+                    std::string raw_txt = base + std::string("_raw_") + std::to_string(i) + std::string(".txt");
+                    // save_input_to_txt(outputs.raw_outputs[i], raw_txt.c_str());
+                }
+            }
+        }
+    }
+
+    timer t_post;
+    printf("Postprocessing... skipped (no renderer yet)\n");
+    
+    NMSParams nms_params;
+    
+    
+    std::vector<detected_obj> detections = non_max_suppression(
+        outputs, nms_params.conf_thres, nms_params.iou_thres, nms_params.max_det, nms_params.max_nms, nms_params.max_wh);
+    
+    // Scale boxes back to original image size
+    scale_boxes(detections, {img_sz, img_sz}, input_image.extent);
+    // Reload original image for drawing
+    image_data output_image = image_load(args.inputs[0]);
+    
+    // Draw detections and save
+    std::vector<std::string> const& class_names = get_coco_class_names();
+    draw_detections(output_image, detections, class_names);
+    
+    // Save result
+    image_save(output_image, args.output);
+    printf("-> output image saved to %s\n", args.output);
+    
+    printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
+    printf("Found %zu objects\n", detections.size());
+}
 } // namespace visp
+>>>>>>> d381eaf731c1146f736e7e8da673a234deaa4d41

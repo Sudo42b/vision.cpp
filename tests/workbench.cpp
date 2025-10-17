@@ -1,9 +1,12 @@
 #include "util/string.h"
 #include "visp/arch/birefnet.h"
+#include "visp/arch/depth-anything.h"
+#include "visp/arch/dino.h"
 #include "visp/arch/esrgan.h"
 #include "visp/arch/migan.h"
 #include "visp/arch/mobile-sam.h"
 #include "visp/arch/yolov9t.h"
+#include "visp/arch/swin.h"
 #include "visp/nn.h"
 
 #include <ggml-blas.h>
@@ -115,6 +118,17 @@ DEF(layer_norm)(model_ref m, span<tensor> input, param_dict const& p) {
 
 DEF(linear)(model_ref m, span<tensor> input, param_dict const& p) {
     return {linear(m, input[0])};
+}
+
+DEF(interpolate)(model_ref m, span<tensor> input, param_dict const& p) {
+    int w = p.get("w", 8);
+    int h = p.get("h", 8);
+    uint32_t mode = p.get("mode", "bilinear") == "bilinear"sv ? GGML_SCALE_MODE_BILINEAR
+                                                              : GGML_SCALE_MODE_BICUBIC;
+    if (p.get("align_corners", 0)) {
+        mode |= GGML_SCALE_FLAG_ALIGN_CORNERS;
+    }
+    return {ggml_interpolate(m, input[0], w, h, input[0]->ne[2], input[0]->ne[3], mode)};
 }
 
 //
@@ -230,45 +244,50 @@ DEF(sam_predict_masks)(model_ref m, span<tensor> input, param_dict const& p) {
 // BiRefNet
 
 DEF(biref_patch_embed)(model_ref m, span<tensor> input, param_dict const& p) {
-    return {birefnet::patch_embed(m, input[0])};
+    return {patch_embed(m, input[0], 4)};
 }
 
 DEF(biref_relative_position_index)(model_ref m, span<tensor> input, param_dict const& p) {
     auto dst = span(reinterpret_cast<int32_t*>(input[0]->data), ggml_nelements(input[0]));
-    birefnet::compute_relative_position_index(dst, 3);
+    swin::compute_relative_position_index(dst, 3);
     return {input[0]};
 }
 
 DEF(biref_window_attention)(model_ref m, span<tensor> input, param_dict const& p) {
+    if (p.get("attn", "default") == "flash_attn"sv) {
+        m.flags = m.flags | model_build_flag::flash_attention;
+    } else {
+        m.flags = m.flags & ~model_build_flag::flash_attention;
+    }
     int window_size = 3;
     tensor mask = m.find("mask");
-    auto rel_pos_index = birefnet::create_relative_position_index(m, window_size);
+    auto rel_pos_index = swin::create_relative_position_index(m, window_size);
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
-    return {birefnet::window_attention(m, input[0], mask, 2, window_size)};
+    return {swin::window_attention(m, input[0], mask, 2, window_size)};
 }
 
 DEF(biref_swin_block)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_block_params block;
+    swin::block_params block;
     block.n_heads = 2;
     block.window_size = 3;
     block.w = 6;
     block.h = 6;
     block.shift = 0;
     tensor mask = m.find("mask");
-    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
+    auto rel_pos_index = swin::create_relative_position_index(m, 3);
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
-    return {birefnet::swin_block(m, input[0], mask, block)};
+    return {swin::block(m, input[0], mask, block)};
 }
 
 DEF(biref_patch_merging)(model_ref m, span<tensor> input, param_dict const& p) {
-    return {birefnet::patch_merging(m, input[0], 6, 4)};
+    return {swin::patch_merging(m, input[0], 6, 4)};
 }
 
 DEF(biref_attention_mask)(model_ref m, span<tensor> input, param_dict const& p) {
-    auto dst = span((float*)input[0]->data, ggml_nelements(input[0]));
-    birefnet::compute_attention_mask(dst, 18, 18, 6);
+    auto dst = span((byte*)input[0]->data, ggml_nbytes(input[0]));
+    swin::compute_attention_mask(dst, 18, 18, 6);
     return {input[0]};
 }
 
@@ -277,13 +296,12 @@ DEF(biref_swin_layer)(model_ref m, span<tensor> input, param_dict const& p) {
     layer.depth = 2;
     layer.n_heads = 2;
     layer.n_features = 8;
-    layer.downsample = true;
-    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
-    auto attn_mask = birefnet::create_attention_mask(m, 6, 6, 3);
+    auto rel_pos_index = swin::create_relative_position_index(m, 3);
+    auto attn_mask = swin::create_attention_mask(m, 6, 6, 3);
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
     transfer_to_backend(attn_mask);
-    auto result = birefnet::swin_layer(m, input[0], 6, 6, layer, 3);
+    auto result = swin::layer(m, input[0], 6, 6, layer, 3, true);
     ASSERT(result.w_down == 3 && result.h_down == 3);
     return {result.x_down};
 }
@@ -293,29 +311,29 @@ DEF(biref_swin_transformer)(model_ref m, span<tensor> input, param_dict const& p
         .embed_dim = 8,
         .window_size = 3,
         .layers = {
-            swin_layer_t{2, 2, 8 * 1, true},
-            swin_layer_t{2, 2, 8 * 2, true},
-            swin_layer_t{2, 4, 8 * 4, true},
-            swin_layer_t{2, 2, 8 * 8, false},
+            swin_layer_t{2, 2, 8 * 1},
+            swin_layer_t{2, 2, 8 * 2},
+            swin_layer_t{2, 4, 8 * 4},
+            swin_layer_t{2, 2, 8 * 8},
         }};
-    auto rel_pos_index = birefnet::create_relative_position_index(m, 3);
+    auto rel_pos_index = swin::create_relative_position_index(m, 3);
     auto attn_masks = std::array{
-        birefnet::create_attention_mask(m, 8, 8, 3), birefnet::create_attention_mask(m, 4, 4, 3),
-        birefnet::create_attention_mask(m, 2, 2, 3), birefnet::create_attention_mask(m, 1, 1, 3)};
+        swin::create_attention_mask(m, 8, 8, 3), swin::create_attention_mask(m, 4, 4, 3),
+        swin::create_attention_mask(m, 2, 2, 3), swin::create_attention_mask(m, 1, 1, 3)};
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(rel_pos_index);
     for (auto&& attn_mask : attn_masks) {
         transfer_to_backend(attn_mask);
     }
-    auto result = birefnet::swin_transformer(m, input[0], swinp);
+    auto result = swin_encode(m, input[0], swinp);
     return {result[0], result[1], result[2], result[3]};
 }
 
 DEF(biref_encode)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_result xs, xs_low;
+    swin_result xs, xs_low;
     for (int i = 0; i < 4; ++i) {
-        xs[i] = m.find(format<tensor_name>("input{}", i).c_str());
-        xs_low[i] = m.find(format<tensor_name>("input_low{}", i).c_str());
+        xs[i] = m.find(format<tensor_name>("xs{}", i).c_str());
+        xs_low[i] = m.find(format<tensor_name>("xs_low{}", i).c_str());
     }
     birefnet::encode_concat(m, xs, xs_low);
     return std::vector{xs[0], xs[1], xs[2], xs[3]};
@@ -342,7 +360,7 @@ DEF(biref_image_to_patches_2)(model_ref m, span<tensor> input, param_dict const&
 }
 
 DEF(biref_decode)(model_ref m, span<tensor> input, param_dict const& p) {
-    birefnet::swin_result features;
+    swin_result features;
     for (int i = 0; i < 4; ++i) {
         features[i] = m.find(format<tensor_name>("x{}", i + 1).c_str());
     }
@@ -424,6 +442,63 @@ DEF(yolov9t_forward)(model_ref m, span<tensor> input, param_dict const& p) {
 */
 
 //
+// DINO
+
+DEF(dino_interpolate_pos_encoding)(model_ref m, span<tensor> input, param_dict const& p) {
+    int s = p.get("img_size", 64);
+    int patch_size = p.get("patch_size", 16);
+    return {dino::interpolate_pos_encoding(m, input[0], s, s, patch_size)};
+}
+
+DEF(dino_prepare_tokens)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {dino::prepare_tokens(m, input[0], 4)};
+}
+
+DEF(dino_attention)(model_ref m, span<tensor> input, param_dict const& p) {
+    if (p.get("flash_attn", 0) != 0) {
+        m.flags |= model_build_flag::flash_attention;
+    }
+    return {dino::attention(m, input[0], p.get("n_heads", 8))};
+}
+
+DEF(dino_block)(model_ref m, span<tensor> input, param_dict const& p) {
+    dino_params params{};
+    params.n_heads = p.get("n_heads", 8);
+    return {dino::layer(m, input[0], params)};
+}
+
+DEF(dino_intermediate_layers)(model_ref m, span<tensor> input, param_dict const& p) {
+    dino_params params{};
+    params.patch_size = 4;
+    params.embed_dim = 6;
+    params.n_layers = 4;
+    params.n_heads = 3;
+    auto layers = std::array{0, 1, 2, 3};
+    return dino::get_intermediate_layers(m, input[0], layers, params);
+}
+
+//
+// Depth Anything
+
+DEF(depthany_feature_fusion)(model_ref m, span<tensor> input, param_dict const& p) {
+    if (input.size() == 1) {
+        int64_t size[] = {8, 8, 6, 1};
+        return {dpt::feature_fusion(m, input[0], nullptr, size)};
+    } else {
+        ASSERT(input.size() == 2);
+        return {dpt::feature_fusion(m, input[0], input[1])};
+    }
+}
+
+DEF(depthany_head)(model_ref m, span<tensor> input, param_dict const& p) {
+    int patch_w = p.get("patch_w", 8);
+    int patch_h = p.get("patch_h", 8);
+    tensor fused = dpt::neck(m, input, patch_w, patch_h);
+    tensor depth = dpt::head(m, fused, patch_w * 14, patch_h * 14, 1.0f);
+    return {depth};
+}
+
+//
 // Workbench implementation
 //
 
@@ -440,19 +515,19 @@ param_dict build_dict(span<raw_param const> raw_params) {
         param.name = raw.name;
 
         switch (param_type(raw.type)) {
-        case param_type::int32:
-            param.type = param_type::int32;
-            param.value.i = std::stoi(raw.value);
-            break;
-        case param_type::float32:
-            param.type = param_type::float32;
-            param.value.f = std::stof(raw.value);
-            break;
-        case param_type::string:
-            param.type = param_type::string;
-            param.value.s = raw.value;
-            break;
-        default: throw except("Unknown parameter type");
+            case param_type::int32:
+                param.type = param_type::int32;
+                param.value.i = std::stoi(raw.value);
+                break;
+            case param_type::float32:
+                param.type = param_type::float32;
+                param.value.f = std::stof(raw.value);
+                break;
+            case param_type::string:
+                param.type = param_type::string;
+                param.value.s = raw.value;
+                break;
+            default: throw except("Unknown parameter type");
         }
         dict.params.push_back(param);
     }
@@ -491,7 +566,7 @@ char const* param_dict::get(char const* name, char const* default_value) const {
 
 struct raw_tensor {
     char const* name;
-    float* data;
+    byte* data;
     int32_t type_;
     int32_t ne[4];
 
@@ -499,7 +574,6 @@ struct raw_tensor {
     size_t size() const { return ne[0] * ne[1] * ne[2] * ne[3]; }
     size_t size_bytes() const { return size() * ggml_type_size(type()); }
 };
-
 
 struct test_case {
     char const* name;
@@ -554,16 +628,15 @@ void workbench_run(
     for (raw_tensor const& raw : tensors) {
         auto tensor = ggml_new_tensor_4d(
             m.weights_context, raw.type(), raw.ne[0], raw.ne[1], raw.ne[2], raw.ne[3]);
-        if (raw.name && raw.name[0] != '\0' && raw.name != std::string_view("input")) {
-            ggml_set_name(tensor, raw.name);
-        } else {
+        ggml_set_name(tensor, raw.name);
+        if (std::string_view(raw.name).starts_with("input")) {
             inputs.push_back(tensor);
         }
     }
 
     model_allocate(weights, w.current_backend);
     for (raw_tensor const& raw : tensors) {
-        transfer_to_backend(m.weights(raw.name), span(raw.data, raw.size()));
+        transfer_to_backend(m.weights(raw.name), span(raw.data, raw.size_bytes()));
     }
 
     param_dict test_params = build_dict(params);
@@ -597,7 +670,7 @@ void workbench_run(
         ggml_backend_tensor_get(outputs[i], data_ptr, 0, ggml_nbytes(outputs[i]));
 
         output_raw[i].name = ggml_get_name(outputs[i]);
-        output_raw[i].data = reinterpret_cast<float*>(data_ptr);
+        output_raw[i].data = reinterpret_cast<byte*>(data_ptr);
         output_raw[i].type_ = int32_t(outputs[i]->type);
         output_raw[i].ne[0] = outputs[i]->ne[0];
         output_raw[i].ne[1] = outputs[i]->ne[1];
@@ -615,7 +688,8 @@ extern "C" {
 #ifdef _MSC_VER
 __declspec(dllexport)
 #endif
-int32_t visp_workbench(
+int32_t
+visp_workbench(
     char const* testcase,
     visp::raw_tensor const* inputs,
     int32_t n_inputs,

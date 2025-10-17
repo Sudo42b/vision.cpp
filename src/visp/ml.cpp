@@ -1,5 +1,4 @@
 #include "visp/ml.h"
-#include "visp/nn.h"
 #include "util/string.h"
 #include "visp/platform.h"
 
@@ -107,7 +106,6 @@ ggml_type backend_device::preferred_float_type() const {
 
 tensor_data_layout backend_device::preferred_layout() const {
     if (type() == backend_type::cpu) {
-        printf("Using CWHN tensor layout for CPU backend\n");
         return tensor_data_layout::cwhn;
     }
     return tensor_data_layout::unknown; // no preference, keep model weight layout
@@ -140,12 +138,23 @@ void backend_set_n_threads(backend_device& b, int n_threads) {
 //
 // model_build_flags
 
+model_build_flags flash_attn_flag(bool default_enabled) {
+    static char const* const env = getenv("VISP_FLASH_ATTENTION");
+    if (env && env[0] == '1') {
+        return model_build_flag::flash_attention;
+    } else if (env && env[0] == '0') {
+        return model_build_flags{};
+    }
+    return default_enabled ? model_build_flag::flash_attention : model_build_flags{};
+}
+
 model_build_flags backend_default_flags(backend_type type) {
     using enum model_build_flag;
     switch (type) {
         case backend_type::cpu:
-            return conv_2d_direct_cwhn | concat_n | f16_conv_transpose | window_partition;
-        case backend_type::gpu: return {};
+            return conv_2d_direct_cwhn | concat_n | f16_conv_transpose | window_partition |
+                flash_attn_flag(false);
+        case backend_type::gpu: return flash_attn_flag(true);
     }
     return {};
 }
@@ -199,6 +208,19 @@ std::string_view model_file::get_string(char const* key_name) const {
 
 int model_file::get_int(char const* key_name) const {
     return gguf_get_val_i32(gguf.get(), key(key_name));
+}
+
+void model_file::get_array(char const* key_name, span<int> out_values) const {
+    int64_t key_id = key(key_name);
+    if (gguf_get_arr_n(gguf.get(), key_id) != out_values.size()) {
+        throw except("Array size mismatch for key '{}' in model file {}", key_name, path);
+    }
+    if (gguf_get_arr_type(gguf.get(), key_id) != GGUF_TYPE_INT32) {
+        throw except(
+            "Array type mismatch for key '{}' in model file {}, expected int32", key_name, path);
+    }
+    auto ptr = (int const*)gguf_get_arr_data(gguf.get(), key_id);
+    std::copy(ptr, ptr + out_values.size(), out_values.data());
 }
 
 std::string_view model_file::arch() const {
@@ -558,9 +580,7 @@ tensor named(model_ref const& m, tensor tensor) {
 // tensor creation and data handling
 
 tensor compute_graph_input(model_ref const& m, ggml_type type, i64x4 shape, tensor_name name) {
-    // 3, 640, 640, 1
     tensor x = ggml_new_tensor_4d(m, type, shape[0], shape[1], shape[2], shape[3]);
-    x = contiguous_2d_to_cwhn(m, x);
     ggml_set_name(x, name.c_str());
     ggml_set_input(x);
     return x;
@@ -591,6 +611,18 @@ tensor_data tensor_load(tensor x, char const* filepath) {
     return result;
 }
 
+void tensor_save(tensor x, char const* filepath) {
+    FILE* file = fopen(filepath, "wb");
+    if (!file) {
+        throw except("Failed to open file for writing: {}", filepath);
+    }
+    size_t written = fwrite(x->data, 1, ggml_nbytes(x), file);
+    fclose(file);
+    if (written != ggml_nbytes(x)) {
+        throw except("Failed to write tensor data to file: {}", filepath);
+    }
+}
+
 std::span<float> tensor_data::as_f32() {
     ASSERT(x->type == GGML_TYPE_F32);
     return span(reinterpret_cast<float*>(data.get()), ggml_nelements(x));
@@ -609,6 +641,14 @@ std::span<int32_t> tensor_data::as_i32() {
 std::span<int32_t const> tensor_data::as_i32() const {
     ASSERT(x->type == GGML_TYPE_I32);
     return span(reinterpret_cast<int32_t const*>(data.get()), ggml_nelements(x));
+}
+
+std::span<byte> tensor_data::as_bytes() {
+    return span(data.get(), ggml_nbytes(x));
+}
+
+std::span<byte const> tensor_data::as_bytes() const {
+    return span(data.get(), ggml_nbytes(x));
 }
 
 void transfer_to_backend(tensor_data const& d) {

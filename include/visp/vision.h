@@ -57,8 +57,9 @@
 // 7. Run the compute graph.
 // 8. Transfer the output to the host and post-process it.
 //
-// Custom pipelines are simply functions which call the individual steps and extend them
-// where needed. The implementation of the high-level API functions is a good starting point.
+// Custom pipelines can be created simply by writing a function that calls the
+// individual steps. As a starting point, check out or copy the implementation
+// of the high-level API functions. Then adapt them as needed.
 // This allows to:
 // * load model weights from a different source
 // * control exactly when allocation happens
@@ -76,8 +77,45 @@
 
 #include <array>
 #include <span>
+#include <vector>
 
 namespace visp {
+
+// SWIN v1 - vision transformer for feature extraction
+
+constexpr int swin_n_layers = 4;
+
+struct swin_layer_t {
+    int depth;
+    int n_heads;
+    int n_features;
+};
+
+struct swin_params {
+    int embed_dim;
+    int window_size;
+    std::array<swin_layer_t, swin_n_layers> layers;
+};
+
+using swin_buffers = std::array<tensor_data, swin_n_layers + 2>;
+using swin_result = std::array<tensor, swin_n_layers>;
+
+VISP_API swin_params swin_detect_params(model_file const&);
+VISP_API swin_buffers swin_precompute(model_ref, i32x2 image_extent, swin_params const&);
+VISP_API swin_result swin_encode(model_ref, tensor image, swin_params const&);
+
+// DINO v2 - vision transformer for feature extraction
+
+struct dino_params {
+    int patch_size = 16;
+    int embed_dim = 768;
+    int n_layers = 12;
+    int n_heads = 12;
+};
+
+VISP_API dino_params dino_detect_params(model_file const&);
+VISP_API std::vector<tensor> dino_get_intermediate_layers(
+    model_ref, tensor image, span<int const> layers_ids, dino_params const&);
 
 //
 // Mobile SAM - image segmentation with prompt (point or box)
@@ -133,7 +171,9 @@ VISP_API image_data sam_process_mask(
 struct birefnet_model;
 
 // Loads a BiRefNet model from GGUF file onto the backend device.
-// * supports BiRefNet, BiRefNet_lite, BiRefNet_Matting variants at 1024px resolution
+// * supports BiRefNet, BiRefNet-lite, BiRefNet-Matting variants at 1024px resolution
+// * supports BiRefNet-HR variant at 2048px resolution
+// * supports BiRefNet-dynamic variant at arbitrary resolution
 VISP_API birefnet_model birefnet_load_model(char const* filepath, backend_device const&);
 
 // Takes RGB input and computes an alpha mask with foreground as 1.0 and background as 0.0.
@@ -148,7 +188,7 @@ struct birefnet_params {
     swin_params encoder;
 };
 
-using birefnet_buffers = std::array<tensor_data, swin_params::n_layers + 2>;
+using birefnet_buffers = swin_buffers;
 
 VISP_API birefnet_params birefnet_detect_params(
     model_file const&, i32x2 dynamic_extent = {}, size_t max_alloc = SIZE_MAX);
@@ -161,6 +201,39 @@ VISP_API image_data birefnet_process_output(
     std::span<float const> output_data, i32x2 target_extent, birefnet_params const&);
 
 VISP_API tensor birefnet_predict(model_ref, tensor image, birefnet_params const&);
+
+//
+// Depth Anything - depth estimation
+
+struct depthany_model;
+
+// Loads a Depth Anything V2 model from GGUF file onto the backend device.
+// * supports Small/Base/Large variants with flexible input resolution
+VISP_API depthany_model depthany_load_model(char const* filepath, backend_device const&);
+
+// Takes RGB input and computes estimated depth (distance from camera).
+// Output is a single-channel float32 image in range [0, 1.0].
+VISP_API image_data depthany_compute(depthany_model&, image_view image);
+
+// --- Depth Anything pipeline
+
+struct depthany_params {
+    int image_size = 518;
+    int image_multiple = 14;
+    i32x2 image_extent = {518, 518};
+    float max_depth = 1;
+    std::array<int, 4> feature_layers = {2, 5, 8, 11};
+    dino_params dino;
+};
+
+VISP_API depthany_params depthany_detect_params(model_file const&, i32x2 input_extent = {});
+VISP_API i32x2 depthany_image_extent(i32x2 input_extent, depthany_params const&);
+
+VISP_API image_data depthany_process_input(image_view image, depthany_params const&);
+image_data depthany_process_output(
+    std::span<float const> output_data, i32x2 target_extent, depthany_params const&);
+
+VISP_API tensor depthany_predict(model_ref, tensor image, depthany_params const&);
 
 //
 // MI-GAN - image inpainting
@@ -240,6 +313,17 @@ struct birefnet_model {
     backend_device const* backend = nullptr;
     model_weights weights;
     birefnet_params params;
+
+    compute_graph graph;
+    tensor input = nullptr;
+    tensor output = nullptr;
+};
+
+// internal
+struct depthany_model {
+    backend_device const* backend = nullptr;
+    model_weights weights;
+    depthany_params params;
 
     compute_graph graph;
     tensor input = nullptr;

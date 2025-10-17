@@ -32,6 +32,7 @@ class RawParam(ctypes.Structure):
 def torch_to_raw_tensor(name: str, tensor: torch.Tensor):
     tensor_types = {
         torch.float32: 0,  # GGML_TYPE_F32
+        torch.float16: 1,  # GGML_TYPE_F16
         torch.int32: 26,  # GGML_TYPE_I32
     }
     t = tensor.contiguous()
@@ -112,7 +113,7 @@ def invoke_test(
     backend: str = "cpu",
 ):
     input = input if isinstance(input, list) else [input]
-    raw_inputs = [torch_to_raw_tensor("", tensor) for tensor in input]
+    raw_inputs = [torch_to_raw_tensor(f"input{i}", tensor) for i, tensor in enumerate(input)]
     raw_inputs += [torch_to_raw_tensor(name, tensor) for name, tensor in state.items()]
     input_tensors = [t for _, t in raw_inputs]
     input_tensors  # keep the tensors alive

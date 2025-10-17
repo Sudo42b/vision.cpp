@@ -1252,9 +1252,9 @@ image_data letterbox(image_data im, i32x2 new_shape, u8x3 color,
     dh /= 2;
 
     
-    // im = image_scale(im, new_unpad);  // 이미지 크기 조정
+    im = image_scale(im, new_unpad);  // 이미지 크기 조정
     // Bilinear interpolation 수행
-    im = linear_image_resize(std::move(im), new_unpad);
+    // im = linear_image_resize(std::move(im), new_unpad);
     
 
     int top = static_cast<int>(round(dh - 0.1f));

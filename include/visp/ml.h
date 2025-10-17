@@ -65,7 +65,8 @@ enum class model_build_flag {
     conv_2d_direct_cwhn = 1 << 1,
     concat_n            = 1 << 2,
     f16_conv_transpose  = 1 << 3,
-    window_partition    = 1 << 4
+    window_partition    = 1 << 4,
+    flash_attention     = 1 << 5
 }; // clang-format on
 
 using model_build_flags = flags<model_build_flag>;
@@ -87,6 +88,7 @@ struct model_file {
     VISP_API int64_t key(char const* name) const;
     VISP_API int get_int(char const* name) const;
     VISP_API std::string_view get_string(char const* name) const;
+    VISP_API void get_array(char const* name, span<int> out_values) const;
 };
 
 // Opens a .gguf file and reads its contents into memory.
@@ -216,8 +218,10 @@ struct VISP_API tensor_data {
 
     span<float> as_f32();
     span<int32_t> as_i32();
+    span<byte> as_bytes();
     span<float const> as_f32() const;
     span<int32_t const> as_i32() const;
+    span<byte const> as_bytes() const;
 };
 
 // Allocates data for a tensor in main memory, outside of context and backend buffers.
@@ -225,6 +229,7 @@ VISP_API tensor_data tensor_alloc(tensor x);
 
 // Loads tensor data from a file storing raw numbers as binary.
 VISP_API tensor_data tensor_load(tensor x, char const* filepath);
+VISP_API void tensor_save(tensor x, char const* filepath);
 
 // Copies data to the tensor's backend buffer (which should already be allocated).
 VISP_API void transfer_to_backend(tensor_data const&);
@@ -274,28 +279,6 @@ VISP_API tensor concat(model_ref const&, std::vector<tensor> src, int dim);
 
 // Up- or downsample a 2D tensor (WHCN) to target width x height.
 VISP_API tensor interpolate(model_ref const&, tensor x, i64x2 target, int32_t mode);
-
-//
-// SWIN Transformer
-
-struct swin_layer_t {
-    int depth;
-    int n_heads;
-    int n_features;
-    bool downsample;
-};
-
-struct swin_params {
-    static constexpr int n_layers = 4;
-
-    int embed_dim;
-    int window_size;
-    std::array<swin_layer_t, n_layers> layers;
-};
-
-extern swin_params const swin_t_params;
-extern swin_params const swin_l_params;
-VISP_API swin_params swin_detect_params(model_file const&);
 
 //
 // implementation

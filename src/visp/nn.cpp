@@ -3,7 +3,6 @@
 
 namespace visp {
 
-
 tensor linear(model_ref m, tensor x) {
     x = ggml_mul_mat(m, m.weights("weight"), x);
     if (tensor bias = m.find("bias")) {
@@ -90,16 +89,10 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad, int dilate) {
             x = permute_whcn_to_cwhn(m, x);
 
         } else {
-            x = permute_cwhn_to_whcn(m, x);
-            tensor permuted_weight = permute_cwhn_to_whcn(m, weight);
-            tensor cols = ggml_im2col(
-                m, permuted_weight, x, stride, stride, pad, pad, dilate, dilate, true, GGML_TYPE_F32);
-            tensor a = ggml_reshape_2d(
-                m, cols, cols->ne[0], cols->ne[1] * cols->ne[2] * cols->ne[3]);
-            tensor b = ggml_reshape_2d(
-                m, weight, weight->ne[0] * weight->ne[1] * weight->ne[2], weight->ne[3]);
-            x = ggml_mul_mat(m, b, a);
-            x = ggml_reshape_4d(m, x, weight->ne[3], cols->ne[1], cols->ne[2], cols->ne[3]);
+            weight = ggml_cont(m, permute_cwhn_to_whcn(m, weight));
+            x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
+            x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, dilate, dilate);
+            x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
         }
     } else { // WHCN layout
         x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, dilate, dilate);
@@ -173,6 +166,22 @@ tensor batch_norm_2d(model_ref m, tensor x) {
     }
     x = ggml_mul_inplace(m, x, weight);
     x = ggml_add_inplace(m, x, bias);
+    return named(m, x);
+}
+
+tensor patch_embed(model_ref m, tensor x, int patch_size) {
+    ASSERT(x->ne[1] % patch_size == 0 && x->ne[2] % patch_size == 0);
+    char const* proj = m.find("proj.weight") ? "proj" : "projection";
+
+    m.flags |= model_build_flag::cwhn;
+    x = conv_2d(m[proj], x, patch_size);
+
+    if (m.find("norm.weight")) {
+        auto [c, w, h, b] = nelements(x);
+        x = ggml_reshape_3d(m, x, c, w * h, b);
+        x = layer_norm(m["norm"], x);
+        x = ggml_reshape_4d(m, x, c, w, h, b);
+    }
     return named(m, x);
 }
 

@@ -169,6 +169,12 @@ VISP_API void image_alpha_composite(
 VISP_API image_data image_alpha_composite(
     image_view const& fg, image_view const& bg, image_view const& mask);
 
+// Rescale pixels values such that the minimum value over all pixels becomes `min` and
+// the maximum becomes `max`. Channels are processed independently.
+VISP_API void image_normalize(
+    image_view const& src, image_span const& dst, float min = 0, float max = 1);
+VISP_API image_data image_normalize(image_view const& img, float min = 0, float max = 1);
+
 // Compute root-mean-square difference between two images
 VISP_API float image_difference_rms(image_view const& a, image_view const& b);
 

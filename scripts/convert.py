@@ -93,6 +93,14 @@ class Writer(GGUFWriter):
             self.add_array(f"{self.arch}.conv2d_weights", self.conv2d_weights)
 
 
+def load_model(path: Path) -> dict[str, Tensor]:
+    if path.suffix in [".safetensors", ".safetensor"]:
+        weights = safetensors.safe_open(path, "pt")
+        return {k: weights.get_tensor(k) for k in weights.keys()}
+    else:
+        return torch.load(path, map_location="cpu", weights_only=True)
+
+
 batch_norm_eps = 1e-5
 
 
@@ -100,7 +108,7 @@ def is_conv_2d(name: str, tensor: Tensor):
     return (
         tensor.ndim == 4
         and tensor.shape[2] == tensor.shape[3]
-        and tensor.shape[2] in (1, 3, 4, 7)
+        and tensor.shape[2] in (1, 3, 4, 7, 14)
         and name.endswith("weight")
     )
 
@@ -335,6 +343,60 @@ def convert_birefnet(input_filepath: Path, writer: Writer):
                 tensor = conv_2d_to_nhwc(tensor)
             else:  # store rest in requested tensor layout
                 tensor = writer.convert_tensor_2d(tensor)
+
+        writer.add_tensor(name, tensor)
+
+
+#
+# Depth-Anything
+
+
+def convert_depth_anything(input_filepath: Path, writer: Writer):
+    if "small" in input_filepath.name.lower():
+        writer.add_license("apache-2.0")
+    else:
+        writer.add_license("cc-by-nc-4.0")
+    writer.set_tensor_layout_default(TensorLayout.nchw)
+
+    model: dict[str, Tensor] = load_model(input_filepath)
+
+    if "pretrained.cls_token" in model:
+        print("The converter is written for the transformers (.safetensors) version of the model.")
+        print("The original weights (.pth) are currently not supported.")
+        raise ValueError("Weights not supported")
+
+    shape = model["backbone.embeddings.patch_embeddings.projection.weight"].shape
+    writer.add_int32("dino.patch_size", shape[2])
+    writer.add_int32("dino.embed_dim", shape[0])
+    writer.add_int32("depthanything.image_size", 518)
+    match shape[0]:
+        case 384:  # Small
+            writer.add_int32("dino.n_heads", 6)
+            writer.add_int32("dino.n_layers", 12)
+            writer.add_array("depthanything.feature_layers", [2, 5, 8, 11])
+        case 768:  # Base
+            writer.add_int32("dino.n_heads", 12)
+            writer.add_int32("dino.n_layers", 12)
+            writer.add_array("depthanything.feature_layers", [2, 5, 8, 11])
+        case 1024:  # Large
+            writer.add_int32("dino.n_heads", 16)
+            writer.add_int32("dino.n_layers", 24)
+            writer.add_array("depthanything.feature_layers", [4, 11, 17, 23])
+
+    for key, tensor in model.items():
+        name = key
+
+        if is_conv_2d(name, tensor):
+            if "patch_embeddings" in name or ("projection" in name and "fusion" not in name):
+                tensor = conv_2d_to_nhwc(tensor)
+            elif "0.resize" in name or "1.resize" in name:
+                pass  # ConvTranspose2D, don't change layout
+            else:
+                tensor = writer.convert_tensor_2d(tensor)
+
+        if "position_embeddings" in name or "cls_token" in name:
+            writer.add_tensor(name, tensor, "f32")
+            continue
 
         writer.add_tensor(name, tensor)
 
@@ -643,6 +705,7 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
 arch_names = {
     "sam": "mobile-sam",
     "birefnet": "birefnet",
+    "depth-anything": "depthanything",
     "migan": "migan",
     "esrgan": "esrgan",
     "yolov9t": "yolov9t",
@@ -692,6 +755,8 @@ if __name__ == "__main__":
                 convert_sam(input_path, writer)
             case "birefnet":
                 convert_birefnet(input_path, writer)
+            case "depthany" | "depth-anything":
+                convert_depth_anything(input_path, writer)
             case "migan":
                 convert_migan(input_path, writer)
             case "esrgan":
