@@ -965,51 +965,33 @@ DetectOutput detect_forward(model_ref m,
 
     std::string reg_base = std::string("detect.cv2");
     std::string cls_base = std::string("detect.cv3");
-
-    for (size_t i = 0; i < features.size(); ++i) {
-        // printf("features[%d] shape: [%d,%d,%d,%d]\n", (int)i, (int)features[i]->ne[0], (int)features[i]->ne[1], (int)features[i]->ne[2], (int)features[i]->ne[3]);
-        
-        // std::string idx_str = std::to_string(i);
-        tensor_name old_prefix_i = m.prefix;
-        // Regression head: two convs, second outputs 4*reg_max channels
-        tensor r0 = Conv(m, features[i], reg_base + "."+std::to_string(i)+".0.conv", ch[i], c2, 3, 1, -1, true, false);
-        
-        tensor r1 = Conv(m, r0          ,reg_base + "."+std::to_string(i)+".1.conv", c2, c2, 3, 1, -1, true, false);
-        
-        // Final regression conv: outputs 4*reg_max channels
-        // Final regression conv: nn.Conv2d (NO .conv suffix)
-        m.prefix = tensor_name((reg_base + "."+std::to_string(i)+".2").c_str());
-        tensor r2 = conv_2d(m, r1, 1, 0, 1);
-        // printf("r2 shape: [%d,%d,%d,%d]\n", (int)r2->ne[0], (int)r2->ne[1], (int)r2->ne[2], (int)r2->ne[3]);
-        if (!ggml_is_contiguous(r2)) r2 = ggml_cont(m, r2);
-        
-        // Classification head: two convs, second outputs nc channels
-        // m.prefix = old_prefix_i;
-        tensor c0 = Conv(m, features[i], cls_base + "."+std::to_string(i)+".0.conv", ch[i], c3, 3, 1, -1, true, false);
-        tensor c1 = Conv(m, c0,          cls_base + "."+std::to_string(i)+".1.conv", c3, c3, 3, 1, -1, true, false);
-        // Final classification conv: nn.Conv2d (NO .conv suffix)
-        
-        m.prefix = tensor_name((cls_base + "." + std::to_string(i) + ".2").c_str());
-        tensor c2 = conv_2d(m, c1, 1, 0, 1);
-        // printf("c2 shape: [%d,%d,%d,%d]\n", (int)c2->ne[0], (int)c2->ne[1], (int)c2->ne[2], (int)c2->ne[3]);
-        if (!ggml_is_contiguous(c2)) c2 = ggml_cont(m, c2);
-        
-        
-        // Combine along channel dim and flatten spatial dims to anchors
-        tensor combined = Concat(m, r2, c2, 0);
-        // xi.view(shape[0], self.no, -1)
-        tensor reshaped_combined = ggml_reshape_2d(m, combined, combined->ne[0], combined->ne[1]*combined->ne[2]); 
-        //reshaped to [144, H, W, N] -> [144, H*W, N] (144, 8400, 1)
-
-        combined = ggml_cont(m, combined);
+    // tensor_name old_prefix_i = m.prefix;
+    auto head = [=](model_ref m, tensor feature, std::string name, int c1, int c2, int c3, int pad=0) {
+        feature = Conv(m, feature, name + ".0", c1, c2, 3, 1, -1, true, false);
+        feature = Conv(m, feature, name + ".1", c2, c3, 3, 1, -1, true, false);
+        m.prefix = tensor_name((name + ".2").c_str());
+        feature = conv_2d(m, feature, 1, pad);
+        return feature;
+    };
+    // Regression head
+    std::vector<tensor> cv2;
+    // Classification head
+    std::vector<tensor> cv3;
+    for (size_t i=0; i<ch.size(); i++) {
+        printf("Detect head for feature %zu with channels %d\n", i, ch[i]);
+        tensor reg_head = head(m, features[i], reg_base + "."+std::to_string(i), ch[i], c2, reg_max * 4);
+        cv2.emplace_back(reg_head);
+        tensor cls_head = head(m, features[i], cls_base + "."+std::to_string(i), ch[i], c3, nc, 1);
+        cv3.emplace_back(cls_head);
+    }
+    for (size_t i=0; i<ch.size(); i++) {
+        printf("cv2[%zu] shape: [%ld,%ld,%ld,%ld]\n", i, cv2[i]->ne[0], cv2[i]->ne[1], cv2[i]->ne[2], cv2[i]->ne[3]);
+        printf("cv3[%zu] shape: [%ld,%ld,%ld,%ld]\n", i, cv3[i]->ne[0], cv3[i]->ne[1], cv3[i]->ne[2], cv3[i]->ne[3]);
+        tensor concat_out = concat(m, {cv2[i], cv3[i]}, 0);
+        tensor reshaped_combined = ggml_reshape_2d(m, concat_out, concat_out->ne[0], concat_out->ne[1]*concat_out->ne[2]);
         reshaped_combined = ggml_cont(m, reshaped_combined);
-        out.raw_outputs.push_back(std::move(combined));
-        out.features.push_back(std::move(reshaped_combined));
-        // torch.Size([1, 144, 80, 80])
-        // torch.Size([1, 144, 40, 40])
-        // torch.Size([1, 144, 20, 20])
-        
-        m.prefix = old_prefix_i;
+        out.features.emplace_back(reshaped_combined);
+        out.raw_outputs.emplace_back(concat_out);
     }
 
     if (training) {
