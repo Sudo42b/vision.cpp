@@ -214,7 +214,7 @@ tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, boo
 
     // 2) Conv 3x3, stride=2, pad=1  — PyTorch: Conv(c1, c2, 3, 2, 1)
     //    입력 채널 c1 → 출력 채널 c2
-    tensor out = Conv(m, pooled, name + ".cv1.conv", c1, c2, /*k=*/3, /*stride=*/2, /*pad=*/1, /*bias=*/true);
+    tensor out = Conv(m, pooled, name + ".cv1.conv", c1, c2, /*k=*/3, /*stride=*/2, /*pad=*/1, /*act=*/true);
     printf("%ld, %ld, %ld, %ld\n", x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
     if (debug) {
         printf("AConv Out  (C,W,H,N) = [%d,%d,%d,%d]\n",
@@ -612,65 +612,40 @@ tensor SPPELAN(model_ref m, tensor x, std::string const& name, int c1, int c2, i
             (int)x->ne[2], (int)x->ne[1], (int)x->ne[0]);
     }
     // cv1: 1x1 conv
-    tensor cv1_out = Conv(m, x, name + ".cv1", c1, c3, 1, 1, -1, true);
-    // 디버깅: cv1_out shape 확인
+    tensor cv1 = Conv(m, x, name + ".cv1", c1, c3, 1, 1, -1, true);
+    // 디버깅: cv1 shape 확인
     if (debug) {
-        printf("cv1_out: [%ld, %ld, %ld, %ld]\n", 
-               cv1_out->ne[0], cv1_out->ne[1], cv1_out->ne[2], cv1_out->ne[3]);
+        printf("cv1: [%ld, %ld, %ld, %ld]\n", 
+               cv1->ne[0], cv1->ne[1], cv1->ne[2], cv1->ne[3]);
     }
-
-    // Three MaxPool layers with same kernel size (k=5 for YOLOv9t)
+    
     int pad = k / 2;
-    tensor cv2 = ggml_pool_2d(m, cv1_out, GGML_OP_POOL_MAX, k, k, 1, 1, pad, pad);
-    cv2 = ggml_cont(m, cv2); // Ensure contiguous memory
-    if (debug) {
-        printf("cv2 (after pool1): [%ld, %ld, %ld, %ld]\n", 
-               cv2->ne[0], cv2->ne[1], cv2->ne[2], cv2->ne[3]);
-    }
-    tensor cv3 = ggml_pool_2d(m, cv2, GGML_OP_POOL_MAX, k, k, 1, 1, pad, pad);
-    cv3 = ggml_cont(m, cv3); // Ensure contiguous memory
-    if (debug) {
-        printf("cv3 (after pool2): [%ld, %ld, %ld, %ld]\n", 
-               cv3->ne[0], cv3->ne[1], cv3->ne[2], cv3->ne[3]);
-    }
-    tensor cv4 = ggml_pool_2d(m, cv3, GGML_OP_POOL_MAX, k, k, 1, 1, pad, pad);
-    cv4 = ggml_cont(m, cv4); // Ensure contiguous memory
-    if (debug) {
-        printf("cv4 (after pool3): [%ld, %ld, %ld, %ld]\n", 
-               cv4->ne[0], cv4->ne[1], cv4->ne[2], cv4->ne[3]);
-    }
+    // x = contiguous_2d_to_whcn(m, x);
+    // tensor cv2 = ggml_pool_2d(m, cv1, GGML_OP_POOL_MAX, k, k, 1, 1, pad, pad);
+    
+    // cv2 = whcn_to_contiguous_2d(m, cv2);
+    auto max_pool = [=](model_ref m, tensor x) {
+        x = contiguous_2d_to_whcn(m, x);
+        x = ggml_pool_2d(m, x, GGML_OP_POOL_MAX, k, k, 1, 1, pad, pad);
+        x = whcn_to_contiguous_2d(m, x);
+        return x;
+    };
+    tensor cv2 = max_pool(m, cv1);
+    tensor cv3 = max_pool(m, cv2);
+    tensor cv4 = max_pool(m, cv3);
+    
 
     // Ensure all tensors are contiguous before concatenation
-    // if (!ggml_is_contiguous(cv1_out)) {
-    //     cv1_out = ggml_cont(m, cv1_out);
-    // }
-    // if (!ggml_is_contiguous(cv2)) {
-    //     cv2 = ggml_cont(m, cv2);
-    // }
-    // if (!ggml_is_contiguous(cv3)) {
-    //     cv3 = ggml_cont(m, cv3);
-    // }
-    // if (!ggml_is_contiguous(cv4)) {
-    //     cv4 = ggml_cont(m, cv4);
-    // }
     // tensor tensors[4] = { cv1_out, cv2, cv3, cv4 };
-    tensor y = ggml_concat(m, cv1_out, cv2, 0); // Channel dimension concat in CWHN
-    y = ggml_concat(m, y, cv3, 0);
-    y = ggml_concat(m, y, cv4, 0);
-    // printf("After concat: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-        //    (int)y->ne[0], (int)y->ne[1], (int)y->ne[2], (int)y->ne[3]);
-    // y = contiguous_2d_to_cwhn(m, y);
-    // printf("After conti: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-    //        (int)y->ne[0], (int)y->ne[1], (int)y->ne[2], (int)y->ne[3]);
-    // if (!ggml_is_contiguous(y)){
-    //     y = ggml_cont(m, y); // Ensure contiguous memory
+    tensor cv5 = concat(m, {cv1, cv2, cv3, cv4}, 0); // Channel dimension concat in CWHN
+    cv5 = ggml_cont(m, cv5); // Ensure contiguous memory
+
+    tensor output = Conv(m, cv5, name + ".cv5", 4*c3, c2, 1, 1, -1, true);
+    // if (debug){
+    //     printf(
+    //         "SPPELAN %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)output->ne[3],
+    //         (int)output->ne[2], (int)output->ne[1], (int)output->ne[0]);
     // }
-    tensor output = Conv(m, y, name + ".cv5", 4*c3, c2, 1, 1, -1, true);
-    if (debug){
-        printf(
-            "SPPELAN %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)output->ne[3],
-            (int)output->ne[2], (int)output->ne[1], (int)output->ne[0]);
-    }
     
     return output;
 }
@@ -700,22 +675,22 @@ tensor Concat(model_ref m, tensor a, tensor b, int axis, bool debug) {
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     std::map<int, tensor> features;
     // Layer 0: Conv(3, 16, 3, 2) - P1/2
-    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, false, true);
+    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, false);
     features[0] = x0;
     ggml_set_output(x0);
 
     // Layer 1: Conv(16, 32, 3, 2) - P2/4
-    tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, false, true);
+    tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, false);
     features[1] = x1;
     ggml_set_output(x1);
     
     // Layer 2: ELAN1(32, 32, 32, 16)
-    tensor x2 = ELAN1(m, x1, "model.2", 32, 32, 32, 16, false);
+    tensor x2 = ELAN1(m, x1, "model.2", 32, 32, 32, 16);
     ggml_set_output(x2);
     features[2] = x2;
     
     // Layer 3: AConv(32, 64) - P3/8
-    tensor x3 = AConv(m, x2, "model.3", 32, 64, false);
+    tensor x3 = AConv(m, x2, "model.3", 32, 64);
     ggml_set_output(x3);
     features[3] = x3;
 
