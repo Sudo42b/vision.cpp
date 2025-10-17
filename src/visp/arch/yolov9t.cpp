@@ -985,11 +985,11 @@ DetectOutput inference(model_ref m,
     tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
     printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
     // Multiply by strides
-    tensor strides_bc = ggml_reshape_1d(m, stride_tensor, total_anchors); // [1, 8400]
-    printf("strides_bc before reshape: [%ld,%ld,%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1], stride_tensor->ne[2], stride_tensor->ne[3]);
-    dbox = ggml_mul(m, dbox, strides_bc);
-    printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
-    exit(EXIT_FAILURE);
+    // tensor strides_bc = ggml_reshape_1d(m, stride_tensor, total_anchors); // [1, 8400]
+    // printf("strides_bc before reshape: [%ld,%ld,%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1], stride_tensor->ne[2], stride_tensor->ne[3]);
+    dbox = ggml_mul(m, dbox, stride_tensor);
+    // printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
+
 
     // Apply sigmoid to classes
     cls = ggml_sigmoid(m, cls);
