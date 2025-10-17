@@ -72,7 +72,7 @@ image_data yolov9t_process_input2(image_view image, yolov9t_params const& p);
 yolov9t_params yolov9t_detect_params(model_file const& file);
 // Core modules - actual layer implementations
 // Conv function matching Python Conv class parameters
-tensor Conv(model_ref m, tensor x, std::string const& name, int c1, int c2, int k=1, int s=1, int p=-1, bool act=true, bool debug=false);
+tensor Conv(model_ref m, tensor x, std::string const& name, int c1, int c2, int k=1, int s=1, int p=-1, bool act=true, bool debug=false, bool bn=false);
 tensor ELAN1(model_ref m, tensor x, std::string const& name, int c1, int c2, int c3, int c4, bool debug=false);
 tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, bool debug=false);
 tensor RepNCSPELAN4(model_ref m, tensor x, std::string const& name, int c1, int c2, int c3, int c4, int n=1, bool debug=false);

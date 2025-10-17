@@ -63,6 +63,7 @@ tensor Conv(
     int s,
     int p,
     bool act,
+    bool bn,
     bool debug) {
     if (debug) {
         printf(
@@ -112,11 +113,22 @@ tensor Conv(
     x = conv_2d(m, x, s, auto_pad, 1);
 
     // Apply BatchNorm2d (if bias exists, it's typically the bn bias)
-    if (m.find("bias")) {
-        tensor bias = m.weights("bias");
-        x = ggml_add(m, x, bias);
+    // // if (m.find("bias")) {
+    //     tensor bias = m.weights("bias");
+    //     x = ggml_add(m, x, bias);
+    // // }
+    if (bn){
+        printf("old_prefix: %s\n", name.c_str());
+        std::string bn_name = name.c_str();
+        if (auto pos = bn_name.rfind(".conv"); pos != std::string::npos) {
+            bn_name.replace(pos, std::string(".conv").size(), ".bn");
+        }
+        if (bn_name.find(".bn") == std::string::npos) {
+            bn_name += ".bn";
+        }
+        m.prefix = tensor_name(bn_name.c_str());
+        x = batch_norm_2d(m, x);
     }
-
     // Apply SiLU activation if act=true
     if (act) {
         x = ggml_silu(m, x);
@@ -134,46 +146,102 @@ tensor Conv(
 }
 
 
+
 // AConv: Average pooling + Conv for downsampling
 // Python signature: AConv(c1, c2) where c1=input_ch, c2=output_ch
+/*
+class AConv(nn.Module):
+    """Average pooling convolution for downsampling"""
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.cv1 = Conv(c1, c2, 3, 2, 1)  # 단순한 3x3 stride=2 컨볼루션
+        self.avgpool = nn.AvgPool2d(2, 1, 0, False, True)
+
+    def forward(self, x):
+        pool = self.avgpool(x)
+        x = self.cv1(pool)
+        return x
+*/
+tensor conv_2d_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0) {
+    return conv_2d(m, x, stride, pad); // batch_norm is fused into conv_2d at model conversion
+}
+tensor mean_2d(model_ref m, tensor x) {
+    auto [w, h, c, n] = nelements_whcn(m, x);
+    x = contiguous_2d_to_whcn(m, x);
+    x = ggml_reshape_3d(m, x, w * h, c, n);
+    x = ggml_mean(m, x);
+    x = is_cwhn(m) ? ggml_reshape_4d(m, x, c, 1, 1, n) : ggml_reshape_4d(m, x, 1, 1, c, n);
+    return x;
+}
+
+tensor global_avg_pool(model_ref m, tensor x) {
+    x = mean_2d(m, x);
+    x = conv_2d_batch_norm(m[1], x);
+    x = ggml_relu_inplace(m, x);
+    return named(m, x);
+}
 tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, bool debug) {
     if (debug) {
-        printf(
-            "AConv In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)x->ne[0], (int)x->ne[1],
-            (int)x->ne[2], (int)x->ne[3]);
+        printf("AConv In  (C,W,H,N) = [%d,%d,%d,%d]\n",
+               (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }
-    x = ggml_permute(m, x, 2, 1, 0, 3);
-    x = ggml_cont(m, x); // Ensure contiguous memory
-    // printf("Permuted AConv In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-    //       (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
 
-    // AConv Pool: torch.Size([1, 32, 159, 159]), k=2, s=1, p=0
-    x = ggml_pool_2d(m, x, GGML_OP_POOL_AVG, 2, 2, 1, 1, 0, 0); // k=2, s=1, p=0
-    // printf("AConv AVG POOL OUT: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-    //        (int)p->ne[0], (int)p->ne[1], (int)p->ne[2], (int)p->ne[3]);
-    // 3:32, 2:1, 1:159, 0:159
-    x = ggml_permute(m, x, 2, 1, 0, 3); // NCHW -> NHWC
-    x = ggml_cont(m, x);                // Ensure contiguous memory
-    // Get input channels for debug output
-    // int c1 = (int)x->ne[0];
-    // printf("Permuted Pool->Conv In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-    //        (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
-    // N, H, W, C
-    // cv1: 3x3 conv with stride 2, padding 1 (skip pooling for now)
-    tensor output = Conv(m, x, name + ".cv1.conv", c1, c2, 3, 2, 1, true);
-
-    // printf("AConv Out: torch.Size([%d, %d, %d, %d])\n",
-    //        (int)output->ne[3], (int)output->ne[0], (int)output->ne[2], (int)output->ne[1]);
+    // 1) AvgPool2d(k=2, s=1, p=0)  — 파이토치: nn.AvgPool2d(2, 1, 0, False, True)
+    //    CWHN에서 풀링은 W,H 축(ne[1], ne[2])에 적용됨.
+    printf("Before Pooling (C,W,H,N) = [%d,%d,%d,%d]\n",
+           (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
+    x = contiguous_2d_to_whcn(m, x);
+    // permute
+    printf("After Permute (W,H,C,N) = [%d,%d,%d,%d]\n",
+           (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
+    tensor pooled = ggml_pool_2d(
+        m, x,
+        GGML_OP_POOL_AVG,
+        /*kW*/ 2, /*kH*/ 2,
+        /*sW*/ 1, /*sH*/ 1,
+        /*pW*/ 0, /*pH*/ 0
+    );
+    
+    printf("After Pooling (C,W,H,N) = [%d,%d,%d,%d]\n",
+           (int)pooled->ne[0], (int)pooled->ne[1], (int)pooled->ne[2], (int)pooled->ne[3]);
+           pooled = whcn_to_contiguous_2d(m, pooled);
+    printf("After Permute (C,W,H,N) = [%d,%d,%d,%d]\n",
+                  (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     if (debug) {
-        printf(
-            "AConv Out: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)output->ne[0],
-            (int)output->ne[1], (int)output->ne[2], (int)output->ne[3]);
+        printf("AConv Pool (C,W,H,N) = [%d,%d,%d,%d]\n",
+               (int)pooled->ne[0], (int)pooled->ne[1], (int)pooled->ne[2], (int)pooled->ne[3]);
     }
-    return output;
+
+    // 2) Conv 3x3, stride=2, pad=1  — PyTorch: Conv(c1, c2, 3, 2, 1)
+    //    입력 채널 c1 → 출력 채널 c2
+    tensor out = Conv(m, pooled, name + ".cv1.conv", c1, c2, /*k=*/3, /*stride=*/2, /*pad=*/1, /*bias=*/true);
+    printf("%ld, %ld, %ld, %ld\n", x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+    if (debug) {
+        printf("AConv Out  (C,W,H,N) = [%d,%d,%d,%d]\n",
+               (int)out->ne[0], (int)out->ne[1], (int)out->ne[2], (int)out->ne[3]);
+    }
+    return out;
 }
 
 // ELAN1: Efficient Layer Aggregation Network block
 // Python signature: ELAN1(c1, c2, c3, c4) where c1=input_ch, c2=output_ch, c3=cv2_ch, c4=cv3_ch
+/*
+class ELAN1(RepNCSPELAN4):
+    """ELAN-1 block"""
+    def __init__(self, c1: int, c2: int, c3: int, c4: int):
+        super().__init__(c1, c2, c3, c4)
+        self.c = c3 // 2
+        self.cv1 = Conv(c1, c3, 1, 1)
+        self.cv2 = Conv(c3 // 2, c4, 3, 1)
+        self.cv3 = Conv(c4, c4, 3, 1)
+        self.cv4 = Conv(c3 + (2 * c4), c2, 1, 1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through ELAN1 layer."""
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend((m(y[-1])) for m in [self.cv2, self.cv3])
+        x = self.cv4(torch.cat(y, 1))
+        return x
+*/
 tensor ELAN1(
     model_ref m,
     tensor x,
@@ -182,56 +250,57 @@ tensor ELAN1(
     int c2,
     int c3,
     int c4,
-    bool debug) {
+    bool debug
+) {
+    // x: CWHN
     if (debug) {
-        printf(
-            "ELAN1 %s: x shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3],
-            (int)x->ne[2], (int)x->ne[1], (int)x->ne[0]);
+        printf("ELAN1 %s: x (C,W,H,N) = [%d,%d,%d,%d]\n",
+               name.c_str(), (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }
-    // cv1: 1x1 conv (32→32, then split)
-    int c = c3 / 2;
+
+    // cv1: 1x1 conv -> c3 channels
+    GGML_ASSERT(c3 % 2 == 0 && "ELAN1: c3 must be even for chunk(2)");
+    const int c_half = c3 / 2;
     tensor cv1_out = Conv(m, x, name + ".cv1.conv", c1, c3, 1, 1, -1, true);
-    // Split cv1 output into 2 parts along channel dimension (32→16+16)
-    int64_t channels = cv1_out->ne[0];     // C dimension in CWHN
-    int64_t split_channels = channels / 2; // 16 channels each
 
-    // First half (16 channels)
-    tensor split1 = ggml_view_3d(
-        m, cv1_out, split_channels, cv1_out->ne[1], cv1_out->ne[2], cv1_out->nb[1], cv1_out->nb[2],
-        0);
+    // 채널을 반으로 분할 (PyTorch chunk(2, dim=1)와 동일; 여기선 dim0=C)
+    // slice_t는 [begin, end) 규칙. step은 채널축에서 1만 허용(헬퍼가 그렇게 설계됨).
+    tensor split1 = slice(m, cv1_out,
+                          /*C*/ {0,       c_half},
+                          /*W*/{}, /*H*/ {}, /*N*/ {});
+    tensor split2 = slice(m, cv1_out,
+                          /*C*/ {c_half, c3},
+                          /*W*/ {}, /*H*/ {}, /*N*/ {});
 
-    // Second half (16 channels)
-    tensor split2 = ggml_view_3d(
-        m, cv1_out, split_channels, cv1_out->ne[1], cv1_out->ne[2], cv1_out->nb[1], cv1_out->nb[2],
-        split_channels * cv1_out->nb[0]);
+    // 필요 시 연속화 (Conv가 비연속 view 입력을 못 받는 경우 대비)
+    if (!ggml_is_contiguous(split1)) split1 = ggml_cont(m, split1);
+    if (!ggml_is_contiguous(split2)) split2 = ggml_cont(m, split2);
 
-    // cv2: 3x3 conv on second half (16→16)
-    tensor cv2_out = Conv(m, split2, name + ".cv2.conv", c3 / 2, c4, 3, 1, -1, true);
+    // cv2: 3x3 conv on split2 (c_half -> c4)
+    tensor cv2_out = Conv(m, split2, name + ".cv2.conv", c_half, c4, 3, 1, -1, true);
 
-    // cv3: 3x3 conv on cv2 output (16→16)
+    // cv3: 3x3 conv on cv2_out (c4 -> c4)
     tensor cv3_out = Conv(m, cv2_out, name + ".cv3.conv", c4, c4, 3, 1, -1, true);
 
-    // Concatenate: split1(16) + split2(16) + cv2_out(16) + cv3_out(16) = 64 channels
-    tensor cat1 = Concat(m, split1, split2, 0);
-    tensor cat2 = Concat(m, cat1, cv2_out, 0);
-    tensor cat3 = Concat(m, cat2, cv3_out, 0);
+    // concat: [split1, split2, cv2_out, cv3_out] along channel dim (dim=0 for CWHN)
+    tensor cat12   = Concat(m, split1, split2, /*dim=*/0);
+    tensor cat123  = Concat(m, cat12,  cv2_out, /*dim=*/0);
+    tensor cat1234 = Concat(m, cat123, cv3_out, /*dim=*/0);
 
-    printf("ELAN1 %s: concatenated tensor shape [%d,%d,%d,%d]\n",
-           name.c_str(),
-           (int)cat3->ne[0], (int)cat3->ne[1], (int)cat3->ne[2], (int)cat3->ne[3]);
-
-    // cv4: 1x1 conv to final output channels (64→32)
-    tensor cv4 = Conv(m, cat3, name + ".cv4.conv", c3 + (2 * c4), c2, 1, 1, -1, true);
-    cv4 = ggml_permute(m, cv4, 0, 1, 2, 3); // NHWC -> WHNC
-    if (!ggml_is_contiguous(cv4)){
-        cv4 = ggml_cont(m, cv4); // Ensure contiguous memory
-    }
     if (debug) {
-        printf(
-            "ELAN1 %s: cv4_out shape [%d,%d,%d,%d]\n", name.c_str(), (int)cv4->ne[3],
-            (int)cv4->ne[2], (int)cv4->ne[1], (int)cv4->ne[0]);
+        printf("ELAN1 %s: cat (C,W,H,N) = [%d,%d,%d,%d]\n",
+               name.c_str(), (int)cat1234->ne[0], (int)cat1234->ne[1], (int)cat1234->ne[2], (int)cat1234->ne[3]);
     }
-    return cv4;
+
+    // cv4: 1x1 conv to final output channels: (c3 + 2*c4) -> c2
+    tensor out = Conv(m, cat1234, name + ".cv4.conv", c3 + (2 * c4), c2, 1, 1, -1, true);
+
+    // 레이아웃 변환 불필요 (네트워크 전반 CWHN 유지). 항등 permute/contiguous 강제 없음.
+    if (debug) {
+        printf("ELAN1 %s: out (C,W,H,N) = [%d,%d,%d,%d]\n",
+               name.c_str(), (int)out->ne[0], (int)out->ne[1], (int)out->ne[2], (int)out->ne[3]);
+    }
+    return out;
 }
 
 tensor Bottleneck(
@@ -258,9 +327,9 @@ tensor Bottleneck(
     tensor cv2_out = Conv(m, cv1_out, name + ".cv2.conv", c_, c2, 3, 1, -1, true);
 
     // Add shortcut if applicable
-    if (shortcut && x->ne[2] == cv2_out->ne[2]) {
-        return ggml_add(m, x, cv2_out);
-    }
+    // if (shortcut && x->ne[2] == cv2_out->ne[2]) {
+    //     return ggml_add(m, x, cv2_out);
+    // }
     if (debug) {
         printf(
             "Bottleneck %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)cv2_out->ne[3],
@@ -482,37 +551,39 @@ tensor RepNCSPELAN4(
     }
     int c = c3 / 2;
     printf("Name: %s, c1=%d, c2=%d, c3=%d, c4=%d, n=%d\n", name.c_str(), c1, c2, c3, c4, n);
-    // cv1: 1x1 conv (c1 -> c3)
-    tensor cv1_out = Conv(m, x, name + ".cv1", c1, c3, 1, 1, -1, true);
+    // cv1: 1x1 conv (c1 -> c3), stride=1, pad=0
+    tensor cv1_out = Conv(m, x, name + ".cv1", c1, c3, /*k=*/1, /*stride=*/1, /*pad=*/0, /*bias=*/true);
+
+    // 채널을 반으로 분할: y1 = [0:c_half), y2_input = [c_half:c3)
+    tensor cv1_out_h0 = slice(m, cv1_out,
+                      /*C*/ slice_t(0,       c),
+                      /*W*/ slice_t(), /*H*/ slice_t(), /*N*/ slice_t());
+    tensor cv1_out_h1 = slice(m, cv1_out,
+                            /*C*/ slice_t(c, c3),
+                            /*W*/ slice_t(), /*H*/ slice_t(), /*N*/ slice_t());
     
-    // Split cv1_out into 2 parts: y1 = first half, second half goes to cv2
-    tensor y1 = ggml_view_3d(
-        m, cv1_out, c, cv1_out->ne[1], cv1_out->ne[2], cv1_out->nb[1], cv1_out->nb[2],
-        0);
-    if (!ggml_is_contiguous(y1)){
-        // printf("Making input contiguous for RepNCSPELAN4 %s\n", name.c_str());
-        y1 = ggml_cont(m, y1); // Ensure contiguous memory
-    }
-    tensor y2_input = ggml_view_3d(
-        m, cv1_out, c, cv1_out->ne[1], cv1_out->ne[2], cv1_out->nb[1], cv1_out->nb[2],
-        c * cv1_out->nb[0]);
-    if (!ggml_is_contiguous(y2_input)){
-        // printf("Making input contiguous for RepNCSPELAN4 %s\n", name.c_str());
-        y2_input = ggml_cont(m, y2_input); // Ensure contiguous
-    }
+
+    // Conv가 비연속 view를 받지 못할 수 있으니 안전하게 연속화
+    if (!ggml_is_contiguous(cv1_out_h0)) cv1_out_h0 = ggml_cont(m, cv1_out_h0);
+    if (!ggml_is_contiguous(cv1_out_h1)) cv1_out_h1 = ggml_cont(m, cv1_out_h1);
+
+    auto rep_conv = [=](model_ref m, tensor x, std::string name, int c_in, int c_out, int n) {
+        tensor y2 = RepCSP(m, x, name+ ".0", c_in, c_out, n);
+        return Conv(m, y2, name + ".1", c_out, c_out, 3, 1, 1, true);
+    };
+    
+    // y2 = RepCSP(m, y2, name + ".cv3.0", c4, c4, n);
+    // tensor y3 = Conv(m, y2, name + ".cv3.1", c4, c4, 3, 1, 1, true);
     // cv2: RepCSP(c3//2 -> c4) + Conv(c4 -> c4)
-    tensor y2 = RepCSP(m, y2_input, name + ".cv2.0", c, c4, n);
-    y2 = Conv(m, y2, name + ".cv2.1", c4, c4, 3, 1, -1, true);
-
+    tensor cv2 = rep_conv(m, cv1_out_h1, name + ".cv2", c3 / 2, c4, n);
     // cv3: RepCSP(c4 -> c4) + Conv(c4 -> c4)
-    y2 = RepCSP(m, y2, name + ".cv3.0", c4, c4, n);
-    tensor y3 = Conv(m, y2, name + ".cv3.1", c4, c4, 3, 1, -1, true);
-
+    tensor cv3 = rep_conv(m, cv2, name + ".cv3", c4, c4, n);
+    
     // Use dimension 0 for channel concat in CWHN
-    tensor cat = ggml_concat(m, y1, y2_input, 0);
-    cat = ggml_concat(m, cat, y2, 0);
-    cat = ggml_concat(m, cat, y3, 0);
-
+    // tensor cat = ggml_concat(m, y1, y2_input, 0);
+    // cat = ggml_concat(m, cat, y2, 0);
+    // cat = ggml_concat(m, cat, y3, 0);
+    tensor cat = concat(m, {y1, y2_input, cv2, cv3}, 0);
     if (!ggml_is_contiguous(cat))
     {
         printf("Making concatenated tensor contiguous for RepNCSPELAN4 %s\n", name.c_str());
@@ -627,12 +698,12 @@ tensor Concat(model_ref m, tensor a, tensor b, int axis, bool debug) {
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     std::map<int, tensor> features;
     // Layer 0: Conv(3, 16, 3, 2) - P1/2
-    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, true);
+    tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, false, true);
     features[0] = x0;
     ggml_set_output(x0);
 
     // Layer 1: Conv(16, 32, 3, 2) - P2/4
-    tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, true);
+    tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, false, true);
     features[1] = x1;
     ggml_set_output(x1);
     
@@ -1858,13 +1929,13 @@ static void write_tensor_txt(tensor t, char const* filename) {
     if (t->type == GGML_TYPE_F32) {
         auto data = td.as_f32();
         for (size_t i = 0; i < data.size(); ++i) {
-            fprintf(f, i + 1 == data.size() ? "%g\n" : "%g ", (double)data[i]);
+            fprintf(f, i + 1 == data.size() ? "%.4f\n" : "%.4f ", (double)data[i]);
         }
     } else if (t->type == GGML_TYPE_F16) {
         const ggml_fp16_t* h = reinterpret_cast<const ggml_fp16_t*>(td.data.get());
         for (size_t i = 0; i < n; ++i) {
             float v = ggml_fp16_to_fp32(h[i]);
-            fprintf(f, i + 1 == n ? "%g\n" : "%g ", (double)v);
+            fprintf(f, i + 1 == n ? "%.4f\n" : "%.4f ", (double)v);
         }
     } else if (t->type == GGML_TYPE_I32) {
         auto data = td.as_i32();

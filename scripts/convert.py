@@ -575,6 +575,19 @@ def convert_yolov9t(input_filepath: Path, writer: Writer, bn_fuse: bool = True):
             bn_rv = model.get(f"{bn_suffix}.running_var", None)
             eps = model.get(f"{bn_suffix}.eps", 1e-3)
         else:
+            # batch norm fusion을 하지 않는 경우 저장해야함. add_tensor를 사용해서 저장.
+            bn_w = model.get(f"{bn_suffix}.weight", None)
+            bn_b = model.get(f"{bn_suffix}.bias", None)
+            bn_rm = model.get(f"{bn_suffix}.running_mean", None)
+            bn_rv = model.get(f"{bn_suffix}.running_var", None)
+            bn_rm = None
+            bn_rv = None
+            eps = model.get(f"{bn_suffix}.eps", 1e-3)
+            writer.add_tensor(f"{bn_suffix}.weight", bn_w) if bn_w is not None else None
+            writer.add_tensor(f"{bn_suffix}.bias", bn_b) if bn_b is not None else None
+            writer.add_tensor(f"{bn_suffix}.running_mean", bn_rm) if bn_rm is not None else None
+            writer.add_tensor(f"{bn_suffix}.running_var", bn_rv) if bn_rv is not None else None
+
             bn_w = None
             bn_b = None
             bn_rm = None
@@ -583,11 +596,13 @@ def convert_yolov9t(input_filepath: Path, writer: Writer, bn_fuse: bool = True):
 
         if bn_w is None:
             # Fusing이 불가능한 경우.
+            
             tensor = writer.convert_tensor_2d(conv_weight)
             writer.add_tensor(f"{conv_suffix}.weight", tensor)
-            writer.add_tensor(f"{conv_suffix}.bias", conv_bias)
+            if conv_bias is not None:
+                writer.add_tensor(f"{conv_suffix}.bias", conv_bias)
+                processed_keys.add(f"{conv_suffix}.bias")
             processed_keys.add(f"{conv_suffix}.weight")
-            processed_keys.add(f"{conv_suffix}.bias")
             print("Cannot fuse:", conv_suffix, bn_suffix)
         else:
             # Fusing이 가능한 경우.
@@ -641,6 +656,18 @@ def convert_yolov9t(input_filepath: Path, writer: Writer, bn_fuse: bool = True):
                 bn_rv = model.get(f"{bn_suffix}.running_var", None)
                 eps = model.get(f"{bn_suffix}.eps", 1e-3)
             else:
+                bn_suffix = conv_suffix.replace(".conv", ".bn")
+                bn_w = model.get(f"{bn_suffix}.weight", None)
+                bn_b = model.get(f"{bn_suffix}.bias", None)
+                bn_rm = model.get(f"{bn_suffix}.running_mean", None)
+                bn_rv = model.get(f"{bn_suffix}.running_var", None)
+                bn_rm = None
+                bn_rv = None
+                eps = model.get(f"{bn_suffix}.eps", 1e-3)
+                writer.add_tensor(f"{bn_suffix}.weight", bn_w) if bn_w is not None else None
+                writer.add_tensor(f"{bn_suffix}.bias", bn_b) if bn_b is not None else None
+                writer.add_tensor(f"{bn_suffix}.running_mean", bn_rm) if bn_rm is not None else None
+                writer.add_tensor(f"{bn_suffix}.running_var", bn_rv) if bn_rv is not None else None
                 bn_suffix = None
                 bn_w = None
                 bn_b = None
@@ -668,7 +695,7 @@ def convert_yolov9t(input_filepath: Path, writer: Writer, bn_fuse: bool = True):
                 tensor = writer.convert_tensor_2d(fused_conv)
                 writer.add_tensor(f"{conv_suffix}.weight", tensor)
                 processed_keys.add(f"{conv_suffix}.weight")
-                if conv_bias is not None:
+                if fused_bias is not None:
                     writer.add_tensor(f"{conv_suffix}.bias", fused_bias)
                     processed_keys.add(f"{conv_suffix}.bias")
                 
@@ -739,6 +766,7 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument("--model-name", type=str, default=None, help="Name of the model for metadata")
     parser.add_argument("--metadata", type=Path, help="Specify the path for an authorship metadata override file")
+    parser.add_argument("--bn-fuse", action="store_true", help="Enable BatchNorm fusion for YOLOv9t conversion")
     # fmt: on
     args = parser.parse_args()
 
@@ -777,7 +805,7 @@ if __name__ == "__main__":
             case "esrgan":
                 convert_esrgan(input_path, writer)
             case "yolov9t":
-                convert_yolov9t(input_path, writer)
+                convert_yolov9t(input_path, writer, bn_fuse=args.bn_fuse)
             case _:
                 raise ValueError(f"Unknown architecture: {args.arch}")
 
