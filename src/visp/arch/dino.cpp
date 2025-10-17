@@ -22,7 +22,7 @@ tensor interpolate_pos_encoding(model_ref m, tensor x, int64_t w, int64_t h, int
 
     patch_embed = ggml_reshape_4d(m, patch_embed, dim, sqrt_n, sqrt_n, 1);
     patch_embed = ggml_cont(m, permute_cwhn_to_whcn(m, patch_embed));
-    patch_embed = interpolate(m, patch_embed, target, GGML_SCALE_MODE_BICUBIC);
+    patch_embed = interpolate(m, patch_embed, target, GGML_SCALE_MODE_BILINEAR);
     patch_embed = ggml_cont(m, permute_whcn_to_cwhn(m, patch_embed));
     patch_embed = ggml_reshape_3d(m, patch_embed, dim, target[0] * target[1], 1);
     return concat(m, {class_embed, patch_embed}, 1);

@@ -522,7 +522,7 @@ def fuse_conv_and_bn(conv_weight:torch.Tensor,
     return fused_conv, fused_bias
 
 # YOLOv9t 변환 함수 수정
-def convert_yolov9t(input_filepath: Path, writer: Writer):
+def convert_yolov9t(input_filepath: Path, writer: Writer, bn_fuse: bool = True):
     writer.add_license("gpl-3.0")
     writer.set_tensor_layout_default(TensorLayout.nhwc)
 
@@ -568,11 +568,19 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
             continue
         conv_weight = model.get(f"{conv_suffix}.weight", None)
         conv_bias = model.get(f"{conv_suffix}.bias", None)
-        bn_w = model.get(f"{bn_suffix}.weight", None)
-        bn_b = model.get(f"{bn_suffix}.bias", None)
-        bn_rm = model.get(f"{bn_suffix}.running_mean", None)
-        bn_rv = model.get(f"{bn_suffix}.running_var", None)
-        eps = model.get(f"{bn_suffix}.eps", 1e-3)
+        if bn_fuse:
+            bn_w = model.get(f"{bn_suffix}.weight", None)
+            bn_b = model.get(f"{bn_suffix}.bias", None)
+            bn_rm = model.get(f"{bn_suffix}.running_mean", None)
+            bn_rv = model.get(f"{bn_suffix}.running_var", None)
+            eps = model.get(f"{bn_suffix}.eps", 1e-3)
+        else:
+            bn_w = None
+            bn_b = None
+            bn_rm = None
+            bn_rv = None
+            eps = 1e-3
+
         if bn_w is None:
             # Fusing이 불가능한 경우.
             tensor = writer.convert_tensor_2d(conv_weight)
@@ -581,7 +589,6 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
             processed_keys.add(f"{conv_suffix}.weight")
             processed_keys.add(f"{conv_suffix}.bias")
             print("Cannot fuse:", conv_suffix, bn_suffix)
-            continue
         else:
             # Fusing이 가능한 경우.
             # print(conv_weight.shape, conv_bias.shape, bn_rm.shape, bn_rv.shape, bn_w.shape, bn_b.shape)
@@ -593,23 +600,23 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
                                                       bn_b, 
                                                       eps)
         
-        # fused_conv , fused_bias = fuse_conv_and_bn(conv_weight= conv_weight, 
-        #                                            conv_bias= conv_bias,
-        #                                            bn_weight= bn_w, 
-        #                                            bn_bias= bn_b,
-        #                                            running_mean= bn_rm, 
-        #                                            running_var= bn_rv,  
-        #                                            eps= eps)
-        
-        tensor = writer.convert_tensor_2d(fused_conv)
+            # fused_conv , fused_bias = fuse_conv_and_bn(conv_weight= conv_weight, 
+            #                                            conv_bias= conv_bias,
+            #                                            bn_weight= bn_w, 
+            #                                            bn_bias= bn_b,
+            #                                            running_mean= bn_rm, 
+            #                                            running_var= bn_rv,  
+            #                                            eps= eps)
+            
+            tensor = writer.convert_tensor_2d(fused_conv)
 
-        writer.add_tensor(f"{conv_suffix}.weight", tensor)
-        writer.add_tensor(f"{conv_suffix}.bias", fused_bias)
-        
-        processed_keys.add(f"{conv_suffix}.weight")
-        processed_keys.add(f"{conv_suffix}.bias")
-  
-        # print(f"{conv_suffix}, {bn_suffix}")
+            writer.add_tensor(f"{conv_suffix}.weight", tensor)
+            writer.add_tensor(f"{conv_suffix}.bias", fused_bias)
+            
+            processed_keys.add(f"{conv_suffix}.weight")
+            processed_keys.add(f"{conv_suffix}.bias")
+
+            # print(f"{conv_suffix}, {bn_suffix}")
     # === 추가: Detect head의 마지막 레이어만 저장 ===
     print("\n=== Finding Detect head final layers (nn.Conv2d) ===")
     
@@ -626,12 +633,20 @@ def convert_yolov9t(input_filepath: Path, writer: Writer):
             conv_weight = model.get(f"{conv_suffix}.weight", None)
             conv_bias = model.get(f"{conv_suffix}.bias", None)
             
-            bn_suffix = conv_suffix.replace(".conv", ".bn")
-            bn_w = model.get(f"{bn_suffix}.weight", None)
-            bn_b = model.get(f"{bn_suffix}.bias", None)
-            bn_rm = model.get(f"{bn_suffix}.running_mean", None)
-            bn_rv = model.get(f"{bn_suffix}.running_var", None)
-            eps = model.get(f"{bn_suffix}.eps", 1e-3)
+            if bn_fuse:
+                bn_suffix = conv_suffix.replace(".conv", ".bn")
+                bn_w = model.get(f"{bn_suffix}.weight", None)
+                bn_b = model.get(f"{bn_suffix}.bias", None)
+                bn_rm = model.get(f"{bn_suffix}.running_mean", None)
+                bn_rv = model.get(f"{bn_suffix}.running_var", None)
+                eps = model.get(f"{bn_suffix}.eps", 1e-3)
+            else:
+                bn_suffix = None
+                bn_w = None
+                bn_b = None
+                bn_rm = None
+                bn_rv = None
+                eps = None
             
             if bn_w is None or bn_b is None or bn_rm is None or bn_rv is None:
                 # Fusing이 불가능한 경우.
