@@ -885,12 +885,17 @@ DetectOutput inference(model_ref m,
 
     std::vector<tensor> reshaped_outputs;
     // Concat along anchor dimension (dim 1)
+    //out.raw_outputs; <- 이게 [144, 8400, 1, 1] 이어야 함
+    
     tensor x_cat = concat(m, out.features, 1); // [144, 8400, 1]
+    
     printf("x_cat shape: [%ld,%ld,%ld, %ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
-
     // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
-    int64_t total_channels = x_cat->ne[0];
-    int64_t total_anchors = x_cat->ne[1];
+    // x_cat = ggml_transpose(m, x_cat);
+    // x_cat = ggml_cont(m, x_cat);
+    printf("After transpose: x_cat shape: [%ld,%ld,%ld,%ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
+    int64_t total_channels = x_cat->ne[0]; // 144
+    int64_t total_anchors = x_cat->ne[1]; // 8400
     
     // printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
     // Done!
@@ -902,19 +907,20 @@ DetectOutput inference(model_ref m,
     std::vector<float> anchor_host;
     std::vector<float> stride_host;
     auto [anchor_points, stride_tensor] = make_anchors(m, out, anchor_host, stride_host, strides_vec, 0.5f);
-
+    
+    
     // Split into box and cls
-    tensor box = ggml_view_4d(m, x_cat,
-        reg_max * 4, total_anchors, 1, 1,
-        x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
-        0);
-        
+    tensor box = slice(m, x_cat,
+                          /*C*/ {0,       reg_max * 4},
+                          /*W*/{}, /*H*/ {}, /*N*/ {});
     box = ggml_cont(m, box);
-    tensor cls = ggml_view_4d(m, x_cat,
-        nc, total_anchors, 1, 1,
-        x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
-        reg_max * 4 * x_cat->nb[0]);
+    tensor cls = slice(m, x_cat,
+                          /*C*/ {reg_max*4, total_channels},
+                          /*W*/ {}, /*H*/ {}, /*N*/ {});
     cls = ggml_cont(m, cls);
+    // printf("box shape: [%ld,%ld,%ld,%ld]\n", box->ne[0], box->ne[1], box->ne[2], box->ne[3]);
+    // printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
+    // exit(EXIT_SUCCESS);
     
     // Prepare DFL projection tensor and host data
     tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
