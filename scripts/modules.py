@@ -219,8 +219,8 @@ def test_conv2d():
 
 
     
-Conv2d = GGMLConv2d
-# Conv2d = nn.Conv2d
+# Conv2d = GGMLConv2d
+Conv2d = nn.Conv2d
 
 def dist2bbox(distance:Tensor, anchor_points:Tensor, xywh:bool=True, dim:int=-1) -> Tensor:
     """Transform distance(ltrb) to box(xywh or xyxy)."""

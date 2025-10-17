@@ -32,28 +32,10 @@ struct detected_obj {
 // Complete Detect head forward pass
 struct DetectOutput {
     std::vector<tensor> raw_outputs;
-    std::vector<tensor>features;   // Selected backbone/neck features exposed for dumping
+    std::vector<tensor> features;   // Selected backbone/neck features exposed for dumping
     std::map<int, tensor> features_map;
     tensor predictions_cls;  // [nc, num_anchors, 1, bs]
     tensor predictions_bbox;  // [4, num_anchors, 1, bs]
-    tensor anchor_points;
-    tensor strides_points;
-    tensor dfl_proj;     // DFL projection weights tensor (reg_max elements)
-    int reg_max = 0;     // number of DFL bins
-    std::vector<float> anchor_host_data;  // host-side buffer to upload after allocation
-    std::vector<float> stride_host_data;  // host-side buffer to upload after allocation
-    std::vector<float> dfl_proj_host_data; // host-side DFL projection weights
-    // std::vector<float> anchor_data;  // 추가
-    // std::vector<float> stride_data;        // 추가
-};
-// Image preprocessing for YOLOv9t
-struct PreprocessResult {
-    tensor input_tensor;
-    float scale;
-    int pad_w;
-    int pad_h;
-    int orig_w;
-    int orig_h;
 };
 struct NMSParams {
     float conf_thres = 0.25f;
@@ -68,6 +50,7 @@ struct NMSParams {
 float resize_longest_side(i32x2 extent, int target_longest_side);
 image_data yolov9t_process_input(image_data image, yolov9t_params const& p);
 image_data yolov9t_process_input2(image_view image, yolov9t_params const& p);
+void sync_detect_outputs(DetectOutput& outputs, backend_device const& backend);
 // Detection parameters
 yolov9t_params yolov9t_detect_params(model_file const& file);
 // Core modules - actual layer implementations

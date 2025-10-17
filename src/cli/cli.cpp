@@ -608,6 +608,8 @@ void run_yolov9t(cli_args const& args) {
     int img_sz = check_img_size(params.input_size, params.stride);
     require_inputs(args.inputs, 1, "<image>");
     image_data input_image = image_load(args.inputs[0]);
+    // 원본 이미지 크기를 보존해 후처리 스케일링에 사용
+    i32x2 orig_extent = input_image.extent;
     printf("- input image size: %dx%d\n", input_image.extent[0], input_image.extent[1]);
     printf("- tensor layout: %s\n", 
            (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
@@ -628,31 +630,147 @@ void run_yolov9t(cli_args const& args) {
     printf("Running YOLOv9t inference...\n");
     DetectOutput outputs = yolov9t_forward(m, input);
     // 그래프 완료
-    if (outputs.predictions_cls != nullptr && outputs.predictions_bbox != nullptr) {
-        printf("outputs.predictions built\n");
-        ggml_build_forward_expand(m.graph, outputs.predictions_cls);
-        ggml_build_forward_expand(m.graph, outputs.predictions_bbox);
-    } else if (!outputs.raw_outputs.empty()) {
-        printf("outputs.raw_outputs built\n");
-        for (auto& raw_out : outputs.raw_outputs) {
-            ggml_build_forward_expand(m.graph, raw_out);
-        }
-    }
+    printf("outputs.predictions built\n");
+    
     compute_graph_allocate(graph, backend);
-
+    
     // Upload input data
     transfer_to_backend(input, processed_f32);
+    
+    compute_timed(graph, backend);
+    
+    printf("graph computed\n");
+    
 
-    // Upload anchors/strides/proj if present
-    if (outputs.anchor_points && !outputs.anchor_host_data.empty()) {
-        transfer_to_backend(outputs.anchor_points, std::span<const float>(outputs.anchor_host_data));
+    timer t_post;
+
+    printf("Postprocessing... skipped (no renderer yet)\n");
+    
+    tensor_data output_bbox = transfer_from_backend(outputs.predictions_bbox);
+    for (auto v : output_bbox.as_f32()) {
+        printf("%f ", v);
     }
-    if (outputs.strides_points && !outputs.stride_host_data.empty()) {
-        transfer_to_backend(outputs.strides_points, std::span<const float>(outputs.stride_host_data));
+    tensor_data output_cls = transfer_from_backend(outputs.predictions_cls);
+    for (auto v : output_cls.as_f32()) {
+        printf("%f ", v);
     }
-    if (outputs.dfl_proj && !outputs.dfl_proj_host_data.empty()) {
-        transfer_to_backend(outputs.dfl_proj, std::span<const float>(outputs.dfl_proj_host_data));
+    // Scale boxes back to original image size
+    // scale_boxes(detections, {img_sz, img_sz}, orig_extent);
+    // Reload original image for drawing
+    image_data output_image = image_load(args.inputs[0]);
+    
+    // Draw detections and save
+    std::vector<std::string> const& class_names = get_coco_class_names();
+    // draw_detections(output_image, detections, class_names);
+    
+    // Save result
+    // image_save(output_image, args.output);
+    // printf("-> output image saved to %s\n", args.output);
+    
+    printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
+    // printf("Found %zu objects\n", detections.size());
+}
+/*
+void run_yolov9t_t(cli_args const& args) {
+    using namespace visp::yolov9t;
+    
+    backend_device backend = backend_init(args);
+    auto [file, weights] = load_model_weights(
+        args, backend, "models/yolov9t_converted.gguf", 0, backend.preferred_layout());
+    
+    yolov9t_params params = yolov9t_detect_params(file);
+    printf("- model input size: %dx%d\n", params.input_size, params.input_size);
+    int img_sz = check_img_size(params.input_size, params.stride);
+    require_inputs(args.inputs, 1, "<image>");
+    image_data input_image = image_load(args.inputs[0]);
+    // 원본 이미지 크기를 보존해 후처리 스케일링에 사용
+    i32x2 orig_extent = input_image.extent;
+    printf("- input image size: %dx%d\n", input_image.extent[0], input_image.extent[1]);
+    printf("- tensor layout: %s\n", 
+           (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
+    
+    timer t_preprocess;
+    // image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
+    image_data processed_f32 = yolov9t_process_input2(std::move(input_image), params);
+    printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
+
+    printf("Preprocessing complete (%s)\n", t_preprocess.elapsed_str());
+    compute_graph graph = compute_graph_init(ggml_graph_overhead() * ggml_tensor_overhead()*2);
+    model_ref m(weights, graph);
+    
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, 
+                                        {3, img_sz, img_sz, 1}, "input");
+    printf("- input tensor shape: %ld, %ld, %ld, %ld\n", 
+           input->ne[0], input->ne[1], input->ne[2], input->ne[3]);
+    printf("Running YOLOv9t inference...\n");
+    DetectOutput outputs = yolov9t_forward(m, input);
+    // 그래프 완료
+    
+    printf("outputs.predictions built\n");
+    for (auto& raw_out : outputs.raw_outputs) {
+        ggml_build_forward_expand(m.graph, raw_out);
     }
+    for (auto& feat : outputs.features) {
+        ggml_build_forward_expand(m.graph, feat);
+    }
+    for (auto& [k, v] : outputs.features_map) {
+        ggml_build_forward_expand(m.graph, v);
+    }
+    if (outputs.predictions_cls) {
+        ggml_build_forward_expand(m.graph, outputs.predictions_cls);
+    }
+    if (outputs.predictions_bbox) {
+        ggml_build_forward_expand(m.graph, outputs.predictions_bbox);
+    }
+    if (outputs.dist2bbox) {
+        ggml_build_forward_expand(m.graph, outputs.dist2bbox);
+    }
+    compute_graph_allocate(graph, backend);
+    
+    // Upload input data
+    transfer_to_backend(input, processed_f32);
+    // Sanity check and upload anchors/strides/DFL proj
+    if (outputs.anchor_points) {
+        size_t ae = (size_t)outputs.anchor_points->ne[0] * (size_t)outputs.anchor_points->ne[1];
+        if (outputs.anchor_host_data.size() != ae) {
+            printf("[ERROR] anchor_host_data.size()=%zu != tensor elems=%zu ([%ld,%ld]) — skip upload\n",
+                   outputs.anchor_host_data.size(), ae,
+                   outputs.anchor_points->ne[0], outputs.anchor_points->ne[1]);
+        } else if (!outputs.anchor_host_data.empty()) {
+            printf("Uploading anchors: tensor [2,%ld], host %zu floats\n",
+                   outputs.anchor_points->ne[1], outputs.anchor_host_data.size());
+            transfer_to_backend(outputs.anchor_points,
+                                span(outputs.anchor_host_data.data(), outputs.anchor_host_data.size()));
+        }
+    }
+    if (outputs.strides_points) {
+        size_t se = (size_t)outputs.strides_points->ne[0] * (size_t)outputs.strides_points->ne[1];
+        if (outputs.stride_host_data.size() != se) {
+            printf("[ERROR] stride_host_data.size()=%zu != tensor elems=%zu ([%ld,%ld]) — skip upload\n",
+                   outputs.stride_host_data.size(), se,
+                   outputs.strides_points->ne[0], outputs.strides_points->ne[1]);
+        } else if (!outputs.stride_host_data.empty()) {
+            printf("Uploading strides: tensor [1,%ld], host %zu floats\n",
+                   outputs.strides_points->ne[1], outputs.stride_host_data.size());
+            transfer_to_backend(outputs.strides_points,
+                                span(outputs.stride_host_data.data(), outputs.stride_host_data.size()));
+        }
+    }
+    if (outputs.dfl_proj) {
+        size_t pe = (size_t)outputs.dfl_proj->ne[0];
+        if (outputs.dfl_proj_host_data.size() != pe) {
+            printf("[ERROR] dfl_proj_host_data.size()=%zu != tensor elems=%zu ([%ld]) — skip upload\n",
+                   outputs.dfl_proj_host_data.size(), pe,
+                   outputs.dfl_proj->ne[0]);
+        } else if (!outputs.dfl_proj_host_data.empty()) {
+            printf("Uploading DFL proj: len %ld, host %zu floats\n",
+                   outputs.dfl_proj->ne[0], outputs.dfl_proj_host_data.size());
+            transfer_to_backend(outputs.dfl_proj,
+                                span(outputs.dfl_proj_host_data.data(), outputs.dfl_proj_host_data.size()));
+        }
+    }
+
+    
     // Save preprocessed input tensor when dumping is requested
     if (args.dump_all || !args.dump_keys.empty()) {
         std::string base = args.output ? std::string(args.output) : std::string("output.png");
@@ -663,7 +781,32 @@ void run_yolov9t(cli_args const& args) {
         save_input_to_txt(input, in_txt.c_str());
     }
     compute_timed(graph, backend);
-
+    // Optionally pull outputs back for debugging/validation of IO matching
+    if (args.dump_all) {
+        if (outputs.predictions_cls) {
+            (void)transfer_from_backend(outputs.predictions_cls);
+        }
+        if (outputs.predictions_bbox) {
+            (void)transfer_from_backend(outputs.predictions_bbox);
+        }
+        if (outputs.dist2bbox) {
+            (void)transfer_from_backend(outputs.dist2bbox);
+        }
+    }
+    // ★ dist2bbox 결과 저장
+    {
+        std::string base = args.output ? std::string(args.output) : std::string("output.png");
+        size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos) base = base.substr(0, dot);
+        std::string dbox_txt = base + "_dist2bbox.txt";
+        if (outputs.dist2bbox) {
+            printf("Saving dist2bbox tensor to %s\n", dbox_txt.c_str());
+            save_input_to_txt(outputs.dist2bbox, dbox_txt.c_str());
+        } else {
+            printf("dist2bbox tensor not available; skip saving\n");
+        }
+    }
+    printf("graph computed\n");
     // Save selected feature maps to text files for debugging/analysis
     if (args.dump_all || !args.dump_keys.empty()) {
         std::string base = args.output ? std::string(args.output) : std::string("output.png");
@@ -680,9 +823,10 @@ void run_yolov9t(cli_args const& args) {
         // Additionally dump predictions and raw outputs for full comparison
         if (args.dump_all) {
             if (outputs.predictions_cls && outputs.predictions_bbox) {
-                std::string pred_txt = base + std::string("_predictions.txt");
+                std::string pred_txt = base + std::string("_predictions_cls.txt");
+                std::string pred_txt_bbox = base + std::string("_predictions_bbox.txt");
                 save_input_to_txt(outputs.predictions_cls, pred_txt.c_str());
-                save_input_to_txt(outputs.predictions_bbox, pred_txt.c_str());
+                save_input_to_txt(outputs.predictions_bbox, pred_txt_bbox.c_str());
             }
             if (!outputs.raw_outputs.empty()) {
                 for (size_t i = 0; i < outputs.raw_outputs.size(); ++i) {
@@ -703,7 +847,7 @@ void run_yolov9t(cli_args const& args) {
         outputs, nms_params.conf_thres, nms_params.iou_thres, nms_params.max_det, nms_params.max_nms, nms_params.max_wh);
     
     // Scale boxes back to original image size
-    scale_boxes(detections, {img_sz, img_sz}, input_image.extent);
+    scale_boxes(detections, {img_sz, img_sz}, orig_extent);
     // Reload original image for drawing
     image_data output_image = image_load(args.inputs[0]);
     
@@ -718,5 +862,5 @@ void run_yolov9t(cli_args const& args) {
     printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
     printf("Found %zu objects\n", detections.size());
 }
-
+*/
 } // namespace visp
