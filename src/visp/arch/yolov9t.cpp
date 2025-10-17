@@ -564,8 +564,10 @@ tensor RepNCSPELAN4(
     
 
     // Conv가 비연속 view를 받지 못할 수 있으니 안전하게 연속화
-    if (!ggml_is_contiguous(cv1_out_h0)) cv1_out_h0 = ggml_cont(m, cv1_out_h0);
-    if (!ggml_is_contiguous(cv1_out_h1)) cv1_out_h1 = ggml_cont(m, cv1_out_h1);
+    if (!ggml_is_contiguous(cv1_out_h0)) 
+        cv1_out_h0 = ggml_cont(m, cv1_out_h0);
+    if (!ggml_is_contiguous(cv1_out_h1)) 
+        cv1_out_h1 = ggml_cont(m, cv1_out_h1);
 
     auto rep_conv = [=](model_ref m, tensor x, std::string name, int c_in, int c_out, int n) {
         tensor y2 = RepCSP(m, x, name+ ".0", c_in, c_out, n);
@@ -583,7 +585,7 @@ tensor RepNCSPELAN4(
     // tensor cat = ggml_concat(m, y1, y2_input, 0);
     // cat = ggml_concat(m, cat, y2, 0);
     // cat = ggml_concat(m, cat, y3, 0);
-    tensor cat = concat(m, {y1, y2_input, cv2, cv3}, 0);
+    tensor cat = concat(m, {cv1_out_h0, cv1_out_h1, cv2, cv3}, 0);
     if (!ggml_is_contiguous(cat))
     {
         printf("Making concatenated tensor contiguous for RepNCSPELAN4 %s\n", name.c_str());
