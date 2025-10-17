@@ -814,10 +814,9 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
 
 tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh/*=true*/) {
     // distance: [4, N, ...], anchor_points: [2, N, ...]
-    printf("distance shape: [%ld,%ld,%ld,%ld]\n", distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
     
     distance = ggml_cont(m, distance);
-    distance = ggml_permute(m, distance, 2, 0, 1, 3);
+    // distance = ggml_permute(m, distance, 2, 0, 1, 3);
     
     distance = ggml_cont(m, distance);
     GGML_ASSERT(distance->ne[0] == 4);
@@ -876,6 +875,28 @@ tensor dfl_forward(model_ref m, tensor x, int reg_max, tensor& proj, bool debug)
     // Result: [4, num_anchors, 1, 1]
     return result;
 }
+
+// 이름 타입을 std::string으로 가정 (필요시 tensor_name 대신 string 사용)
+tensor make_constant(tensor x, const std::string& name) {
+    ggml_set_name(x, name.c_str());
+    ggml_set_input(x);
+    ggml_set_output(x);
+    return x;
+}
+template <typename T>
+void arange(span<T> dst, int size) {
+    for (int i = 0; i < size; ++i) dst[i] = static_cast<T>(i);
+}
+
+tensor create_tensor(ggml_context* ctx, int c1 = 16) {
+    const int n = c1;
+    auto result = tensor_alloc(ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n)); // I32
+    std::string name = "dfl.conv." + std::to_string(n);
+    arange(result.as_i32(), n);  // 이제 타입 일치
+    make_constant(result.x, name);
+    return result.x;
+}
+
 //(m, out.raw_outputs, ch, reg_max, nc);
 DetectOutput inference(model_ref m, 
                 DetectOutput out, // List of feature maps from different detection layers.
@@ -913,35 +934,62 @@ DetectOutput inference(model_ref m,
     tensor box = slice(m, x_cat,
                           /*C*/ {0,       reg_max * 4},
                           /*W*/{}, /*H*/ {}, /*N*/ {});
-    box = ggml_cont(m, box);
+    box = ggml_cont(m.graph_context, box);
     tensor cls = slice(m, x_cat,
                           /*C*/ {reg_max*4, total_channels},
                           /*W*/ {}, /*H*/ {}, /*N*/ {});
     cls = ggml_cont(m, cls);
-    // printf("box shape: [%ld,%ld,%ld,%ld]\n", box->ne[0], box->ne[1], box->ne[2], box->ne[3]);
-    // printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
-    // exit(EXIT_SUCCESS);
+    printf("box shape: [%ld,%ld,%ld,%ld]\n", box->ne[0], box->ne[1], box->ne[2], box->ne[3]);
+    printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
+    
     
     // Prepare DFL projection tensor and host data
-    tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
-    ggml_set_name(proj, "dfl_proj");
-    out.dfl_proj = proj;
-    out.dfl_proj_host_data.resize(reg_max);
-    for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
-    out.reg_max = reg_max;
-    printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
+    // tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
+    // ggml_set_name(proj, "dfl_proj");
+    // out.dfl_proj = proj;
+    // out.dfl_proj_host_data.resize(reg_max);
+    // for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
+    // out.reg_max = reg_max;
+    // printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
     
     // Apply DFL
-    tensor dfl_output = dfl_forward(m, box, reg_max, proj, false);
-    printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
+    // DFL (Distribution Focal Loss) layer implementation
+
+    auto DFL = [=](model_ref m, tensor x, int c1=16) {
+        // 64, 8400, 1, 1
+        auto [c, anchor, h, n] = nelements(x); // 8400, 64, 1, 1
+        
+        // Reshape to [b, 4, c1, a] equivalent in CWHN format
+        // CWHN: [c1, a, 4, b]
+        printf("DFL input x shape: [%ld,%ld,%ld,%ld]\n", x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+        tensor reshaped = ggml_reshape_3d(m, x, c1, anchor, 4); // [8400, 16, 4]
+        reshaped = ggml_cont(m, reshaped);
+        printf("reshaped shape: [%ld,%ld,%ld,%ld]\n", reshaped->ne[0], reshaped->ne[1], reshaped->ne[2], reshaped->ne[3]);
+        tensor soft_max = ggml_soft_max(m, reshaped); // [16, 8400, 4]
+        printf("soft_max shape: [%ld,%ld,%ld,%ld]\n", soft_max->ne[0], soft_max->ne[1], soft_max->ne[2], soft_max->ne[3]);
+        tensor proj = create_tensor(m, c1);
+        proj = ggml_reshape_4d(m, proj, c1, 1, 1, 1); 
+        printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
+        
+        proj = ggml_mul_mat(m, proj, soft_max);
+        printf("proj after mul_mat shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
+        proj = ggml_reshape_3d(m, proj, 4, anchor, 1); // [4, 8400, 1]
+        printf("proj after reshape_3d shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
+        return proj;
+    };
+    tensor dfl_output = DFL(m, box, reg_max);
+
+    // tensor dfl_output = dfl_forward(m, box, reg_max, proj, false);
+    // printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
     // Decode bounding boxes
     tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
     printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
     // Multiply by strides
-    tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
-
+    tensor strides_bc = ggml_reshape_1d(m, stride_tensor, total_anchors); // [1, 8400]
+    printf("strides_bc before reshape: [%ld,%ld,%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1], stride_tensor->ne[2], stride_tensor->ne[3]);
     dbox = ggml_mul(m, dbox, strides_bc);
     printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
+    exit(EXIT_FAILURE);
 
     // Apply sigmoid to classes
     cls = ggml_sigmoid(m, cls);
