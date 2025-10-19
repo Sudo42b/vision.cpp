@@ -304,7 +304,7 @@ class AttentionRelBias(torch.nn.Module):
         # (h, w)
         assert isinstance(resolution, tuple) and len(resolution) == 2
         self.num_heads = num_heads
-        self.scale = key_dim**-0.5
+        self.scale = key_dim ** -0.5
         self.key_dim = key_dim
         self.nh_kd = nh_kd = key_dim * num_heads
         self.d = int(attn_ratio * key_dim)
@@ -518,16 +518,18 @@ class ConvLayer(torch.nn.Module):
         self.use_checkpoint = use_checkpoint
 
         # build blocks
-        self.blocks = torch.nn.ModuleList([
-            MBConv(
-                dim,
-                dim,
-                conv_expand_ratio,
-                activation,
-                drop_path[i] if isinstance(drop_path, list) else drop_path,
-            )
-            for i in range(depth)
-        ])
+        self.blocks = torch.nn.ModuleList(
+            [
+                MBConv(
+                    dim,
+                    dim,
+                    conv_expand_ratio,
+                    activation,
+                    drop_path[i] if isinstance(drop_path, list) else drop_path,
+                )
+                for i in range(depth)
+            ]
+        )
 
         # patch merging layer
         if downsample is not None:
@@ -569,20 +571,22 @@ class BasicLayer(torch.nn.Module):
         self.use_checkpoint = use_checkpoint
 
         # build blocks
-        self.blocks = torch.nn.ModuleList([
-            TinyViTBlock(
-                dim=dim,
-                input_resolution=input_resolution,
-                num_heads=num_heads,
-                window_size=window_size,
-                mlp_ratio=mlp_ratio,
-                drop=drop,
-                drop_path=(drop_path[i] if isinstance(drop_path, list) else drop_path),
-                local_conv_size=local_conv_size,
-                activation=activation,
-            )
-            for i in range(depth)
-        ])
+        self.blocks = torch.nn.ModuleList(
+            [
+                TinyViTBlock(
+                    dim=dim,
+                    input_resolution=input_resolution,
+                    num_heads=num_heads,
+                    window_size=window_size,
+                    mlp_ratio=mlp_ratio,
+                    drop=drop,
+                    drop_path=(drop_path[i] if isinstance(drop_path, list) else drop_path),
+                    local_conv_size=local_conv_size,
+                    activation=activation,
+                )
+                for i in range(depth)
+            ]
+        )
 
         # patch merging layer
         if downsample is not None:
@@ -1350,10 +1354,12 @@ class MaskDecoder(torch.nn.Module):
         self.mask_tokens = torch.nn.Embedding(self.num_mask_tokens, transformer_dim)
 
         self.output_upscaling = output_upscaling(transformer_dim, activation)
-        self.output_hypernetworks_mlps = torch.nn.ModuleList([
-            HypernetworkMLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
-            for i in range(self.num_mask_tokens)
-        ])
+        self.output_hypernetworks_mlps = torch.nn.ModuleList(
+            [
+                HypernetworkMLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+                for i in range(self.num_mask_tokens)
+            ]
+        )
 
         self.iou_prediction_head = HypernetworkMLP(
             transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth

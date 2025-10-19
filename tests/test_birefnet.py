@@ -34,7 +34,7 @@ class WindowAttention(nn.Module):
         self.window_size = window_size  # Wh, Ww
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim**-0.5
+        self.scale = qk_scale or head_dim ** -0.5
 
         # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
@@ -375,22 +375,24 @@ class BasicLayer(nn.Module):
         self.use_checkpoint = use_checkpoint
 
         # build blocks
-        self.blocks = nn.ModuleList([
-            SwinTransformerBlock(
-                dim=dim,
-                num_heads=num_heads,
-                window_size=window_size,
-                shift_size=0 if (i % 2 == 0) else window_size // 2,
-                mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias,
-                qk_scale=qk_scale,
-                drop=drop,
-                attn_drop=attn_drop,
-                drop_path=(drop_path[i] if isinstance(drop_path, list) else drop_path),
-                norm_layer=norm_layer,
-            )
-            for i in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                SwinTransformerBlock(
+                    dim=dim,
+                    num_heads=num_heads,
+                    window_size=window_size,
+                    shift_size=0 if (i % 2 == 0) else window_size // 2,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=qkv_bias,
+                    qk_scale=qk_scale,
+                    drop=drop,
+                    attn_drop=attn_drop,
+                    drop_path=(drop_path[i] if isinstance(drop_path, list) else drop_path),
+                    norm_layer=norm_layer,
+                )
+                for i in range(depth)
+            ]
+        )
 
         # patch merging layer
         if downsample is not None:
@@ -621,7 +623,7 @@ class SwinTransformer(nn.Module):
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
             layer = BasicLayer(
-                dim=int(embed_dim * 2**i_layer),
+                dim=int(embed_dim * 2 ** i_layer),
                 depth=depths[i_layer],
                 num_heads=num_heads[i_layer],
                 window_size=window_size,
@@ -637,7 +639,7 @@ class SwinTransformer(nn.Module):
             )
             self.layers.append(layer)
 
-        num_features = [int(embed_dim * 2**i) for i in range(self.num_layers)]
+        num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
         self.num_features = num_features
 
         # add a norm layer for each output
@@ -961,15 +963,17 @@ class ASPPDeformable(nn.Module):
         self.in_channelster = 256 // self.down_scale
 
         self.aspp1 = _ASPPModuleDeformable(in_channels, self.in_channelster, 1, padding=0)
-        self.aspp_deforms = nn.ModuleList([
-            _ASPPModuleDeformable(
-                in_channels,
-                self.in_channelster,
-                conv_size,
-                padding=int(conv_size // 2),
-            )
-            for conv_size in parallel_block_sizes
-        ])
+        self.aspp_deforms = nn.ModuleList(
+            [
+                _ASPPModuleDeformable(
+                    in_channels,
+                    self.in_channelster,
+                    conv_size,
+                    padding=int(conv_size // 2),
+                )
+                for conv_size in parallel_block_sizes
+            ]
+        )
 
         self.global_avg_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),

@@ -36,6 +36,24 @@ struct DetectOutput {
     std::map<int, tensor> features_map;
     tensor predictions_cls;  // [nc, num_anchors, 1, bs]
     tensor predictions_bbox;  // [4, num_anchors, 1, bs]
+    tensor anchor_points;
+    tensor strides_points;
+    tensor dfl_proj;     // DFL projection weights tensor (reg_max elements)
+    int reg_max = 0;     // number of DFL bins
+    std::vector<float> anchor_host_data;  // host-side buffer to upload after allocation
+    std::vector<float> stride_host_data;  // host-side buffer to upload after allocation
+    std::vector<float> dfl_proj_host_data; // host-side DFL projection weights
+    // std::vector<float> anchor_data;  // 추가
+    // std::vector<float> stride_data;        // 추가
+};
+// Image preprocessing for YOLOv9t
+struct PreprocessResult {
+    tensor input_tensor;
+    float scale;
+    int pad_w;
+    int pad_h;
+    int orig_w;
+    int orig_h;
 };
 struct NMSParams {
     float conf_thres = 0.25f;
@@ -96,7 +114,7 @@ tensor Bottleneck(
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x);
 
 // Detection head components
-tensor dfl_forward(model_ref m, tensor x, int reg_max, tensor& proj, bool debug=false);
+tensor dfl_forward(model_ref m, tensor weight, tensor x, int reg_max, bool debug=false);
 
 std::pair<tensor, tensor> make_anchors(
     model_ref m,

@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cd /mnt/e/7_RISCV/vision.cpp/build && make -j$(nproc)
+cd $(pwd)/wsl_build && make -j$(nproc)

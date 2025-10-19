@@ -75,6 +75,27 @@ struct test_case_def {
 //
 // Test entry points
 //
+/*
+class DFL(nn.Module):
+    """Distribution Focal Loss (DFL)"""
+    def __init__(self, c1=16):
+        super().__init__()
+        self.conv = Conv2d(c1, 1, 1, bias=False).requires_grad_(False)
+        x = torch.arange(c1, dtype=torch.float)
+        self.conv.weight.data[:] = nn.Parameter(x.view(1, c1, 1, 1))
+        self.c1 = c1
+
+    def forward(self, x:torch.Tensor) -> torch.Tensor:
+        b, c, a = x.shape  # batch, channels, anchors
+        return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
+*/
+DEF(dfl_layer)(model_ref m, span<tensor> input, param_dict const& p) {
+    // model_ref m, tensor x, int reg_max, tensor& proj, bool debug
+    bool debug = p.get("debug", 0) != 0;
+    int reg_max = p.get("reg_max", 16);
+    tensor weight = m.weights("detect.dfl.conv.weight");
+    return {visp::yolov9t::dfl_forward(m, weight, input[0], reg_max, debug)};
+}
 
 DEF(conv_2d_depthwise_nchw)(model_ref m, span<tensor> input, param_dict const& p) {
     int stride = p.get("stride", 1);
