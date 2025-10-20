@@ -615,28 +615,28 @@ void run_yolov9t(cli_args const& args) {
            (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
     
     timer t_preprocess;
-    // image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
-    image_data processed_f32 = yolov9t_process_input2(std::move(input_image), params);
+    // image_data processed_f32 = yolov9t_process_input2(input_image, params);
     printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
-
     printf("Preprocessing complete (%s)\n", t_preprocess.elapsed_str());
+    
+    // Build compute graph
     compute_graph graph = compute_graph_init(ggml_graph_overhead() * ggml_tensor_overhead()*2);
     model_ref m(weights, graph);
     
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, 
-                                        {3, img_sz, img_sz, 1}, "input");
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, img_sz, img_sz, 1}, "input");
     printf("- input tensor shape: %ld, %ld, %ld, %ld\n", 
-           input->ne[0], input->ne[1], input->ne[2], input->ne[3]);
+        input->ne[0], input->ne[1], input->ne[2], input->ne[3]);
+    
+    // Forward pass - 이 함수 내부에서 모든 그래프 구성이 완료되어야 함
     printf("Running YOLOv9t inference...\n");
     DetectOutput outputs = yolov9t_forward(m, input);
-    // 그래프 완료
-    printf("outputs.predictions built\n");
-    
-    compute_graph_allocate(graph, backend);
+    printf("Forward pass built\n");
     
     // Upload input data
     transfer_to_backend(input, processed_f32);
     
+    // Allocate and compute
+    compute_graph_allocate(graph, backend);
     compute_timed(graph, backend);
     
     printf("graph computed\n");
@@ -646,20 +646,8 @@ void run_yolov9t(cli_args const& args) {
 
     printf("Postprocessing... skipped (no renderer yet)\n");
     
-    tensor_data output_bbox = transfer_from_backend(outputs.predictions_bbox);
-    for (auto v : output_bbox.as_f32()) {
-        printf("%f ", v);
-    }
-    tensor_data output_cls = transfer_from_backend(outputs.predictions_cls);
-    for (auto v : output_cls.as_f32()) {
-        printf("%f ", v);
-    }
-    // Scale boxes back to original image size
-    // scale_boxes(detections, {img_sz, img_sz}, orig_extent);
-    // Reload original image for drawing
+    // Draw and save
     image_data output_image = image_load(args.inputs[0]);
-    
-    // Draw detections and save
     std::vector<std::string> const& class_names = get_coco_class_names();
     // draw_detections(output_image, detections, class_names);
     printf("input transferred to backend\n");
@@ -669,7 +657,7 @@ void run_yolov9t(cli_args const& args) {
     // printf("-> output image saved to %s\n", args.output);
     
     printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
-    // printf("Found %zu objects\n", detections.size());
+    printf("Found %zu objects\n", detections.size());
 }
 
 void run_yolov9t_t(cli_args const& args) {

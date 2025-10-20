@@ -285,9 +285,9 @@ class Encoder(nn.Module):
         super().__init__()
 
         log2res = int(np.log2(resolution))
-        if 2**log2res != resolution:
+        if 2 ** log2res != resolution:
             raise ValueError
-        self.encode_res = [2**i for i in range(log2res, 1, -1)]
+        self.encode_res = [2 ** i for i in range(log2res, 1, -1)]
         self.ic_n = ic_n
 
         for idx, (resi, resj) in enumerate(zip(self.encode_res[:-1], self.encode_res[1:])):
@@ -436,9 +436,9 @@ class Synthesis(nn.Module):
         super().__init__()
 
         log2res = int(np.log2(resolution))
-        if 2**log2res != resolution:
+        if 2 ** log2res != resolution:
             raise ValueError
-        block_res = [2**i for i in range(2, log2res + 1)]
+        block_res = [2 ** i for i in range(2, log2res + 1)]
 
         self.resolution = resolution
         self.rgb_n = rgb_n

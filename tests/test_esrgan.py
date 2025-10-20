@@ -9,6 +9,7 @@ torch.set_printoptions(precision=3, sci_mode=False)
 
 # Reference: https://github.com/chaiNNer-org/spandrel/blob/main/libs/spandrel/spandrel/architectures/ESRGAN/__arch/RRDB.py
 
+
 def conv_block(
     in_nc: int,
     out_nc: int,
@@ -107,7 +108,6 @@ def test_residual_dense_block():
 
 
 class RRDB(nn.Module):
-
     def __init__(self, nf, kernel_size=3, gc=32, stride=1, bias: bool = True):
         super().__init__()
         self.RDB1 = ResidualDenseBlock_5C(nf, kernel_size, gc, stride, bias)
@@ -200,9 +200,7 @@ class RRDBNet(nn.Module):
                         for _ in range(num_blocks)
                     ],
                     # lr conv
-                    conv_block(
-                        in_nc=num_filters, out_nc=num_filters, kernel_size=3, act=False
-                    ),
+                    conv_block(in_nc=num_filters, out_nc=num_filters, kernel_size=3, act=False),
                 )
             ),
             *upsample_blocks,
@@ -219,9 +217,7 @@ class RRDBNet(nn.Module):
 def test_rrdbnet():
     torch.manual_seed(42)
 
-    model = RRDBNet(
-        in_nc=3, out_nc=3, num_filters=8, num_blocks=2, scale=2, upsampler="upconv"
-    )
+    model = RRDBNet(in_nc=3, out_nc=3, num_filters=8, num_blocks=2, scale=2, upsampler="upconv")
     state = workbench.randomize(model.state_dict())
     for name, param in state.items():
         if param.ndim == 4 and name.endswith("weight"):

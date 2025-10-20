@@ -1,6 +1,7 @@
 add_executable(vision-cli)
 # add_executable(yolov9t)
-target_sources(vision-cli PRIVATE cli.cpp)
+# target_sources(vision-cli PRIVATE cli.cpp)
+target_sources(vision-cli PRIVATE inference_yolov9t.cpp)
 # target_sources(yolov9t PRIVATE yolov9t.cpp)
 target_include_directories(vision-cli PRIVATE ..)
 target_compile_definitions(vision-cli PRIVATE ${VISP_ASSERT} ${VISP_DEFINITIONS})

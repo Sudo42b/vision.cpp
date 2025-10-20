@@ -548,7 +548,7 @@ def convert_yolov9t(input_filepath: Path, writer: Writer, bn_fuse: bool = True):
 
     writer.add_int32("yolov9.num_classes", num_classes)
     # writer.add_int32("yolov9.num_anchors_per_scale", 3)
-    # writer.add_string("yolov9.variant", "tiny")
+    writer.add_string("yolov9.variant", "tiny")
     writer.add_int32("yolov9.input_size", 640)
     
     # Conv-BN 쌍 찾기

@@ -13,6 +13,7 @@ from PIL import Image
 from yolov9 import YOLOv9t_Seq
 import sys, subprocess
 
+
 def read_cwhn_txt_tensor(path: str) -> torch.Tensor:
     """Read a text tensor saved by C++ save_input_to_txt (C,H,W,N layout)."""
     with open(path, "r") as f:
@@ -63,7 +64,9 @@ def write_cwhn_txt_tensor(t: torch.Tensor, path: str, *, comment_name: str = "in
             end = "\n" if i + 1 == flat.size else " "
             f.write(("%g" % float(v)) + end)
 
+
 # Add: build runner reflecting build_code.sh
+
 
 def run_build(build_script: str = "/mnt/e/7_RISCV/vision.cpp/build_code.sh") -> None:
     if not os.path.exists(build_script):
@@ -71,7 +74,9 @@ def run_build(build_script: str = "/mnt/e/7_RISCV/vision.cpp/build_code.sh") -> 
     print(f"[build] Running: {build_script}")
     subprocess.run(["bash", build_script], check=True)
 
+
 # Add: C++ vision-cli runner reflecting excute.sh
+
 
 def run_cpp_vision_cli(
     cpp_bin: str,
@@ -87,9 +92,12 @@ def run_cpp_vision_cli(
     cmd = [
         cpp_bin,
         "yolov9t",
-        "-m", model_path,
-        "-i", image_path,
-        "-o", output_path,
+        "-m",
+        model_path,
+        "-i",
+        image_path,
+        "-o",
+        output_path,
     ]
     if dump_all or not dump_keys:
         cmd.append("--dump-all")
@@ -152,7 +160,9 @@ def run_and_dump(
     else:
         chw = preprocess_like_cpp(img_path, input_size=640)
         x = chw.unsqueeze(0)  # N,C,H,W
-        write_cwhn_txt_tensor(x.permute(1, 2, 3, 0).contiguous(), base + "_input.txt", comment_name="input")
+        write_cwhn_txt_tensor(
+            x.permute(1, 2, 3, 0).contiguous(), base + "_input.txt", comment_name="input"
+        )
 
     # Forward
     inf_out, raw_outs = model(x)
@@ -170,8 +180,13 @@ def run_and_dump(
             else:
                 t = out
             if t.dim() == 4:  # N,C,H,W
-                write_cwhn_txt_tensor(t.permute(1, 2, 3, 0).contiguous(), f"{base}_features_layer_{idx}.txt", comment_name=f"layer_{idx}")
+                write_cwhn_txt_tensor(
+                    t.permute(1, 2, 3, 0).contiguous(),
+                    f"{base}_features_layer_{idx}.txt",
+                    comment_name=f"layer_{idx}",
+                )
                 features[idx] = t.detach().cpu()
+
         return hook
 
     hooks = []
@@ -214,7 +229,11 @@ def run_and_dump(
             pred = inf_out.squeeze(0).permute(0, 1, 2).unsqueeze(-1)  # C,H,W,1
         else:
             # Fallback: flatten to [C, A, 1, 1]
-            flat = inf_out.reshape(inf_out.shape[-1], -1) if inf_out.dim() > 1 else inf_out.reshape(1, -1)
+            flat = (
+                inf_out.reshape(inf_out.shape[-1], -1)
+                if inf_out.dim() > 1
+                else inf_out.reshape(1, -1)
+            )
             pred = flat.t().contiguous().view(flat.shape[1], flat.shape[0], 1, 1)
         write_cwhn_txt_tensor(pred, f"{base}_features_predictions.txt", comment_name="predictions")
 
@@ -223,17 +242,43 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Dump YOLOv9t PyTorch features to compare with C++")
     ap.add_argument("-i", "--input", required=True, help="Input image path")
     ap.add_argument("-w", "--weights", required=True, help="Ultralytics yolov9t.pt path")
-    ap.add_argument("-o", "--output", required=True, help="Output image path (base name used for dumps)")
-    ap.add_argument("--dump-all", action="store_true", help="Dump all predefined feature layers and outputs")
-    ap.add_argument("--dump-keys", type=int, nargs="*", default=[], help="Specific feature layer indices to dump")
-    ap.add_argument("--use-cpp-input", default="", help="Use preprocessed input txt from C++ (path to *_input.txt)")
+    ap.add_argument(
+        "-o", "--output", required=True, help="Output image path (base name used for dumps)"
+    )
+    ap.add_argument(
+        "--dump-all", action="store_true", help="Dump all predefined feature layers and outputs"
+    )
+    ap.add_argument(
+        "--dump-keys",
+        type=int,
+        nargs="*",
+        default=[],
+        help="Specific feature layer indices to dump",
+    )
+    ap.add_argument(
+        "--use-cpp-input",
+        default="",
+        help="Use preprocessed input txt from C++ (path to *_input.txt)",
+    )
     # Added flags to mirror shell scripts
     ap.add_argument("--build-cpp", action="store_true", help="Build C++ project via build_code.sh")
-    ap.add_argument("--run-cpp", action="store_true", help="Run C++ vision-cli (excute.sh-like) before Python")
-    ap.add_argument("--cpp-bin", default="/mnt/e/7_RISCV/vision.cpp/build/bin/vision-cli", help="Path to vision-cli binary")
-    ap.add_argument("--cpp-model", default="models/yolov9t_converted.gguf", help="GGUF model path for C++ run")
-    ap.add_argument("--cpp-output", default=None, help="Output path for C++ run; defaults to --output")
-    ap.add_argument("--cpp-extra", default="", help="Extra args for vision-cli (e.g., --backend gpu)")
+    ap.add_argument(
+        "--run-cpp", action="store_true", help="Run C++ vision-cli (excute.sh-like) before Python"
+    )
+    ap.add_argument(
+        "--cpp-bin",
+        default="/mnt/e/7_RISCV/vision.cpp/build/bin/vision-cli",
+        help="Path to vision-cli binary",
+    )
+    ap.add_argument(
+        "--cpp-model", default="models/yolov9t_converted.gguf", help="GGUF model path for C++ run"
+    )
+    ap.add_argument(
+        "--cpp-output", default=None, help="Output path for C++ run; defaults to --output"
+    )
+    ap.add_argument(
+        "--cpp-extra", default="", help="Extra args for vision-cli (e.g., --backend gpu)"
+    )
     return ap.parse_args(argv)
 
 
@@ -272,5 +317,3 @@ def main(argv: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
-
