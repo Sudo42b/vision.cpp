@@ -642,7 +642,7 @@ void run_yolov9t(cli_args const& args) {
     printf("graph computed\n");
     
 
-    timer t_post;
+    printf("input transferred to backend\n");
 
     printf("Postprocessing... skipped (no renderer yet)\n");
     
@@ -662,15 +662,16 @@ void run_yolov9t(cli_args const& args) {
     // Draw detections and save
     std::vector<std::string> const& class_names = get_coco_class_names();
     // draw_detections(output_image, detections, class_names);
+    printf("input transferred to backend\n");
     
-    // Save result
+    printf("graph computed\n");
     // image_save(output_image, args.output);
     // printf("-> output image saved to %s\n", args.output);
     
     printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
     // printf("Found %zu objects\n", detections.size());
 }
-/*
+
 void run_yolov9t_t(cli_args const& args) {
     using namespace visp::yolov9t;
     
@@ -680,9 +681,10 @@ void run_yolov9t_t(cli_args const& args) {
     
     yolov9t_params params = yolov9t_detect_params(file);
     printf("- model input size: %dx%d\n", params.input_size, params.input_size);
-    int img_sz = check_img_size(params.input_size, params.stride);
+                std::string pred_txt = base + std::string("_predictions_cls.txt");
+                std::string pred_txt_bbox = base + std::string("_predictions_bbox.txt");
     require_inputs(args.inputs, 1, "<image>");
-    image_data input_image = image_load(args.inputs[0]);
+                save_input_to_txt(outputs.predictions_bbox, pred_txt_bbox.c_str());
     // 원본 이미지 크기를 보존해 후처리 스케일링에 사용
     i32x2 orig_extent = input_image.extent;
     printf("- input image size: %dx%d\n", input_image.extent[0], input_image.extent[1]);
@@ -862,5 +864,4 @@ void run_yolov9t_t(cli_args const& args) {
     printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
     printf("Found %zu objects\n", detections.size());
 }
-*/
 } // namespace visp
