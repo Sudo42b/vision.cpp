@@ -186,10 +186,20 @@ int main(int argc, char** argv) {
 
         cli_args args = cli_parse(argc, argv);
         switch (args.command) {
-            case cli_command::yolov9t: run_yolov9t(args); break;
-            case cli_command::none: break;
+            case cli_command::sam:
+            case cli_command::birefnet:
+            case cli_command::depth_anything:
+            case cli_command::migan:
+            case cli_command::esrgan:
+                printf("Command not implemented yet.\n");
+                break;
+            case cli_command::yolov9t:
+                run_yolov9t(args);
+                break;
+            case cli_command::none:
+                break;
         }
-
+        
     } catch (std::exception const& e) {
         printf("Error: %s\n", e.what());
         return 1;
@@ -294,7 +304,7 @@ void run_yolov9t(cli_args const& args) {
 
     require_inputs(args.inputs, 1, "<image>");
     image_data image = image_load(args.inputs[0]);
-    yolov9t_params params = yolov9t_detect_params(file, image.extent, backend.max_alloc());
+    yolov9t_params params = yolov9t_detect_params(file);
 
     int img_sz = check_img_size(params.input_size);
     i32x2 extent = {img_sz, img_sz};
@@ -310,53 +320,91 @@ void run_yolov9t(cli_args const& args) {
     model_ref m(weights, graph);
     print_model_flags(m);
 
-    yolov9_buffers buffers = yolov9_precompute(m, params); // make_anchors
-    
+    // Prepare input
     image_data input_data = yolov9t_process_input2(image, params);
     printf("- resized inference image size: %dx%d\n", input_data.extent[0], input_data.extent[1]);
-    
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, params.input_size, params.input_size, 1}, "input");
 
-    ggml_build_forward_expand(m.graph, input); // predictions
-    std::vector<tensor> d = yolov9t_forward(m, input);
+    tensor input = compute_graph_input(
+        m, GGML_TYPE_F32, {3, params.input_size, params.input_size, 1}, "input");
 
-    for (size_t i = 0; i < d.size(); ++i) {
-        if (d[i] != nullptr) {
-            ggml_build_forward_expand(m.graph, d[i]);
-        }
-    }
+    ggml_build_forward_expand(m.graph, input);
 
-    // Allocate and compute
+    // Forward pass
+    DetectOutput d = yolov9t_forward(m, input);
+
+    // Build forward graph with predictions
+    ggml_build_forward_expand(m.graph, d.predictions_cls);
+    ggml_build_forward_expand(m.graph, d.predictions_bbox);
+
+    // Allocate and run
     compute_graph_allocate(graph, backend);
 
-    // Upload input data
+    // Upload input tensor
     transfer_to_backend(input, input_data);
-    
-    for (tensor_data const& buf : buffers) {
-        transfer_to_backend(buf);
-    }
-
-    std::vector<detected_obj> detections;
 
     compute_timed(graph, backend);
+    printf("Forward pass complete.\n");
 
-    printf("Forward pass built\n");
+    // ─────────────── 디버그: dist2bbox 출력 ───────────────
+    printf("\n[DEBUG] ======== dist2bbox / bbox tensor dump ========\n");
+    printf("bbox tensor shape: [%ld, %ld, %ld, %ld]\n",
+        d.predictions_bbox->ne[0], d.predictions_bbox->ne[1],
+        d.predictions_bbox->ne[2], d.predictions_bbox->ne[3]);
 
-    // Post-processing
-    //timer t_post;
+    tensor_data td_bbox = transfer_from_backend(d.predictions_bbox);
+    auto bbox = td_bbox.as_f32().data();
+
+    for (int i = 0; i < 4; ++i)
+        printf("bbox[%d] = %.4f\n", i, bbox[i]);
+
+    printf("[DEBUG] ============================================\n\n");
+
+    // ─────────────── 디버그: cls tensor (분류 결과) ───────────────
+    printf("[DEBUG] ======== cls tensor dump ========\n");
+    printf("cls tensor shape: [%ld, %ld, %ld, %ld]\n",
+        d.predictions_cls->ne[0], d.predictions_cls->ne[1],
+        d.predictions_cls->ne[2], d.predictions_cls->ne[3]);
+
+    tensor_data td_cls = transfer_from_backend(d.predictions_cls);
+    auto cls = td_cls.as_f32().data();
+
+    for (int i = 0; i < 10; ++i)
+        printf("cls[%d] = %.4f\n", i, cls[i]);
+
+
+    printf("[DEBUG] ====================================\n\n");
+
+    tensor_data td_anchor = transfer_from_backend(d.anchor_points);
+    auto a = td_anchor.as_f32();
+    printf("anchor_points[0..7]: ");
+    for (int i = 0; i < 8; ++i) printf("%.2f ", a[i]);
+    printf("\n");
+
+
+    // (Optional) 후처리 가능
+    // std::vector<detected_obj> detections =
+    //     yolov9t_postprocess(d, params, image.extent);
+    // draw_detections(image, detections, get_coco_class_names());
+    // image_save(image, args.output);
+    timer t_post;
     // std::vector<detected_obj> detections = non_max_suppression(outputs);
     // scale_boxes(detections, {img_sz, img_sz}, orig_extent);
+    std::vector<detected_obj> detections =
+    non_max_suppression(d, 0.25f, 0.45f, 300, 30000, 640); // conf, iou, max_det 등
+    scale_boxes(detections, {img_sz, img_sz}, image.extent);
 
+    
     // Draw and save
-    // image_data output_image = image_load(args.inputs[0]);
-    // std::vector<std::string> const& class_names = get_coco_class_names();
-    // draw_detections(output_image, detections, class_names);
-    // image_save(output_image, args.output);
+    image_data output_image = image_load(args.inputs[0]);
+    std::vector<std::string> const& class_names = get_coco_class_names();
+    draw_detections(output_image, detections, class_names);
+    image_save(output_image, args.output);
+    
+    printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
+    printf("Found %zu objects\n", detections.size());
 
-    // printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
-    // printf("Found %zu objects\n", detections.size());
+    printf("Inference finished.\n");
 }
-
 
 
 

@@ -812,38 +812,63 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
 //         return torch.concatenate((c_xy, wh), dim)  # xywh bbox
 //     return torch.concatenate((x1y1, x2y2), dim)  # xyxy bbox
 
-tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh/*=true*/) {
+// tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh/*=true*/) {
+tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, tensor stride_tensor, bool xywh) {
     // distance: [4, N, ...], anchor_points: [2, N, ...]
-    printf("distance shape: [%ld,%ld,%ld,%ld]\n", distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
+    printf("distance shape before permute: [%ld,%ld,%ld,%ld]\n",
+        distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
     
     distance = ggml_cont(m, distance);
     distance = ggml_permute(m, distance, 2, 0, 1, 3);
-    
+    printf("distance shape after permute: [%ld,%ld,%ld,%ld]\n",
+        distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
     distance = ggml_cont(m, distance);
     GGML_ASSERT(distance->ne[0] == 4);
     GGML_ASSERT(anchor_points->ne[0] == 2);
 
     // lt, rb = torch.split(distance, 2, dim=0)
     // lt = distance[0:2, ...], rb = distance[2:4, ...]
+    // tensor lt = slice(m, distance, slice_t{0, 2}, slice_t{}, slice_t{}, slice_t{});
+    // tensor rb = slice(m, distance, slice_t{2, 4}, slice_t{}, slice_t{}, slice_t{});
+    // // x1y1 = anchor_points - lt
+    // tensor x1y1 = ggml_sub(m, anchor_points, lt);
+
+    // // x2y2 = anchor_points + rb
+    // tensor x2y2 = ggml_add(m, anchor_points, rb);
+
+    // if (xywh) {
+    //     // c_xy = (x1y1 + x2y2) / 2
+    //     tensor c_xy = ggml_scale(m, ggml_add(m, x1y1, x2y2), 0.5f);
+    //     // wh = x2y2 - x1y1
+    //     tensor wh = ggml_sub(m, x2y2, x1y1);
+    //     // return torch.concatenate((c_xy, wh), dim=0)
+    //     return ggml_concat(m, c_xy, wh, 0);
+    // } else {
+    //     // return torch.concatenate((x1y1, x2y2), dim=0)
+    //     return ggml_concat(m, x1y1, x2y2, 0);
+    // }
+    // lt, rb = torch.split(distance, 2, dim=0)
     tensor lt = slice(m, distance, slice_t{0, 2}, slice_t{}, slice_t{}, slice_t{});
     tensor rb = slice(m, distance, slice_t{2, 4}, slice_t{}, slice_t{}, slice_t{});
-    // x1y1 = anchor_points - lt
-    tensor x1y1 = ggml_sub(m, anchor_points, lt);
 
-    // x2y2 = anchor_points + rb
-    tensor x2y2 = ggml_add(m, anchor_points, rb);
+    // apply stride scaling
+    tensor lt_scaled = ggml_mul(m, lt, stride_tensor);
+    tensor rb_scaled = ggml_mul(m, rb, stride_tensor);
+
+    // x1y1 = anchor_points - lt * stride
+    tensor x1y1 = ggml_sub(m, anchor_points, lt_scaled);
+    // x2y2 = anchor_points + rb * stride
+    tensor x2y2 = ggml_add(m, anchor_points, rb_scaled);
 
     if (xywh) {
-        // c_xy = (x1y1 + x2y2) / 2
         tensor c_xy = ggml_scale(m, ggml_add(m, x1y1, x2y2), 0.5f);
-        // wh = x2y2 - x1y1
-        tensor wh = ggml_sub(m, x2y2, x1y1);
-        // return torch.concatenate((c_xy, wh), dim=0)
+        tensor wh   = ggml_sub(m, x2y2, x1y1);
         return ggml_concat(m, c_xy, wh, 0);
     } else {
-        // return torch.concatenate((x1y1, x2y2), dim=0)
         return ggml_concat(m, x1y1, x2y2, 0);
     }
+
+    
 }
 
 // DFL (Distribution Focal Loss) layer implementation
@@ -955,7 +980,9 @@ DetectOutput inference(model_ref m,
     tensor dfl_output = dfl_forward(m, proj, box, reg_max, false);
     printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
     // Decode bounding boxes
-    tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
+    // tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
+    tensor dbox = dist2bbox(m, dfl_output, anchor_points, stride_tensor, false);
+
     printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
     // Multiply by strides
     tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
@@ -1495,41 +1522,94 @@ std::vector<detected_obj> non_max_suppression(
     const int64_t num_classes = outputs.predictions_cls->ne[0];
     const int64_t num_anchors = outputs.predictions_cls->ne[1];
 
-    // Fetch data from backend to host
+    // // Fetch data from backend to host
+    // tensor_data td_cls = transfer_from_backend(outputs.predictions_cls);
+    // tensor_data td_box = transfer_from_backend(outputs.predictions_bbox);
+    // const float* cls_ptr = td_cls.as_f32().data();
+    // const float* box_ptr = td_box.as_f32().data();
+
+    // // Collect candidates
+    // std::vector<std::array<float, 4>> boxes;
+    // std::vector<float> scores;
+    // std::vector<int> class_ids;
+    // boxes.reserve(num_anchors);
+    // scores.reserve(num_anchors);
+    // class_ids.reserve(num_anchors);
+
+    // for (int64_t j = 0; j < num_anchors; ++j) {
+    //     float best_conf = -1.0f;
+    //     int best_cls = -1;
+    //     for (int64_t c = 0; c < num_classes; ++c) {
+    //         float v = cls_ptr[c * num_anchors + j]; // [nc, N, 1, 1]
+    //         if (v > best_conf) {
+    //             best_conf = v;
+    //             best_cls = (int)c;
+    //         }
+    //     }
+    //     if (best_conf < conf_thres) continue;
+
+    //     // predictions_bbox is already in xyxy
+    //     float x1 = box_ptr[0 * num_anchors + j];
+    //     float y1 = box_ptr[1 * num_anchors + j];
+    //     float x2 = box_ptr[2 * num_anchors + j];
+    //     float y2 = box_ptr[3 * num_anchors + j];
+
+    //     boxes.push_back({x1, y1, x2, y2});
+    //     scores.push_back(best_conf);
+    //     class_ids.push_back(best_cls);
+    // }
+    const int64_t nc = outputs.predictions_cls->ne[0]; // 80
+    const int64_t na = outputs.predictions_cls->ne[1]; // 8400
+
     tensor_data td_cls = transfer_from_backend(outputs.predictions_cls);
     tensor_data td_box = transfer_from_backend(outputs.predictions_bbox);
     const float* cls_ptr = td_cls.as_f32().data();
     const float* box_ptr = td_box.as_f32().data();
 
-    // Collect candidates
     std::vector<std::array<float, 4>> boxes;
     std::vector<float> scores;
     std::vector<int> class_ids;
-    boxes.reserve(num_anchors);
-    scores.reserve(num_anchors);
-    class_ids.reserve(num_anchors);
+    boxes.reserve(na); scores.reserve(na); class_ids.reserve(na);
 
-    for (int64_t j = 0; j < num_anchors; ++j) {
+    for (int64_t j = 0; j < na; ++j) {
+        // best class (sigmoid: 전단에서 안 했으면 여기서 적용)
         float best_conf = -1.0f;
         int best_cls = -1;
-        for (int64_t c = 0; c < num_classes; ++c) {
-            float v = cls_ptr[c * num_anchors + j]; // [nc, N, 1, 1]
-            if (v > best_conf) {
-                best_conf = v;
-                best_cls = (int)c;
-            }
+        for (int64_t c = 0; c < nc; ++c) {
+            float v = /* 전단에서 sigmoid 안 했다면: */ 1.0f / (1.0f + std::exp(-cls_ptr[c + j * nc]));
+            // 전단에서 이미 sigmoid 했다면: float v = cls_ptr[c + j * nc];
+
+            if (v > best_conf) { best_conf = v; best_cls = (int)c; }
         }
         if (best_conf < conf_thres) continue;
 
-        // predictions_bbox is already in xyxy
-        float x1 = box_ptr[0 * num_anchors + j];
-        float y1 = box_ptr[1 * num_anchors + j];
-        float x2 = box_ptr[2 * num_anchors + j];
-        float y2 = box_ptr[3 * num_anchors + j];
+        // bbox 읽기: [4, na, 1, 1] → (k, j) = k + j*4  (xywh)
+        // float bx = box_ptr[0 + j * 4];
+        // float by = box_ptr[1 + j * 4];
+        // float bw = box_ptr[2 + j * 4];
+        // float bh = box_ptr[3 + j * 4];
+        // bbox: [4, num_anchors, 1, 1] → (k, j) = j + k * num_anchors
+        float bx = box_ptr[j + 0 * num_anchors];
+        float by = box_ptr[j + 1 * num_anchors];
+        float bw = box_ptr[j + 2 * num_anchors];
+        float bh = box_ptr[j + 3 * num_anchors];
+
+        // xywh → xyxy
+        float x1 = bx - bw * 0.5f;
+        float y1 = by - bh * 0.5f;
+        float x2 = bx + bw * 0.5f;
+        float y2 = by + bh * 0.5f;
+        // printf("[%ld] bbox=%.2f %.2f %.2f %.2f\n", j, x1, y1, x2, y2);
+
+        // if (j < 10) break;
 
         boxes.push_back({x1, y1, x2, y2});
         scores.push_back(best_conf);
         class_ids.push_back(best_cls);
+        if (j < 5) {
+            printf("[%ld] box_raw: %.2f %.2f %.2f %.2f | conf=%.3f cls=%d\n",
+                   j, bx, by, bw, bh, best_conf, best_cls);
+        }
     }
 
     if (boxes.empty()) return {};
