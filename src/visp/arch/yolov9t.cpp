@@ -18,6 +18,7 @@
 #include "ggml.h"
 
 #include <optional>
+#include <span>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
@@ -946,13 +947,13 @@ DetectOutput inference(model_ref m,
     // printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
     // Done!
     // === Generate anchors inline ===
-    std::vector<float> strides_vec;
+    anchor_params anchor_p;
+    
     for (size_t i = 0; i < out.features.size(); ++i) {
-        strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
+        anchor_p.strides.push_back(8.0f * std::pow(2.0f, (float)i));
     }
-    std::vector<float> anchor_host;
-    std::vector<float> stride_host;
-    auto [anchor_points, stride_tensor] = make_anchors(m, out, anchor_host, stride_host, strides_vec, 0.5f);
+
+    make_anchors(m,std::span<tensor>(out.features.data(), out.features.size()), anchor_p, 0.5f);
 
     // Split into box and cls
     tensor box = ggml_view_4d(m, x_cat,
@@ -981,11 +982,11 @@ DetectOutput inference(model_ref m,
     printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
     // Decode bounding boxes
     // tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
-    tensor dbox = dist2bbox(m, dfl_output, anchor_points, stride_tensor, false);
+    tensor dbox = dist2bbox(m, dfl_output, anchor_p.anchor_tensor, anchor_p.stride_tensor, false);
 
     printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
     // Multiply by strides
-    tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
+    tensor strides_bc = ggml_reshape_4d(m, anchor_p.stride_tensor, 1, total_anchors, 1, 1);
 
     dbox = ggml_mul(m, dbox, strides_bc);
     printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
@@ -997,10 +998,7 @@ DetectOutput inference(model_ref m,
 
     out.predictions_bbox = std::move(dbox);
     out.predictions_cls = std::move(cls);
-    out.anchor_points = std::move(anchor_points);
-    out.strides_points = std::move(stride_tensor);
-    out.anchor_host_data = std::move(anchor_host);
-    out.stride_host_data = std::move(stride_host);
+    
 
     return out;
 }
@@ -1152,60 +1150,65 @@ def make_anchors(feats:Tensor, strides:Tensor, grid_cell_offset:float=0.5) -> Tu
 //     tensor anchor_points;  // [total_anchors, 2]
 //     tensor stride_tensor;  // [total_anchors, 1]
 // };
-std::pair<tensor, tensor> make_anchors(
+
+void make_anchors(
     model_ref m,
-    DetectOutput const& out,
-    std::vector<float>& anchor_host,
-    std::vector<float>& stride_host,
-    std::vector<float> const& strides,
+    std::span<tensor> feats,
+    anchor_params& anchor_p,
     float grid_cell_offset) {
-    
-    GGML_ASSERT(out.raw_outputs.size() == strides.size());
-    GGML_ASSERT(!out.raw_outputs.empty());
-    
+
+    GGML_ASSERT(!feats.empty());
+    std::vector<float> effective_strides;
+    effective_strides.resize(feats.size());
+    for (size_t i = 0; i < feats.size(); ++i) {
+        if (i < anchor_p.strides.size()) {
+            effective_strides[i] = anchor_p.strides[i];
+        } else {
+            effective_strides[i] = 8.0f * std::pow(2.0f, (float)i);
+        }
+    }
     // Calculate total number of anchors
     int64_t total_anchors = 0;
-    for (size_t i = 0; i < out.raw_outputs.size(); ++i) {
-        auto ne = nelements(out.raw_outputs[i]);
+    for (size_t i = 0; i < feats.size(); ++i) {
+        auto ne = nelements(feats[i]);
         total_anchors += ne[1] * ne[2]; // w * h
     }
-
 
     // CPU에서 먼저 데이터 준비
     std::vector<float> anchor_data(2 * total_anchors);
     std::vector<float> stride_data(total_anchors);
     
     int64_t offset = 0;
-    for (size_t i = 0; i < strides.size(); ++i) {
-        int64_t w = out.raw_outputs[i]->ne[1];
-        int64_t h = out.raw_outputs[i]->ne[2];
-        
+    for (size_t i = 0; i < feats.size(); ++i) {
+        int64_t w = feats[i]->ne[1];
+        int64_t h = feats[i]->ne[2];
+
         for (int64_t y = 0; y < h; ++y) {
             for (int64_t x = 0; x < w; ++x) {
                 int64_t idx = offset + y * w + x;
                 anchor_data[idx * 2 + 0] = x + grid_cell_offset;
                 anchor_data[idx * 2 + 1] = y + grid_cell_offset;
-                stride_data[idx] = strides[i];
+                stride_data[idx] = effective_strides[i];
             }
         }
         offset += w * h;
     }
-    
+    anchor_p.anchor_data = std::move(anchor_data);
+    anchor_p.stride_data = std::move(stride_data);
+
     // graph_context에 tensor 생성 (no_alloc이므로 data는 nullptr)
-    tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
+    tensor anchor_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
     tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
-    
-    ggml_set_name(anchor_points, "anchor_points");
+
+    ggml_set_name(anchor_tensor, "anchor_points");
     ggml_set_name(stride_tensor, "stride_tensor");
+
+    anchor_p.anchor_tensor = anchor_tensor;
+    anchor_p.stride_tensor = stride_tensor;
     
-    // Save host data to upload later after graph allocation
-    anchor_host = std::move(anchor_data);
-    stride_host = std::move(stride_data);
-    
-    printf("anchor_points shape: [%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1]);
+    printf("anchor_points shape: [%ld,%ld]\n", anchor_tensor->ne[0], anchor_tensor->ne[1]);
     printf("stride_tensor shape: [%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1]);
-    
-    return std::make_pair(anchor_points, stride_tensor);
+
 }
 /*
 def check_img_size(imgsz, s=32, floor=0):

@@ -22,6 +22,15 @@ struct yolov9t_params {
     static constexpr int stride = 32;
 };
 
+struct anchor_params{
+    std::vector<float> anchor_data;
+    std::vector<float> stride_data;
+
+    tensor anchor_tensor;
+    tensor stride_tensor;
+
+    std::vector<float> strides;
+};
 struct detected_obj {
     float x1, y1, x2, y2;   // Bounding box (x1, y1, x2, y2)
     float confidence;       // Object confidence
@@ -36,12 +45,11 @@ struct DetectOutput {
     std::map<int, tensor> features_map;
     tensor predictions_cls;  // [nc, num_anchors, 1, bs]
     tensor predictions_bbox;  // [4, num_anchors, 1, bs]
-    tensor anchor_points;
-    tensor strides_points;
+    
     tensor dfl_proj;     // DFL projection weights tensor (reg_max elements)
     int reg_max = 0;     // number of DFL bins
-    std::vector<float> anchor_host_data;  // host-side buffer to upload after allocation
-    std::vector<float> stride_host_data;  // host-side buffer to upload after allocation
+    // std::vector<float> anchor_host_data;  // host-side buffer to upload after allocation
+    // std::vector<float> stride_host_data;  // host-side buffer to upload after allocation
     std::vector<float> dfl_proj_host_data; // host-side DFL projection weights
     // std::vector<float> anchor_data;  // 추가
     // std::vector<float> stride_data;        // 추가
@@ -182,12 +190,10 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x);
 // Detection head components
 tensor dfl_forward(model_ref m, tensor weight, tensor x, int reg_max, bool debug=false);
 
-std::pair<tensor, tensor> make_anchors(
+void make_anchors(
     model_ref m,
-    DetectOutput const& out,
-    std::vector<float>& anchor_host,
-    std::vector<float>& stride_host,
-    std::vector<float> const& strides,
+    std::span<tensor> feats,
+    anchor_params& anchor_p,
     float grid_cell_offset = 0.5f);
 tensor dist2bbox(model_ref m, tensor dists, tensor anchors, bool xywh);
 // Detect head over multi-scale features
