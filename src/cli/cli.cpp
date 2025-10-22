@@ -653,7 +653,7 @@ void run_yolov9t(cli_args const& args) {
     printf("input transferred to backend\n");
     
     printf("graph computed\n");
-    // image_save(output_image, args.output);
+ d   // image_save(output_image, args.output);
     // printf("-> output image saved to %s\n", args.output);
     
     printf("Postprocessing complete (%s)\n", t_post.elapsed_str());
@@ -680,7 +680,7 @@ void run_yolov9t_t(cli_args const& args) {
            (backend.preferred_layout() == visp::tensor_data_layout::cwhn) ? "CWHN" : "WHCN");
     
     timer t_preprocess;
-    // image_data processed_f32 = yolov9t_process_input(std::move(input_image), params);
+    
     image_data processed_f32 = yolov9t_process_input2(std::move(input_image), params);
     printf("- processed_f32 shape: %dx%d\n", processed_f32.extent[0], processed_f32.extent[1]);
 

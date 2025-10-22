@@ -50,108 +50,24 @@ int autopad(int k, int p = -1, int d = 1) {
     return p;
 }
 
+
+inline tensor add_bias_if_exists(model_ref m, tensor x, const std::string& full_prefix) {
+    auto old = m.prefix;
+    m.prefix = tensor_name(full_prefix.c_str());
+    tensor b = m.find("bias");
+    m.prefix = old;
+    if (!b) return x;
+    // x: [Cout, W, H, N], b: [Cout]
+    GGML_ASSERT(b->ne[0] == x->ne[0]);
+    b = ggml_reshape_4d(m, b, b->ne[0], 1, 1, 1);
+    return ggml_add(m, x, b);
+}
+
+
+
 // Conv: Standard convolution with BN and SiLU (matching Python Conv class)
 // Parameters: c1(input_ch), c2(output_ch), k(kernel), s(stride), p(padding), g(groups),
 // d(dilation), act(activation)
-// tensor Conv(
-//     model_ref m,
-//     tensor x,
-//     std::string const& name,
-//     int c1,
-//     int c2,
-//     int k,
-//     int s,
-//     int p,
-//     bool act,
-//     bool bn,
-//     bool debug) {
-//     if (debug) {
-//         printf(
-//             "Conv In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)x->ne[0], (int)x->ne[1],
-//             (int)x->ne[2], (int)x->ne[3]);
-//     }
-    
-//     // Calculate padding using autopad if p == -1
-//     int auto_pad = autopad(k, p, 1);
-
-//     // Save current prefix
-//     tensor_name old_prefix = m.prefix;
-
-//     // Set prefix to the layer name so conv_2d can find "weight" and "bias"
-//     std::string weight_name = name;
-//     // printf("Weight name: %s\n", weight_name.c_str());
-//     // printf("Name: %s\n", name.c_str());
-//     if (name.find(".conv") == std::string::npos) {
-//         weight_name += ".conv";
-//     }
-//     m.prefix = tensor_name(weight_name.c_str());
-//     tensor weight = m.weights("weight");
-    
-//     if (debug) {
-//         printf("Weight shape: [%d,%d,%d,%d]\n", (int)weight->ne[0], (int)weight->ne[1], (int)weight->ne[2], (int)weight->ne[3]);
-//         printf("Input shape: [%d,%d,%d,%d]\n", (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
-//     }
-
-//     // Get input channels from tensor
-//     // c1 = (int)x->ne[0]; // input channels
-//     // c2 = (int)weight->ne[3]; // output channels in GGML format
-    
-//     if (debug) {
-//         printf(
-//             "Conv: c1=%d, c2=%d, k=%d, s=%d, p=%d, g=1, d=1, act=%s\n", c1, c2, k, s, auto_pad,
-//             act ? "True" : "False");
-//     }
-
-//     // Check if input is in CWHN format and needs conversion to WHCN
-        
-//     // Ensure tensor is contiguous before convolution
-//     if (!ggml_is_contiguous(x)) {
-//         x = ggml_cont(m, x);
-//     }
-    
-//     // Apply convolution: ggml_conv_2d expects (weight, input)
-//     x = conv_2d(m, x, s, auto_pad, 1);
-
-//     // Apply BatchNorm2d (if bias exists, it's typically the bn bias)
-//     // // if (m.find("bias")) {
-//     //     tensor bias = m.weights("bias");
-//     //     x = ggml_add(m, x, bias);
-//     // // }
-//     if (bn){
-//         printf("old_prefix: %s\n", name.c_str());
-//         std::string bn_name = name.c_str();
-//         if (auto pos = bn_name.rfind(".conv"); pos != std::string::npos) {
-//             bn_name.replace(pos, std::string(".conv").size(), ".bn");
-//         }
-//         if (bn_name.find(".bn") == std::string::npos) {
-//             bn_name += ".bn";
-//         }
-//         m.prefix = tensor_name(bn_name.c_str());
-//         x = batch_norm_2d(m, x);
-//     }
-//     // Apply SiLU activation if act=true
-//     if (act) {
-//         x = ggml_silu(m, x);
-//     }
-
-//     // Restore prefix
-//     m.prefix = old_prefix;
-    
-//     if (debug) {
-//         printf(
-//             "Conv Out: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)x->ne[0], (int)x->ne[1],
-//             (int)x->ne[2], (int)x->ne[3]);
-//     }
-//     return x;
-// }
-
-
-
-
-
-
-
-
 tensor Conv(
     model_ref m,
     tensor x,
@@ -164,87 +80,86 @@ tensor Conv(
     bool act,
     bool bn,
     bool debug) {
-
     if (debug) {
-        printf("Conv In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-               (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
+        printf(
+            "Conv In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)x->ne[0], (int)x->ne[1],
+            (int)x->ne[2], (int)x->ne[3]);
     }
-
+    
+    // Calculate padding using autopad if p == -1
     int auto_pad = autopad(k, p, 1);
+
+    // Save current prefix
     tensor_name old_prefix = m.prefix;
 
-    // conv_2d가 참조할 prefix를 '<...>.conv'로 맞춤
+    // Set prefix to the layer name so conv_2d can find "weight" and "bias"
     std::string weight_name = name;
-    if (weight_name.find(".conv") == std::string::npos) weight_name += ".conv";
+    // printf("Weight name: %s\n", weight_name.c_str());
+    // printf("Name: %s\n", name.c_str());
+    if (name.find(".conv") == std::string::npos) {
+        weight_name += ".conv";
+    }
     m.prefix = tensor_name(weight_name.c_str());
-
+    tensor weight = m.weights("weight");
+    
     if (debug) {
-        tensor w = m.find("weight");
-        tensor b = m.find("bias");
-        printf("[DBG][Conv] prefix='%s' has(weight)=%d has(bias)=%d\n",
-               weight_name.c_str(), w!=nullptr, b!=nullptr);
-        if (w) {
-            printf("  weight shape: [%d,%d,%d,%d]\n",
-                   (int)w->ne[0], (int)w->ne[1], (int)w->ne[2], (int)w->ne[3]);
-        }
+        printf("Weight shape: [%d,%d,%d,%d]\n", (int)weight->ne[0], (int)weight->ne[1], (int)weight->ne[2], (int)weight->ne[3]);
+        printf("Input shape: [%d,%d,%d,%d]\n", (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }
 
-    if (!ggml_is_contiguous(x)) x = ggml_cont(m, x);
+    // Get input channels from tensor
+    // c1 = (int)x->ne[0]; // input channels
+    // c2 = (int)weight->ne[3]; // output channels in GGML format
+    
+    if (debug) {
+        printf(
+            "Conv: c1=%d, c2=%d, k=%d, s=%d, p=%d, g=1, d=1, act=%s\n", c1, c2, k, s, auto_pad,
+            act ? "True" : "False");
+    }
 
-    // ★ conv_2d가 내부에서 weight/bias를 사용함 → 여기서 bias를 '수동 add' 하지 말 것!
+    // Check if input is in CWHN format and needs conversion to WHCN
+        
+    // Ensure tensor is contiguous before convolution
+    if (!ggml_is_contiguous(x)) {
+        x = ggml_cont(m, x);
+    }
+    
+    // Apply convolution: ggml_conv_2d expects (weight, input)
     x = conv_2d(m, x, s, auto_pad, 1);
 
-    // BN: 퓨징 모델이면 BN 파라미터가 없으니 스킵.
-    if (bn) {
-        std::string bn_name = weight_name;
+    // Apply BatchNorm2d (if bias exists, it's typically the bn bias)
+    // if (m.find("bias")) {
+    //     tensor bias = m.weights("bias");
+    //     x = ggml_add(m, x, bias);
+    // }
+
+    if (bn){
+        printf("old_prefix: %s\n", name.c_str());
+        std::string bn_name = name.c_str();
         if (auto pos = bn_name.rfind(".conv"); pos != std::string::npos) {
             bn_name.replace(pos, std::string(".conv").size(), ".bn");
-        } else {
+        }
+        if (bn_name.find(".bn") == std::string::npos) {
             bn_name += ".bn";
         }
         m.prefix = tensor_name(bn_name.c_str());
-        if (m.find("weight")) {
-            x = batch_norm_2d(m, x);
-        } else if (debug) {
-            printf("[DBG][Conv] BN requested but no BN params at '%s' → skip (fused)\n",
-                   bn_name.c_str());
-        }
+        x = batch_norm_2d(m, x);
+    }
+    // Apply SiLU activation if act=true
+    if (act) {
+        x = ggml_silu(m, x);
     }
 
-    if (act) x = ggml_silu(m, x);
-
+    // Restore prefix
     m.prefix = old_prefix;
-
+    
     if (debug) {
-        printf("Conv Out: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-               (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
+        printf(
+            "Conv Out: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)x->ne[0], (int)x->ne[1],
+            (int)x->ne[2], (int)x->ne[3]);
     }
     return x;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // AConv: Average pooling + Conv for downsampling
 // Python signature: AConv(c1, c2) where c1=input_ch, c2=output_ch
@@ -499,6 +414,7 @@ tensor RepConv(
     
     return output;
 }
+
 
 // RepBottleneck: Bottleneck with RepConv (inherits from Bottleneck behavior)
 tensor RepBottleneck(
@@ -965,6 +881,9 @@ tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, tensor stri
     
 }
 
+
+
+
 // DFL (Distribution Focal Loss) layer implementation
 tensor dfl_forward(model_ref m, tensor proj_tensor, tensor x, int reg_max, bool debug) {
     // Implements Distribution Focal Loss decoding used in the Python DFL layer.
@@ -1014,299 +933,111 @@ tensor dfl_forward(model_ref m, tensor proj_tensor, tensor x, int reg_max, bool 
     // Broadcast-multiply soft * proj -> shape [reg_max,4,anchors,b]
     tensor weighted = ggml_mul(m, soft, proj);
 
+    
+    // {            
+    //     tensor bias_t = m.with_prefix(tensor_name("")).find("detect.cv3.2.2.bias");
+    //     if (bias_t) {
+    //         bias_t = ggml_reshape_4d(m, bias_t, bias_t->ne[0], 1, 1, 1);
+    //         weighted = ggml_add(m.graph_context, weighted, bias_t);
+    //         printf("[DBG] added bias to %s\n", "detect.cv3.2.2.bias");
+    //     } else {
+    //         printf("[WARN] no bias found for %s\n", "detect.cv3.2.2.bias");
+    //     }
+    // }
+
     // Sum along reg_max (first) dimension -> result shape [4, anchors, batch, 1?]
     tensor summed = ggml_sum_rows(m, weighted);
-
     // Ensure contiguous and return
     if (!ggml_is_contiguous(summed)) summed = ggml_cont(m, summed);
     return summed;
 }
-// //(m, out.raw_outputs, ch, reg_max, nc);
-// DetectOutput inference(model_ref m, 
-//                 DetectOutput out, // List of feature maps from different detection layers.
-//                 std::vector<int> ch, 
-//                 int reg_max, 
-//                 int nc) {
 
-//     std::vector<tensor> reshaped_outputs;
-//     // Concat along anchor dimension (dim 1)
-//     tensor x_cat = concat(m, out.features, 1); // [144, 8400, 1]
-//     printf("x_cat shape: [%ld,%ld,%ld, %ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
-
-//     // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
-//     int64_t total_channels = x_cat->ne[0];
-//     int64_t total_anchors = x_cat->ne[1];
-    
-//     // printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
-//     // Done!
-//     // === Generate anchors inline ===
-//     std::vector<float> strides_vec;
-//     for (size_t i = 0; i < out.features.size(); ++i) {
-//         strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
-//     }
-//     std::vector<float> anchor_host;
-//     std::vector<float> stride_host;
-//     auto [anchor_points, stride_tensor] = make_anchors(m, out, anchor_host, stride_host, strides_vec, 0.5f);
-
-//     // Split into box and cls
-//     tensor box = ggml_view_4d(m, x_cat,
-//         reg_max * 4, total_anchors, 1, 1,
-//         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
-//         0);
-        
-//     box = ggml_cont(m, box);
-//     tensor cls = ggml_view_4d(m, x_cat,
-//         nc, total_anchors, 1, 1,
-//         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
-//         reg_max * 4 * x_cat->nb[0]);
-//     cls = ggml_cont(m, cls);
-    
-//     // Prepare DFL projection tensor and host data
-//     tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
-//     ggml_set_name(proj, "dfl_proj");
-//     out.dfl_proj = proj;
-//     out.dfl_proj_host_data.resize(reg_max);
-//     for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
-//     out.reg_max = reg_max;
-//     printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
-    
-//     // Apply DFL (pass projection tensor `proj`)
-//     tensor dfl_output = dfl_forward(m, proj, box, reg_max, false);
-//     printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
-//     // Decode bounding boxes
-//     // tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
-//     tensor dbox = dist2bbox(m, dfl_output, anchor_points, stride_tensor, false);
-
-//     printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
-//     // Multiply by strides
-//     tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
-
-//     dbox = ggml_mul(m, dbox, strides_bc);
-//     printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
-
-//     // Apply sigmoid to classes
-//     cls = ggml_sigmoid(m, cls);
-//     printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
-    
-
-//     out.predictions_bbox = std::move(dbox);
-//     out.predictions_cls = std::move(cls);
-//     out.anchor_points = std::move(anchor_points);
-//     out.strides_points = std::move(stride_tensor);
-//     out.anchor_host_data = std::move(anchor_host);
-//     out.stride_host_data = std::move(stride_host);
-
-//     return out;
-// }
-
-
-
-
-
-
-
-
-
-
+//(m, out.raw_outputs, ch, reg_max, nc);
 DetectOutput inference(model_ref m, 
-                DetectOutput out,
+                DetectOutput out, // List of feature maps from different detection layers.
                 std::vector<int> ch, 
                 int reg_max, 
                 int nc) {
 
-    auto dbg_shape = [&](const char* tag, tensor t) {
-        if (!t) { printf("[DBG][inference] %s: <null>\n", tag); return; }
-        printf("[DBG][inference] %s: shape=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld] type=%s\n",
-               tag, t->ne[0], t->ne[1], t->ne[2], t->ne[3],
-               t->nb[0], t->nb[1], t->nb[2], t->nb[3], ggml_type_name(t->type));
-    };
+    std::vector<tensor> reshaped_outputs;
+    // Concat along anchor dimension (dim 1)
+    tensor x_cat = concat(m, out.features, 1); // [144, 8400, 1]
+    printf("x_cat shape: [%ld,%ld,%ld, %ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
 
-    printf("[DBG][inference] reg_max=%d nc=%d features=%zu\n", reg_max, nc, out.features.size());
-    for (size_t i=0;i<out.features.size();++i) {
-        printf("[DBG][inference] out.features[%zu] [C,A,1,1]=[%ld,%ld,%ld,%ld]\n",
-               i, out.features[i]->ne[0], out.features[i]->ne[1], out.features[i]->ne[2], out.features[i]->ne[3]);
-    }
-
-    // Concat along anchor dim (dim=1)
-    tensor x_cat = concat(m, out.features, 1); // [144, 8400, 1, 1]
-    printf("x_cat shape: [%ld,%ld,%ld,%ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
-
-    int64_t total_channels = x_cat->ne[0]; // 4*reg_max + nc
-    int64_t total_anchors  = x_cat->ne[1];
-
-    // strides per head (P3,P4,P5 = 8,16,32)
+    // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
+    int64_t total_channels = x_cat->ne[0];
+    int64_t total_anchors = x_cat->ne[1];
+    
+    // printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
+    // Done!
+    // === Generate anchors inline ===
     std::vector<float> strides_vec;
-    for (size_t i = 0; i < out.features.size(); ++i) strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
-    printf("[DBG][inference] strides:"); for (auto s: strides_vec) printf(" %g", s); printf("\n");
-
-    // 생성될 anchor/stride 텐서 예상치
-    {
-        int64_t total = 0;
-        for (size_t i=0;i<out.raw_outputs.size();++i) {
-            auto ne = nelements(out.raw_outputs[i]); // CWHN
-            int64_t w = ne[1], h = ne[2];
-            printf("[DBG][inference] raw_out[%zu] W=%ld H=%ld → anchors=%ld\n", i, w, h, w*h);
-            total += w*h;
-        }
-        printf("[DBG][inference] total_anchors(expected)=%ld  total_anchors(x_cat)=%lld\n",
-               total, (long long)total_anchors);
+    for (size_t i = 0; i < out.features.size(); ++i) {
+        strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
     }
+    std::vector<float> anchor_host;
+    std::vector<float> stride_host;
+    auto [anchor_points, stride_tensor] = make_anchors(m, out, anchor_host, stride_host, strides_vec, 0.5f);
 
-    // Split cat → box/cls views
-    // box: [4*reg_max, A, 1, 1], cls: [nc, A, 1, 1]
+    // Split into box and cls
     tensor box = ggml_view_4d(m, x_cat,
         reg_max * 4, total_anchors, 1, 1,
         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
         0);
+        
     box = ggml_cont(m, box);
-    dbg_shape("view.box [4*reg_max,A]", box);
+    
 
     tensor cls = ggml_view_4d(m, x_cat,
         nc, total_anchors, 1, 1,
         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
-        reg_max * 4 * x_cat->nb[0]); // byte offset
+        reg_max * 4 * x_cat->nb[0]);
     cls = ggml_cont(m, cls);
-    dbg_shape("view.cls [nc,A]", cls);
 
-    // DFL projection tensor
+
+    tensor cls_logits = ggml_dup(m, cls); // 복사본 확보
+    ggml_set_output(cls_logits);
+    out.debug_cls_logits = cls_logits;
+
+
+    // Prepare DFL projection tensor and host data
     tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
     ggml_set_name(proj, "dfl_proj");
     out.dfl_proj = proj;
     out.dfl_proj_host_data.resize(reg_max);
     for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
     out.reg_max = reg_max;
-    dbg_shape("proj(dfl)", proj);
+    printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
+    
+    // Apply DFL (pass projection tensor `proj`)
+    tensor dfl_output = dfl_forward(m, proj, box, reg_max, false);
+    printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
+    // Decode bounding boxes
+    // tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
+    tensor dbox = dist2bbox(m, dfl_output, anchor_points, stride_tensor, false);
 
-    // Anchors & stride tensors (host 데이터는 run()에서 업로드)
-    std::vector<float> anchor_host, stride_host;
-    auto [anchor_points, stride_tensor] = make_anchors(m, out, anchor_host, stride_host, strides_vec, 0.5f);
-    dbg_shape("anchor_points [2,A]", anchor_points);
-    dbg_shape("stride_tensor [1,A]", stride_tensor);
-
-    // DFL decode (shape-level만)
-    tensor dfl_output = dfl_forward(m, proj, box, reg_max, /*debug=*/false);
-    dbg_shape("dfl_output [4,A,1,1]", dfl_output);
-
-    // dist2bbox (xyxy) (shape-level만)
-    tensor dbox = dist2bbox(m, dfl_output, anchor_points, stride_tensor, /*xywh=*/false);
-    dbg_shape("dbox (xyxy, grid units)", dbox);
-
-    // Multiply by strides (broadcast)
+    printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
+    // Multiply by strides
     tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
-    dbg_shape("strides_bc [1,A,1,1]", strides_bc);
 
     dbox = ggml_mul(m, dbox, strides_bc);
-    dbg_shape("dbox (xyxy, pixels)", dbox);
 
-    // sigmoid on classes (compute 후 확률이 됨)
-    printf("[DBG][inference] applying sigmoid to cls (compute 후 확률)\n");
-    dbg_shape("cls_logits [nc,A]", cls);
-// 필요하면 여기서 최소/최대/평균을 host로 한번만 읽어 보기
+    printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
 
+    // Apply sigmoid to classes
     cls = ggml_sigmoid(m, cls);
-    dbg_shape("cls_prob [nc,A]", cls);
+    ggml_set_name(cls, "cls_prob");
+    printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
+    
 
     out.predictions_bbox = std::move(dbox);
-    out.predictions_cls  = std::move(cls);
-    out.anchor_points    = std::move(anchor_points);
-    out.strides_points   = std::move(stride_tensor);
+    out.predictions_cls = std::move(cls);
+    out.anchor_points = std::move(anchor_points);
+    out.strides_points = std::move(stride_tensor);
     out.anchor_host_data = std::move(anchor_host);
     out.stride_host_data = std::move(stride_host);
-
     return out;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// DetectOutput detect_forward(model_ref m, 
-//                             std::vector<tensor> features, 
-//                             std::vector<int> ch, 
-//                             int nc,
-//                             bool training) {
-//     int reg_max = 16; // DFL bins
-//     int c2 = std::max({16, ch[0] / 4, reg_max * 4});
-//     int c3 = std::max(ch[0], std::min(nc, 100));
-//     DetectOutput out;
-
-//     std::string reg_base = std::string("detect.cv2");
-//     std::string cls_base = std::string("detect.cv3");
-
-//     for (size_t i = 0; i < features.size(); ++i) {
-//         // printf("features[%d] shape: [%d,%d,%d,%d]\n", (int)i, (int)features[i]->ne[0], (int)features[i]->ne[1], (int)features[i]->ne[2], (int)features[i]->ne[3]);
-        
-//         // std::string idx_str = std::to_string(i);
-//         tensor_name old_prefix_i = m.prefix;
-//         // Regression head: two convs, second outputs 4*reg_max channels
-//         tensor r0 = Conv(m, features[i], reg_base + "."+std::to_string(i)+".0.conv", ch[i], c2, 3, 1, -1, true, false);
-        
-//         tensor r1 = Conv(m, r0          ,reg_base + "."+std::to_string(i)+".1.conv", c2, c2, 3, 1, -1, true, false);
-        
-//         // Final regression conv: outputs 4*reg_max channels
-//         // Final regression conv: nn.Conv2d (NO .conv suffix)
-//         m.prefix = tensor_name((reg_base + "."+std::to_string(i)+".2").c_str());
-//         tensor r2 = conv_2d(m, r1, 1, 0, 1);
-//         // printf("r2 shape: [%d,%d,%d,%d]\n", (int)r2->ne[0], (int)r2->ne[1], (int)r2->ne[2], (int)r2->ne[3]);
-//         if (!ggml_is_contiguous(r2)) r2 = ggml_cont(m, r2);
-        
-//         // Classification head: two convs, second outputs nc channels
-//         // m.prefix = old_prefix_i;
-//         tensor c0 = Conv(m, features[i], cls_base + "."+std::to_string(i)+".0.conv", ch[i], c3, 3, 1, -1, true, false);
-//         tensor c1 = Conv(m, c0,          cls_base + "."+std::to_string(i)+".1.conv", c3, c3, 3, 1, -1, true, false);
-//         // Final classification conv: nn.Conv2d (NO .conv suffix)
-        
-//         m.prefix = tensor_name((cls_base + "." + std::to_string(i) + ".2").c_str());
-//         tensor c2 = conv_2d(m, c1, 1, 0, 1);
-//         // printf("c2 shape: [%d,%d,%d,%d]\n", (int)c2->ne[0], (int)c2->ne[1], (int)c2->ne[2], (int)c2->ne[3]);
-//         if (!ggml_is_contiguous(c2)) c2 = ggml_cont(m, c2);
-        
-        
-//         // Combine along channel dim and flatten spatial dims to anchors
-//         tensor combined = Concat(m, r2, c2, 0);
-//         // xi.view(shape[0], self.no, -1)
-//         tensor reshaped_combined = ggml_reshape_2d(m, combined, combined->ne[0], combined->ne[1]*combined->ne[2]); 
-//         //reshaped to [144, H, W, N] -> [144, H*W, N] (144, 8400, 1)
-
-//         combined = ggml_cont(m, combined);
-//         reshaped_combined = ggml_cont(m, reshaped_combined);
-//         out.raw_outputs.push_back(std::move(combined));
-//         out.features.push_back(std::move(reshaped_combined));
-//         // torch.Size([1, 144, 80, 80])
-//         // torch.Size([1, 144, 40, 40])
-//         // torch.Size([1, 144, 20, 20])
-        
-//         m.prefix = old_prefix_i;
-//     }
-
-//     if (training) {
-//         out.predictions_cls = nullptr;
-//         out.predictions_bbox = nullptr;
-//         return out;
-//     }
-//     // Inference function
-//     DetectOutput detect = inference(m, out, ch, reg_max, nc);
-    
-//     return detect;
-// }
-
-
-
-
-
 
 
 
@@ -1316,112 +1047,72 @@ DetectOutput detect_forward(model_ref m,
                             std::vector<int> ch, 
                             int nc,
                             bool training) {
-    auto dbg_shape = [&](const char* tag, tensor t) {
-        if (!t) { printf("[DBG][detect_forward] %s: <null>\n", tag); return; }
-        printf("[DBG][detect_forward] %s: shape=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld] type=%s\n",
-               tag, t->ne[0], t->ne[1], t->ne[2], t->ne[3],
-               t->nb[0], t->nb[1], t->nb[2], t->nb[3], ggml_type_name(t->type));
-    };
-    auto dbg_prefix_params = [&](const char* tag, const std::string& pref) {
-        tensor_name old = m.prefix;
-        m.prefix = tensor_name(pref.c_str());
-        tensor w = m.find("weight");
-        tensor b = m.find("bias");
-        printf("[DBG][detect_forward] %s prefix='%s' has(weight)=%d has(bias)=%d w=%p b=%p\n",
-               tag, pref.c_str(), (int)(w!=nullptr), (int)(b!=nullptr), (void*)w, (void*)b);
-        if (w) dbg_shape("  weight", w);
-        if (b) dbg_shape("  bias",   b);
-        m.prefix = old;
-    };
-
-    int reg_max = 16;
+    int reg_max = 16; // DFL bins
     int c2 = std::max({16, ch[0] / 4, reg_max * 4});
     int c3 = std::max(ch[0], std::min(nc, 100));
-
-    printf("[DBG][detect_forward] reg_max=%d  c2=%d  c3=%d  nc=%d  heads=%zu\n",
-           reg_max, c2, c3, nc, features.size());
-    printf("[DBG][detect_forward] ch:"); for (size_t i=0;i<ch.size();++i) printf(" %d", ch[i]); printf("\n");
-    for (size_t i=0;i<features.size();++i) {
-        printf("[DBG][detect_forward] feat[%zu] CWHN=[%ld,%ld,%ld,%ld]\n",
-               i, features[i]->ne[0], features[i]->ne[1], features[i]->ne[2], features[i]->ne[3]);
-    }
-
     DetectOutput out;
-    std::string reg_base = "detect.cv2";
-    std::string cls_base = "detect.cv3";
+
+    std::string reg_base = std::string("detect.cv2");
+    std::string cls_base = std::string("detect.cv3");
 
     for (size_t i = 0; i < features.size(); ++i) {
+        // printf("features[%d] shape: [%d,%d,%d,%d]\n", (int)i, (int)features[i]->ne[0], (int)features[i]->ne[1], (int)features[i]->ne[2], (int)features[i]->ne[3]);
+        
+        // std::string idx_str = std::to_string(i);
         tensor_name old_prefix_i = m.prefix;
-
-        // --- Regression head ---
-        dbg_prefix_params("reg.0", reg_base + "." + std::to_string(i) + ".0.conv");
-        tensor r0 = Conv(m, features[i], reg_base + "."+std::to_string(i)+".0.conv",
-                         ch[i], c2, 3, 1, -1, /*act=*/true, /*bn=*/false);
-        tensor r1 = Conv(m, r0,        reg_base + "."+std::to_string(i)+".1.conv",
-                         c2, c2, 3, 1, -1, /*act=*/true, /*bn=*/false);
-
-        // Final regression conv (1×1, bias 있음, BN 없음)
+        // Regression head: two convs, second outputs 4*reg_max channels
+        tensor r0 = Conv(m, features[i], reg_base + "."+std::to_string(i)+".0.conv", ch[i], c2, 3, 1, -1, true, false);
+        
+        tensor r1 = Conv(m, r0          ,reg_base + "."+std::to_string(i)+".1.conv", c2, c2, 3, 1, -1, true, false);
+        
+        // Final regression conv: outputs 4*reg_max channels
+        // Final regression conv: nn.Conv2d (NO .conv suffix)
         m.prefix = tensor_name((reg_base + "."+std::to_string(i)+".2").c_str());
         tensor r2 = conv_2d(m, r1, 1, 0, 1);
 
-        // --- Classification head ---
-        tensor c0 = Conv(m, features[i], cls_base + "."+std::to_string(i)+".0.conv",
-                         ch[i], c3, 3, 1, -1, /*act=*/true, /*bn=*/false);
-        tensor c1 = Conv(m, c0,         cls_base + "."+std::to_string(i)+".1.conv",
-                         c3, c3, 3, 1, -1, /*act=*/true, /*bn=*/false);
-
-        // Final classification conv (1×1, bias 있음, BN 없음)
-        m.prefix = tensor_name((cls_base + "." + std::to_string(i) + ".2").c_str());
-        tensor c2t = conv_2d(m, c1, 1, 0, 1);
-        dbg_prefix_params("reg.2", reg_base + "." + std::to_string(i) + ".2");
-        dbg_prefix_params("cls.2", cls_base + "." + std::to_string(i) + ".2");
+        // printf("r2 shape: [%d,%d,%d,%d]\n", (int)r2->ne[0], (int)r2->ne[1], (int)r2->ne[2], (int)r2->ne[3]);
+        if (!ggml_is_contiguous(r2)) r2 = ggml_cont(m, r2);
         
-        // --- Combine & reshape ---
-        tensor combined = Concat(m, r2, c2t, 0);
-        dbg_shape("combined (reg+cls on C)", combined);
+        // Classification head: two convs, second outputs nc channels
+        // m.prefix = old_prefix_i;
+        tensor c0 = Conv(m, features[i], cls_base + "."+std::to_string(i)+".0.conv", ch[i], c3, 3, 1, -1, true, false);
+        tensor c1 = Conv(m, c0,          cls_base + "."+std::to_string(i)+".1.conv", c3, c3, 3, 1, -1, true, false);
+        // Final classification conv: nn.Conv2d (NO .conv suffix)
+        
+        m.prefix = tensor_name((cls_base + "." + std::to_string(i) + ".2").c_str());
+        tensor c2 = conv_2d(m, c1, 1, 0, 1);
 
-        tensor reshaped_combined =
-            ggml_reshape_2d(m, combined, combined->ne[0], combined->ne[1]*combined->ne[2]);
-        dbg_shape("reshaped_combined [C, A]", reshaped_combined);
+        // printf("c2 shape: [%d,%d,%d,%d]\n", (int)c2->ne[0], (int)c2->ne[1], (int)c2->ne[2], (int)c2->ne[3]);
+        if (!ggml_is_contiguous(c2)) c2 = ggml_cont(m, c2);
+        
+        
+        // Combine along channel dim and flatten spatial dims to anchors
+        tensor combined = Concat(m, r2, c2, 0);
+        // xi.view(shape[0], self.no, -1)
+        tensor reshaped_combined = ggml_reshape_2d(m, combined, combined->ne[0], combined->ne[1]*combined->ne[2]); 
+        //reshaped to [144, H, W, N] -> [144, H*W, N] (144, 8400, 1)
 
         combined = ggml_cont(m, combined);
         reshaped_combined = ggml_cont(m, reshaped_combined);
         out.raw_outputs.push_back(std::move(combined));
         out.features.push_back(std::move(reshaped_combined));
-
+        // torch.Size([1, 144, 80, 80])
+        // torch.Size([1, 144, 40, 40])
+        // torch.Size([1, 144, 20, 20])
+        
         m.prefix = old_prefix_i;
     }
 
     if (training) {
         out.predictions_cls = nullptr;
         out.predictions_bbox = nullptr;
-        printf("[DBG][detect_forward] training=true → return raw heads only\n");
         return out;
     }
-
-    printf("[DBG][detect_forward] → inference() 호출\n");
+    // Inference function
     DetectOutput detect = inference(m, out, ch, reg_max, nc);
+    
     return detect;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // Main YOLOv9t forward pass with complete Detect head
 DetectOutput yolov9t_forward(model_ref m, tensor x) {
@@ -1539,14 +1230,20 @@ std::pair<tensor, tensor> make_anchors(
     }
     
     // graph_context에 tensor 생성 (no_alloc이므로 data는 nullptr)
-    tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
-    tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
+    // tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
+    // tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
     
-    ggml_set_name(anchor_points, "anchor_points");
-    ggml_set_name(stride_tensor, "stride_tensor");
+
+    tensor anchor_points = compute_graph_input(
+        m, GGML_TYPE_F32, {2, total_anchors, 1, 1}, "anchor_points");
+    tensor stride_tensor = compute_graph_input(
+        m, GGML_TYPE_F32, {1, total_anchors, 1, 1}, "stride_points");
+
     
     // Save host data to upload later after graph allocation
+    // anchor_host = std::move(anchor_data);
     anchor_host = std::move(anchor_data);
+
     stride_host = std::move(stride_data);
     
     printf("anchor_points shape: [%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1]);
@@ -1554,6 +1251,8 @@ std::pair<tensor, tensor> make_anchors(
     
     return std::make_pair(anchor_points, stride_tensor);
 }
+
+
 /*
 def check_img_size(imgsz, s=32, floor=0):
     def make_divisible(x, divisor):
@@ -1588,34 +1287,70 @@ int check_img_size(int imgsz, int s, int floor) {
     return new_size;
 }
 
-image_data image_add_border(image_data im, int top, int bottom, 
-                           int left, int right, u8x3 color) {
-    i32x2 new_extent = {im.extent[0] + top + bottom, 
-                       im.extent[1] + left + right};
+// image_data image_add_border(image_data im, int top, int bottom, 
+//                            int left, int right, u8x3 color) {
+//     i32x2 new_extent = {im.extent[0] + top + bottom, 
+//                        im.extent[1] + left + right};
+//     image_data bordered = image_alloc(new_extent, im.format);
+
+//     // 전체 영역을 먼저 테두리 색상으로 채우기
+//     for (int y = 0; y < new_extent[0]; ++y) {
+//         for (int x = 0; x < new_extent[1]; ++x) {
+//             for (int c = 0; c < 3; ++c) {
+//                 bordered.data[(y * new_extent[1] + x) * 3 + c] = color[c];
+//             }
+//         }
+//     }
+
+//     // 원본 이미지를 중앙에 복사
+//     for (int y = 0; y < im.extent[0]; ++y) {
+//         for (int x = 0; x < im.extent[1]; ++x) {
+//             for (int c = 0; c < 3; ++c) {
+//                 int src_idx = (y * im.extent[1] + x) * 3 + c;
+//                 int dst_idx = ((y + top) * new_extent[1] + (x + left)) * 3 + c;
+//                 bordered.data[dst_idx] = im.data[src_idx];
+//             }
+//         }
+//     }
+
+//     return bordered;
+// }
+
+image_data image_add_border(image_data im, int top, int bottom,
+                            int left, int right, u8x3 color) {
+    // extent = {W, H}
+    int W = im.extent[0];
+    int H = im.extent[1];
+    int channels = 3;
+
+    // 새 크기 (W,H)
+    i32x2 new_extent = { W + left + right, H + top + bottom };
     image_data bordered = image_alloc(new_extent, im.format);
 
-    // 전체 영역을 먼저 테두리 색상으로 채우기
-    for (int y = 0; y < new_extent[0]; ++y) {
-        for (int x = 0; x < new_extent[1]; ++x) {
-            for (int c = 0; c < 3; ++c) {
-                bordered.data[(y * new_extent[1] + x) * 3 + c] = color[c];
-            }
+    // 배경 채우기
+    for (int y = 0; y < new_extent[1]; ++y) {
+        for (int x = 0; x < new_extent[0]; ++x) {
+            int idx = (y * new_extent[0] + x) * channels;
+            bordered.data[idx+0] = color[0];
+            bordered.data[idx+1] = color[1];
+            bordered.data[idx+2] = color[2];
         }
     }
 
-    // 원본 이미지를 중앙에 복사
-    for (int y = 0; y < im.extent[0]; ++y) {
-        for (int x = 0; x < im.extent[1]; ++x) {
-            for (int c = 0; c < 3; ++c) {
-                int src_idx = (y * im.extent[1] + x) * 3 + c;
-                int dst_idx = ((y + top) * new_extent[1] + (x + left)) * 3 + c;
-                bordered.data[dst_idx] = im.data[src_idx];
-            }
+    // 원본 복사 (좌상단 오프셋 = (left, top))
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            int src = (y * W + x) * channels;
+            int dst = ((y + top) * new_extent[0] + (x + left)) * channels;
+            bordered.data[dst+0] = im.data[src+0];
+            bordered.data[dst+1] = im.data[src+1];
+            bordered.data[dst+2] = im.data[src+2];
         }
     }
-
     return bordered;
 }
+
+
 
 // RGB 이미지를 직접 처리하는 특화된 버전
 void resize_rgb_bilinear(
@@ -1668,55 +1403,129 @@ image_data linear_image_resize(image_data im, i32x2 new_shape) {
     resize_rgb_bilinear(im.data.get(), im.extent, resized.data.get(), new_shape);
     return resized;
 }
-image_data letterbox(image_data im, i32x2 new_shape, u8x3 color, 
-              bool _auto, bool scaleFill, bool scaleup, int stride) {
-    i32x2 shape = im.extent;  // 현재 이미지의 크기 [height, width]
-    if (new_shape[0] == 0) {
+// image_data letterbox(image_data im, i32x2 new_shape, u8x3 color, 
+//               bool _auto, bool scaleFill, bool scaleup, int stride) {
+//     i32x2 shape = im.extent;  // 현재 이미지의 크기 [height, width]
+//     if (new_shape[0] == 0) {
+//         new_shape = {new_shape[1], new_shape[1]};
+//     }
+//     // int width = img.extent[0];
+//     // int height = img.extent[1];
+//     printf("extent[0]=%d, extent[1]=%d\n", im.extent[0], im.extent[1]);
+
+//     // 스케일 비율 (new / old)
+//     float r = std::min(static_cast<float>(new_shape[0]) / shape[0], static_cast<float>(new_shape[1]) / shape[1]);
+
+//     if (!scaleup) {  // 스케일 업을 하지 않음
+//         r = std::min(r, 1.0f);
+//     }
+
+//     // 패딩 계산
+//     i32x2 new_unpad = {static_cast<int>(round(shape[1] * r)), static_cast<int>(round(shape[0] * r))};
+//     float dw = new_shape[1] - new_unpad[0];
+//     float dh = new_shape[0] - new_unpad[1];
+
+//     if (_auto) {  // 최소 직사각형
+//         dw = std::fmod(dw, stride);
+//         dh = std::fmod(dh, stride);
+//     } else if (scaleFill) {  // 스트레치
+//         dw = 0.0f;
+//         dh = 0.0f;
+//         new_unpad = {new_shape[1], new_shape[0]};
+//     }
+
+//     dw /= 2;  // 패딩을 양쪽으로 나눔
+//     dh /= 2;
+
+    
+//     im = image_scale(im, new_unpad);  // 이미지 크기 조정
+//     // Bilinear interpolation 수행
+//     // im = linear_image_resize(std::move(im), new_unpad);
+    
+
+//     int top = static_cast<int>(round(dh - 0.1f));
+//     int bottom = static_cast<int>(round(dh + 0.1f));
+//     int left = static_cast<int>(round(dw - 0.1f));
+//     int right = static_cast<int>(round(dw + 0.1f));
+//     im = image_add_border(std::move(im), top, bottom, left, right, color);  // 테두리 추가
+
+//     printf("[LB] orig=[%d,%d] -> new=[%d,%d], pad=[l=%d r=%d t=%d b=%d]\n",
+//         shape[0], shape[1], new_shape[0], new_shape[1],
+//         left, right, top, bottom);
+        
+//     return im;
+// }
+
+
+
+
+
+
+LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
+                          bool _auto, bool scaleFill, bool scaleup, int stride)
+{
+    i32x2 shape = im.extent;  // [width, height]
+    int orig_w = shape[0];
+    int orig_h = shape[1];
+
+    if (new_shape[0] == 0)
         new_shape = {new_shape[1], new_shape[1]};
-    }
 
-    // 스케일 비율 (new / old)
-    float r = std::min(static_cast<float>(new_shape[0]) / shape[0], static_cast<float>(new_shape[1]) / shape[1]);
+    printf("[LB] extent: width=%d, height=%d, target=(%d,%d)\n",
+           orig_w, orig_h, new_shape[0], new_shape[1]);
 
-    if (!scaleup) {  // 스케일 업을 하지 않음
+    // ✅ 올바른 비율 계산 (height 우선)
+    float r = std::min(
+        (float)new_shape[1] / (float)orig_h,  // height ratio
+        (float)new_shape[0] / (float)orig_w   // width ratio
+    );
+
+    if (!scaleup)
         r = std::min(r, 1.0f);
-    }
 
-    // 패딩 계산
-    i32x2 new_unpad = {static_cast<int>(round(shape[1] * r)), static_cast<int>(round(shape[0] * r))};
-    float dw = new_shape[1] - new_unpad[0];
-    float dh = new_shape[0] - new_unpad[1];
+    // 새 크기
+    int new_unpad_w = std::round(orig_w * r);
+    int new_unpad_h = std::round(orig_h * r);
 
-    if (_auto) {  // 최소 직사각형
+    float dw = (float)new_shape[0] - new_unpad_w;
+    float dh = (float)new_shape[1] - new_unpad_h;
+
+    if (_auto) {
         dw = std::fmod(dw, stride);
         dh = std::fmod(dh, stride);
-    } else if (scaleFill) {  // 스트레치
+    } else if (scaleFill) {
         dw = 0.0f;
         dh = 0.0f;
-        new_unpad = {new_shape[1], new_shape[0]};
+        new_unpad_w = new_shape[0];
+        new_unpad_h = new_shape[1];
     }
 
-    dw /= 2;  // 패딩을 양쪽으로 나눔
-    dh /= 2;
+    dw /= 2.0f;
+    dh /= 2.0f;
 
-    
-    im = image_scale(im, new_unpad);  // 이미지 크기 조정
-    // Bilinear interpolation 수행
-    // im = linear_image_resize(std::move(im), new_unpad);
-    
+    im = image_scale(im, {new_unpad_w, new_unpad_h});
 
-    int top = static_cast<int>(round(dh - 0.1f));
-    int bottom = static_cast<int>(round(dh + 0.1f));
-    int left = static_cast<int>(round(dw - 0.1f));
-    int right = static_cast<int>(round(dw + 0.1f));
-    im = image_add_border(std::move(im), top, bottom, left, right, color);  // 테두리 추가
+    int left   = std::round(dw - 0.1f);
+    int right  = std::round(dw + 0.1f);
+    int top    = std::round(dh - 0.1f);
+    int bottom = std::round(dh + 0.1f);
+    im = image_add_border(std::move(im), top, bottom, left, right, color);
 
-    printf("[LB] orig=[%d,%d] -> new=[%d,%d], pad=[l=%d r=%d t=%d b=%d]\n",
-        shape[0], shape[1], new_shape[0], new_shape[1],
-        left, right, top, bottom);
-        
-    return im;
+    printf("[LB] orig=[%d,%d] -> scaled=[%d,%d] -> new=[%d,%d], pad=[l=%d r=%d t=%d b=%d]\n",
+           orig_w, orig_h, new_unpad_w, new_unpad_h,
+           new_shape[0], new_shape[1], left, right, top, bottom);
+
+    LetterboxResult out;
+    out.img = std::move(im);
+    out.gain = r;
+    out.pad_w = dw;
+    out.pad_h = dh;
+    return out;
 }
+
+
+
+
 
 // 1. xywh -> xyxy box conversion, inplace
 inline void xywh2xyxy(float* boxes, int n) {
@@ -1860,20 +1669,57 @@ std::vector<detected_obj> non_max_suppression(
     int max_nms,
     int max_wh
 ) {
-    if (!outputs.predictions_cls || !outputs.predictions_bbox) return {};
+    if (!outputs.predictions_cls || !outputs.predictions_bbox) {
+        printf("[NMS Debug] ❌ predictions_cls or predictions_bbox is null!\n");
+        return {};
+    }
+    
     if (!(0.0f <= conf_thres && conf_thres <= 1.0f)) throw std::runtime_error("Invalid Confidence threshold");
     if (!(0.0f <= iou_thres && iou_thres <= 1.0f)) throw std::runtime_error("Invalid IoU threshold");
 
     const int64_t nc = outputs.predictions_cls->ne[0]; // classes
     const int64_t na = outputs.predictions_cls->ne[1]; // anchors
 
+    printf("[NMS Debug] nc=%ld, na=%ld, conf_thres=%.2f\n", nc, na, conf_thres);
+
     // fetch
     tensor_data td_cls = transfer_from_backend(outputs.predictions_cls);
     tensor_data td_box = transfer_from_backend(outputs.predictions_bbox);
-    const float* cls_ptr = td_cls.as_f32().data();   // shape [nc, na, 1, 1]
-    const float* box_ptr = td_box.as_f32().data();   // shape [4,  na, 1, 1]
+    const float* cls_ptr = td_cls.as_f32().data();
+    const float* box_ptr = td_box.as_f32().data();
 
-    // *** declare containers (복구!) ***
+    // ✅ Confidence 범위 확인
+    float max_conf = -1.0f;
+    float min_conf = 2.0f;
+    int max_conf_anchor = -1;
+    int max_conf_class = -1;
+    
+    for (int64_t j = 0; j < na; ++j) {
+        for (int64_t c = 0; c < nc; ++c) {
+            float conf = cls_ptr[c + j*nc];
+            if (conf > max_conf) {
+                max_conf = conf;
+                max_conf_anchor = j;
+                max_conf_class = c;
+            }
+            min_conf = std::min(min_conf, conf);
+        }
+    }
+    
+    printf("[NMS Debug] Confidence range: [%.6f, %.6f]\n", min_conf, max_conf);
+    printf("[NMS Debug] Max conf %.6f at anchor %d, class %d\n", 
+           max_conf, max_conf_anchor, max_conf_class);
+
+    // ✅ 해당 앵커의 박스 좌표 확인
+    if (max_conf_anchor >= 0) {
+        float x1 = box_ptr[0 + max_conf_anchor*4];
+        float y1 = box_ptr[1 + max_conf_anchor*4];
+        float x2 = box_ptr[2 + max_conf_anchor*4];
+        float y2 = box_ptr[3 + max_conf_anchor*4];
+        printf("[NMS Debug] Best box coords: [%.1f, %.1f, %.1f, %.1f]\n", 
+               x1, y1, x2, y2);
+    }
+
     std::vector<std::array<float, 4>> boxes;
     std::vector<float> scores;
     std::vector<int> class_ids;
@@ -1881,35 +1727,30 @@ std::vector<detected_obj> non_max_suppression(
     scores.reserve(na);
     class_ids.reserve(na);
 
+    // Multi-label 후보 생성
     for (int64_t j = 0; j < na; ++j) {
-        // 이미 sigmoid 완료 값 사용!
-        float best_conf = -1.0f;
-        int   best_cls  = -1;
-        for (int64_t c = 0; c < nc; ++c) {
-            // ggml C-연속 메모리: offset = k0 + k1*ne0 + ...
-            // 여기선 offset = c + j*nc 가 맞습니다.
-            float v = cls_ptr[c + j*nc];
-            if (v > best_conf) { best_conf = v; best_cls = (int)c; }
-        }
-        if (best_conf < conf_thres) continue;
-
-        // dbox는 xyxy이므로 그대로 읽기 (변환 금지)
         float x1 = box_ptr[0 + j*4];
         float y1 = box_ptr[1 + j*4];
         float x2 = box_ptr[2 + j*4];
         float y2 = box_ptr[3 + j*4];
 
-        boxes.push_back({x1, y1, x2, y2});
-        scores.push_back(best_conf);
-        class_ids.push_back(best_cls);
+        for (int64_t c = 0; c < nc; ++c) {
+            float conf = cls_ptr[c + j*nc];
+            if (conf < conf_thres) continue;
 
-        if (j < 5) {
-            printf("[%lld] box_xyxy: %.2f %.2f %.2f %.2f | conf=%.3f cls=%d\n",
-                   (long long)j, x1, y1, x2, y2, best_conf, best_cls);
+            boxes.push_back({x1, y1, x2, y2});
+            scores.push_back(conf);
+            class_ids.push_back((int)c);
         }
     }
 
-    if (boxes.empty()) return {};
+    printf("[NMS Debug] Candidates after conf filter (%.2f): %zu\n", 
+           conf_thres, boxes.size());
+
+    if (boxes.empty()) {
+        printf("[NMS Debug] ❌ No boxes passed confidence threshold!\n");
+        return {};
+    }
 
     if ((int)boxes.size() > max_nms) {
         std::vector<int> order(boxes.size());
@@ -1932,7 +1773,20 @@ std::vector<detected_obj> non_max_suppression(
         class_ids.swap(c2);
     }
 
+    printf("[NMS Debug] Total candidates before filtering: %zu\n", boxes.size());
+    printf("[NMS Debug] conf_thres=%.2f, iou_thres=%.2f\n", conf_thres, iou_thres);
+    // ✅ 추가: 최대 confidence 확인
+    if (!scores.empty()) {
+        float max_score = *std::max_element(scores.begin(), scores.end());
+        printf("[NMS Debug] Max confidence: %.4f\n", max_score);
+    }
+    
+    if (boxes.empty()) {
+        printf("[NMS Debug] No boxes passed confidence threshold!\n");
+        return {};
+    }
     std::vector<int> keep = nms(boxes, scores, class_ids, iou_thres, /*agnostic=*/false, max_wh);
+    printf("[NMS Debug] Boxes after NMS: %zu\n", keep.size());
     if ((int)keep.size() > max_det) keep.resize(max_det);
 
     std::vector<detected_obj> result;
@@ -1953,34 +1807,72 @@ std::vector<detected_obj> non_max_suppression(
 
 
 // Scale boxes 함수도 detected_obj에 맞게 수정
+// void scale_boxes(
+//     std::vector<detected_obj>& detections,
+//     i32x2 model_shape,  // [height, width] of model input
+//     i32x2 img_shape) {   // [height, width] of original image
+    
+//     // Calculate gain and padding (same as letterbox)
+//     float gain = std::min(
+//         (float)model_shape[0] / img_shape[0],
+//         (float)model_shape[1] / img_shape[1]
+//     );
+    
+//     float pad_w = (model_shape[1] - img_shape[1] * gain) / 2.0f;
+//     float pad_h = (model_shape[0] - img_shape[0] * gain) / 2.0f;
+    
+//     for (auto& det : detections) {
+//         // Remove padding
+//         det.x1 = (det.x1 - pad_w) / gain;
+//         det.y1 = (det.y1 - pad_h) / gain;
+//         det.x2 = (det.x2 - pad_w) / gain;
+//         det.y2 = (det.y2 - pad_h) / gain;
+        
+//         // Clip to image boundaries
+//         det.x1 = std::max(0.0f, std::min(det.x1, (float)img_shape[1]));
+//         det.y1 = std::max(0.0f, std::min(det.y1, (float)img_shape[0]));
+//         det.x2 = std::max(0.0f, std::min(det.x2, (float)img_shape[1]));
+//         det.y2 = std::max(0.0f, std::min(det.y2, (float)img_shape[0]));
+
+//     printf("[DBG] scale_boxes: gain=%.4f, pad=(%.1f,%.1f)\n", gain, pad_w, pad_h);
+//     for (auto &det : detections) {
+//         printf(" - before: (%.1f,%.1f,%.1f,%.1f)\n", det.x1, det.y1, det.x2, det.y2);
+//     }
+//     }
+// }
+
 void scale_boxes(
     std::vector<detected_obj>& detections,
-    i32x2 model_shape,  // [height, width] of model input
-    i32x2 img_shape) {   // [height, width] of original image
-    
-    // Calculate gain and padding (same as letterbox)
-    float gain = std::min(
-        (float)model_shape[0] / img_shape[0],
-        (float)model_shape[1] / img_shape[1]
-    );
-    
-    float pad_w = (model_shape[1] - img_shape[1] * gain) / 2.0f;
-    float pad_h = (model_shape[0] - img_shape[0] * gain) / 2.0f;
-    
-    for (auto& det : detections) {
-        // Remove padding
-        det.x1 = (det.x1 - pad_w) / gain;
-        det.y1 = (det.y1 - pad_h) / gain;
-        det.x2 = (det.x2 - pad_w) / gain;
-        det.y2 = (det.y2 - pad_h) / gain;
-        
-        // Clip to image boundaries
-        det.x1 = std::max(0.0f, std::min(det.x1, (float)img_shape[1]));
-        det.y1 = std::max(0.0f, std::min(det.y1, (float)img_shape[0]));
-        det.x2 = std::max(0.0f, std::min(det.x2, (float)img_shape[1]));
-        det.y2 = std::max(0.0f, std::min(det.y2, (float)img_shape[0]));
+    i32x2 model_shape,
+    i32x2 img_shape,
+    float gain,
+    float pad_w,
+    float pad_h)
+{
+    if (gain == 0.0f) {
+        float ratio_w = (float)model_shape[0] / (float)img_shape[0];
+        float ratio_h = (float)model_shape[1] / (float)img_shape[1];
+        gain = std::min(ratio_w, ratio_h);
     }
+
+    for (auto& det : detections) {
+        det.x1 = (det.x1 - pad_w) / gain;
+        det.x2 = (det.x2 - pad_w) / gain;
+        det.y1 = (det.y1 - pad_h) / gain;
+        det.y2 = (det.y2 - pad_h) / gain;
+
+        det.x1 = std::clamp(det.x1, 0.0f, (float)img_shape[0]);
+        det.x2 = std::clamp(det.x2, 0.0f, (float)img_shape[0]);
+        det.y1 = std::clamp(det.y1, 0.0f, (float)img_shape[1]);
+        det.y2 = std::clamp(det.y2, 0.0f, (float)img_shape[1]);
+    }
+
+    printf("[DBG] scale_boxes: gain=%.4f, pad=(%.1f,%.1f)\n", gain, pad_w, pad_h);
 }
+
+
+
+
 
 
 // Helper: Draw a line on image
@@ -2151,8 +2043,8 @@ void draw_detections(
     std::vector<std::string> const& class_names) {
     
     // Get image properties
-    int width = img.extent[1];
-    int height = img.extent[0];
+    int width = img.extent[0];
+    int height = img.extent[1];
     int channels = 3;
     
     // Get raw pointer to image data
@@ -2263,24 +2155,68 @@ i32x2 scale_extent(i32x2 extent, float scale) {
     return i32x2{scale_coord(extent[0], scale), scale_coord(extent[1], scale)};
 }
 image_data yolov9t_process_input2(image_view image, yolov9t_params const& p) {
+    printf("extent[0]=%d, extent[1]=%d\n", image.extent[0], image.extent[1]);
     
     image_data resized;
     if (image.extent[0] != p.input_size || image.extent[1] != p.input_size) {
         resized = image_scale(image, {p.input_size, p.input_size});
         image = image_view(resized);
+        
+
     }
 
     return image_u8_to_f32(image, image_format::rgb_f32, p.offset, 1.f / p.scale);
 }
 
-image_data yolov9t_process_input(image_data image, yolov9t_params const& p) {
-    // 1) letterbox to square (p.input_size)
-    image_data lb = letterbox(std::move(image), {p.input_size, p.input_size}, u8x3{114,114,114}, true, false, true, yolov9t_params::stride);
-    // 2) convert to f32 and normalize to [0,1]
-    image_data result = image_alloc({p.input_size, p.input_size}, image_format::rgb_f32);
-    image_u8_to_f32(lb, result, f32x4(p.offset), f32x4(p.scale));
-    return result;
+
+// image_data yolov9t_process_input(image_data image, yolov9t_params const& p) {
+//     // 1) letterbox to square (p.input_size)
+//     image_data lb = letterbox(std::move(image), {p.input_size, p.input_size}, u8x3{114,114,114}, true, false, true, yolov9t_params::stride);
+//     // 2) convert to f32 and normalize to [0,1]
+//     image_data result = image_alloc({p.input_size, p.input_size}, image_format::rgb_f32);
+//     image_u8_to_f32(lb, result, f32x4(p.offset), f32x4(p.scale));
+//     return result;
+// }
+LetterboxResult yolov9t_process_input(image_data image, yolov9t_params const& p) {
+    printf("[DBG] before letterbox: format=%d (0=rgb_u8, 1=bgr_u8?, 2=rgba_u8, 3=rgb_f32)\n", (int)image.format);
+
+    // 만약 bgr_u8 타입이 정의되어 있지 않다면 이 분기 삭제
+    // if (image.format == image_format::bgr_u8)
+    //     image = image_bgr_to_rgb(std::move(image));
+
+    // 기존: true, false, true, stride
+    LetterboxResult lb = letterbox(
+        std::move(image),
+        {p.input_size, p.input_size},
+        u8x3{114,114,114},
+        /*_auto=*/false, /*scaleFill=*/false, /*scaleup=*/true,
+        yolov9t_params::stride);
+
+    image_data result;
+
+    if (lb.img.format == image_format::rgb_u8) {
+        result = image_alloc({p.input_size, p.input_size}, image_format::rgb_f32);
+        image_u8_to_f32(lb.img, result, f32x4(p.offset), f32x4(p.scale));
+    } else {
+        result = std::move(lb.img);
+    }
+
+    LetterboxResult out;
+    out.img = std::move(result);
+    out.gain = lb.gain;
+    out.pad_w = lb.pad_w;
+    out.pad_h = lb.pad_h;
+
+    printf("[DBG] after yolov9t_process_input: format=%d, extent=(%d,%d)\n",
+           (int)out.img.format, out.img.extent[0], out.img.extent[1]);
+
+    return out;
 }
+
+
+
+
+
 static void write_tensor_txt(tensor t, char const* filename) {
     if (!t) {
         return;

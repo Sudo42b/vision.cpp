@@ -10,7 +10,12 @@
 #include <vector>
 
 namespace visp::yolov9t {
-
+struct LetterboxResult {
+    image_data img;
+    float gain;
+    float pad_w;
+    float pad_h;
+};
 // YOLOv9t Parameters
 struct yolov9t_params {
     float scale = 1.0f;
@@ -45,6 +50,17 @@ struct DetectOutput {
     std::vector<float> dfl_proj_host_data; // host-side DFL projection weights
     // std::vector<float> anchor_data;  // 추가
     // std::vector<float> stride_data;        // 추가
+
+    std::vector<tensor> dbg_reg_logits_1x1; // r2 (각 헤드 최종 reg 1x1 before DFL)
+    std::vector<tensor> dbg_cls_logits_1x1; // c2t (각 헤드 최종 cls 1x1 pre-sigmoid)
+    std::vector<tensor> dbg_reg_mid;        // r0, r1 (원하면)
+    std::vector<tensor> dbg_cls_mid;        // c0, c1 (원하면)
+    tensor dbg_cls_logits_cat;              // [nc,A,1,1] pre-sigmoid (inference()에서 tap)
+    tensor dbg_dfl_softmax;                 // DFL softmax 결과 [reg_max,4,A,1]
+    tensor dbg_box_view;                    // DFL 입력 view [reg_max*4,A,1,1] or [reg_max,4,A,1]
+    tensor debug_cls_logits = nullptr;
+
+
 };
 // Image preprocessing for YOLOv9t
 struct PreprocessResult {
@@ -66,7 +82,9 @@ struct NMSParams {
 // functions
 
 float resize_longest_side(i32x2 extent, int target_longest_side);
-image_data yolov9t_process_input(image_data image, yolov9t_params const& p);
+// image_data yolov9t_process_input(image_data image, yolov9t_params const& p);
+LetterboxResult yolov9t_process_input(image_data image, yolov9t_params const& p);
+
 image_data yolov9t_process_input2(image_view image, yolov9t_params const& p);
 void sync_detect_outputs(DetectOutput& outputs, backend_device const& backend);
 // Detection parameters
@@ -218,20 +236,31 @@ image_data hwc_to_chw_f32(image_data const& hwc);
 std::vector<std::string> const& get_coco_class_names();
 
 int check_img_size(int imgsz, int s = 32, int floor = 0);
-image_data letterbox(
-    image_data im,
-    i32x2 new_shape = {640, 640},
-    u8x3 color = {114, 114, 114},
-    bool _auto = true,
-    bool scaleFill = false,
-    bool scaleup = true,
-    int stride = 32);
+// image_data letterbox(
+//     image_data im,
+//     i32x2 new_shape = {640, 640},
+//     u8x3 color = {114, 114, 114},
+//     bool _auto = true,
+//     bool scaleFill = false,
+//     bool scaleup = true,
+//     int stride = 32);
+LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
+    bool _auto, bool scaleFill, bool scaleup, int stride);
+
 image_data linear_image_resize(image_data im, i32x2 new_shape);
 image_data image_add_border(image_data im, int top, int bottom, int left, int right, u8x3 color);
-void scale_boxes(
-    std::vector<detected_obj>& detections,
-    i32x2 model_shape, // [height, width] of model input
-    i32x2 img_shape);
+
+// void scale_boxes(
+//     std::vector<detected_obj>& detections,
+//     i32x2 model_shape, // [height, width] of model input
+//     i32x2 img_shape);
+
+void scale_boxes(std::vector<detected_obj>& boxes,
+    i32x2 from_shape,
+    i32x2 to_shape,
+    float gain,
+    float pad_w,
+    float pad_h);
 
 std::vector<int> nms(
     std::vector<detected_obj> const& detections,

@@ -353,7 +353,7 @@ def load_yolov9t():
     # Save with correct mapping
     torch.save(model.state_dict(), "yolov9t_converted.pth")
     print(f"\nSaved {len(new_state)}/{len(target_state)} parameters")
-
+    print(new_state.keys())
     return model
 
 
