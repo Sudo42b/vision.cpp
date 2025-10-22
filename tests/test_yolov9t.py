@@ -1,6 +1,7 @@
 """
 cd /mnt/c/Users/x2199/Desktop/vision.cpp_
-pytest -q tests/test_yolov9t.py::test_dfl_layer -q
+cmake --build build -j 6 --target vision-workbench 
+LD_LIBRARY_PATH=build/lib pytest -q tests/test_yolov9t.py::test_dfl_layer -q
 """
 
 import torch
@@ -90,7 +91,7 @@ def test_dfl_layer(c1=16, reg_max=16, debug=False):
     # Map into state for workbench
     state = {key: weight}
 
-    # Use fixed input shape: (1, 64, 8400)
+    # Use fixed input shape: (1, 64, 8400) # N, A, 4*c1
     box3 = input_tensor(1, 64, 8400)
     # bool debug = p.get("debug", 0) != 0;
     # int reg_max = p.get("reg_max", 16);
@@ -99,8 +100,10 @@ def test_dfl_layer(c1=16, reg_max=16, debug=False):
     # pass the state dict (mapping of weight name -> tensor) as the third arg
     # The workbench harness expects a 4D NHWC tensor, so expand a spatial dim
     box_4d = box3.unsqueeze(2)  # shape (N, C, 1, anchors)
-    box_nhwc = to_nhwc(box_4d)
-    result = workbench.invoke_test("dfl_layer", box_nhwc, state, params)
+    print(box_4d.shape)
+    
+    box_nhwc = to_nhwc(box_4d)  # shape (N, anchors, 1, C)
+    result = workbench.invoke_test("dfl_forward", box_nhwc, state, params)
 
     # Compute expected using the DFL computation with the loaded weight
     # Following the original DFL implementation:

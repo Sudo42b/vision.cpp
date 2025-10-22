@@ -74,6 +74,8 @@ if __name__ == "__main__":
     # model = DetectMultiBackend(opt.weights, device=device, data=opt.data, fp16=opt.half)
 
     model = YOLOv9t_Seq().cuda()
+    if not os.path.exists(opt.weights):
+        opt.weights = os.path.join('./scripts', opt.weights)
     model.load_state_dict(torch.load(opt.weights, map_location="cpu", weights_only=False))
     imgsz = check_img_size(opt.imgsz, s=model.stride)
     # Read image

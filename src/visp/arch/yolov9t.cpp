@@ -18,6 +18,7 @@
 #include "ggml.h"
 
 #include <optional>
+#include <span>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
@@ -1008,7 +1009,7 @@ DetectOutput inference(model_ref m,
     for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
     out.reg_max = reg_max;
     printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
-    
+
     // Apply DFL (pass projection tensor `proj`)
     tensor dfl_output = dfl_forward(m, proj, box, reg_max, false);
     printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
@@ -1036,6 +1037,7 @@ DetectOutput inference(model_ref m,
     out.strides_points = std::move(stride_tensor);
     out.anchor_host_data = std::move(anchor_host);
     out.stride_host_data = std::move(stride_host);
+
     return out;
 }
 
@@ -1190,45 +1192,52 @@ def make_anchors(feats:Tensor, strides:Tensor, grid_cell_offset:float=0.5) -> Tu
 //     tensor anchor_points;  // [total_anchors, 2]
 //     tensor stride_tensor;  // [total_anchors, 1]
 // };
-std::pair<tensor, tensor> make_anchors(
+
+void make_anchors(
     model_ref m,
-    DetectOutput const& out,
-    std::vector<float>& anchor_host,
-    std::vector<float>& stride_host,
-    std::vector<float> const& strides,
+    std::span<tensor> feats,
+    anchor_params& anchor_p,
     float grid_cell_offset) {
-    
-    GGML_ASSERT(out.raw_outputs.size() == strides.size());
-    GGML_ASSERT(!out.raw_outputs.empty());
-    
+
+    GGML_ASSERT(!feats.empty());
+    std::vector<float> effective_strides;
+    effective_strides.resize(feats.size());
+    for (size_t i = 0; i < feats.size(); ++i) {
+        if (i < anchor_p.strides.size()) {
+            effective_strides[i] = anchor_p.strides[i];
+        } else {
+            effective_strides[i] = 8.0f * std::pow(2.0f, (float)i);
+        }
+    }
     // Calculate total number of anchors
     int64_t total_anchors = 0;
-    for (size_t i = 0; i < out.raw_outputs.size(); ++i) {
-        auto ne = nelements(out.raw_outputs[i]);
+    for (size_t i = 0; i < feats.size(); ++i) {
+        auto ne = nelements(feats[i]);
         total_anchors += ne[1] * ne[2]; // w * h
     }
-
 
     // CPU에서 먼저 데이터 준비
     std::vector<float> anchor_data(2 * total_anchors);
     std::vector<float> stride_data(total_anchors);
     
     int64_t offset = 0;
-    for (size_t i = 0; i < strides.size(); ++i) {
-        int64_t w = out.raw_outputs[i]->ne[1];
-        int64_t h = out.raw_outputs[i]->ne[2];
-        
+    for (size_t i = 0; i < feats.size(); ++i) {
+        int64_t w = feats[i]->ne[1];
+        int64_t h = feats[i]->ne[2];
+
         for (int64_t y = 0; y < h; ++y) {
             for (int64_t x = 0; x < w; ++x) {
                 int64_t idx = offset + y * w + x;
                 anchor_data[idx * 2 + 0] = x + grid_cell_offset;
                 anchor_data[idx * 2 + 1] = y + grid_cell_offset;
-                stride_data[idx] = strides[i];
+                stride_data[idx] = effective_strides[i];
             }
         }
         offset += w * h;
     }
-    
+    anchor_p.anchor_data = std::move(anchor_data);
+    anchor_p.stride_data = std::move(stride_data);
+
     // graph_context에 tensor 생성 (no_alloc이므로 data는 nullptr)
     // tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
     // tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
@@ -1248,8 +1257,7 @@ std::pair<tensor, tensor> make_anchors(
     
     printf("anchor_points shape: [%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1]);
     printf("stride_tensor shape: [%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1]);
-    
-    return std::make_pair(anchor_points, stride_tensor);
+
 }
 
 
