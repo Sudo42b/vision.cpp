@@ -16,9 +16,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
-#include <map>
-#include <string>
+#include <vector>
+#include <cstdint>
 #include <vector>
 
 static void ggml_log_callback_default(ggml_log_level level, const char * text, void * user_data) {
@@ -145,13 +144,8 @@ int main(int argc, char ** argv){
 
     const char * endpoint = argc > 1 ? argv[1] : "127.0.0.1:50051";
 
-    // 1) RPC 백엔드 초기화
-    ggml_backend_t backend = ggml_backend_rpc_init(endpoint);
-    if (!backend) {
-        fprintf(stderr, "failed to init RPC backend (endpoint=%s)\n", endpoint);
-        return 1;
-    }
-    
+    // 1) RPC 백엔드 초기화 (device index 0)
+    ggml_backend_t backend = ggml_backend_rpc_init(endpoint, 0);
     // initialize data of matrices to perform matrix multiplication
     const int rows_A = 4, cols_A = 2;
 
@@ -174,6 +168,7 @@ int main(int argc, char ** argv){
     };
 
     simple_model model;
+    // 클라이언트 모델은 RPC 백엔드를 사용해 원격 버퍼/실행을 수행
     load_model(model, matrix_A, matrix_B, rows_A, cols_A, rows_B, cols_B);
 
     // calculate the temporaly memory required to compute

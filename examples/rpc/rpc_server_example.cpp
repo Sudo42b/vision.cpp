@@ -1,4 +1,3 @@
-#include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "ggml-rpc.h"
@@ -7,6 +6,7 @@
 #include <cstdlib>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 struct rpc_server_params {
     std::string host        = "0.0.0.0";
@@ -113,25 +113,22 @@ int main(int argc, char ** argv) {
         return 1;
     }
     std::string cache_dir = "/tmp/ggml-rpc-cache";
-    // 서버에서 실제 연산을 수행할 백엔드 선택 (여기서는 CPU)
-    ggml_backend_t backend = create_backend();
-    if (!backend) {
-        fprintf(stderr, "failed to init CPU backend\n");
+    std::string endpoint_str = params.host + ":" + std::to_string(params.port);
+    // 디바이스 목록 구성: CPU 1개 사용 (필요시 확장 가능)
+    std::vector<ggml_backend_dev_t> devices;
+    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (cpu_dev) {
+        devices.push_back(cpu_dev);
+    } else if (ggml_backend_dev_count() > 0) {
+        devices.push_back(ggml_backend_dev_get(0));
+    } else {
+        fprintf(stderr, "No backend devices found\n");
         return 1;
     }
-    
-    std::string endpoint_str = params.host + ":" + std::to_string(params.port);
-    size_t free_mem, total_mem;
-    if (params.backend_mem > 0) {
-        free_mem = params.backend_mem;
-        total_mem = params.backend_mem;
-    } else {
-        get_backend_memory(&free_mem, &total_mem);
-    }
-    // 단일 스레드 동기 서버 루프 (클라이언트 1개씩 순차 처리)
-    ggml_backend_rpc_start_server(backend, endpoint_str.c_str(), cache_dir.c_str(), free_mem, total_mem);
 
-    ggml_backend_free(backend);
+    // 단일 스레드 서버 시작 (n_threads=1, n_devices=devices.size())
+    ggml_backend_rpc_start_server(endpoint_str.c_str(), cache_dir.c_str(), 1 /*threads*/, devices.size(), devices.data());
+
     return 0;
 }
 
