@@ -16,7 +16,7 @@ struct LetterboxResult {
     float pad_w;
     float pad_h;
 };
-// YOLOv9t Parameters
+
 struct yolov9t_params {
     float scale = 1.0f;
     float offset = 0.0f;
@@ -27,50 +27,36 @@ struct yolov9t_params {
     static constexpr int stride = 32;
 };
 
-struct anchor_params{
-    std::vector<float> anchor_data;
-    std::vector<float> stride_data;
-
-    tensor anchor_tensor;
-    tensor stride_tensor;
-
-    std::vector<float> strides;
-};
 struct detected_obj {
-    float x1, y1, x2, y2;   // Bounding box (x1, y1, x2, y2)
-    float confidence;       // Object confidence
-    int class_id;           // Class ID
-    float class_confidence; // Class confidence
+    float x1, y1, x2, y2;   
+    float confidence;       
+    int class_id;           
+    float class_confidence; 
 };
 
-// Complete Detect head forward pass
 struct DetectOutput {
     std::vector<tensor> raw_outputs;
-    std::vector<tensor> features; // Selected backbone/neck features exposed for dumping
+    std::vector<tensor> features; 
     std::map<int, tensor> features_map;
-    tensor predictions_cls;  // [nc, num_anchors, 1, bs]
-    tensor predictions_bbox;  // [4, num_anchors, 1, bs]
-    
-    tensor dfl_proj;     // DFL projection weights tensor (reg_max elements)
-    int reg_max = 0;     // number of DFL bins
-    // std::vector<float> anchor_host_data;  // host-side buffer to upload after allocation
-    // std::vector<float> stride_host_data;  // host-side buffer to upload after allocation
-    std::vector<float> dfl_proj_host_data; // host-side DFL projection weights
-    // std::vector<float> anchor_data;  // 추가
-    // std::vector<float> stride_data;        // 추가
-
-    std::vector<tensor> dbg_reg_logits_1x1; // r2 (각 헤드 최종 reg 1x1 before DFL)
-    std::vector<tensor> dbg_cls_logits_1x1; // c2t (각 헤드 최종 cls 1x1 pre-sigmoid)
-    std::vector<tensor> dbg_reg_mid;        // r0, r1 (원하면)
-    std::vector<tensor> dbg_cls_mid;        // c0, c1 (원하면)
-    tensor dbg_cls_logits_cat;              // [nc,A,1,1] pre-sigmoid (inference()에서 tap)
-    tensor dbg_dfl_softmax;                 // DFL softmax 결과 [reg_max,4,A,1]
-    tensor dbg_box_view;                    // DFL 입력 view [reg_max*4,A,1,1] or [reg_max,4,A,1]
+    tensor predictions_cls;  
+    tensor predictions_bbox;  
+    tensor anchor_points;
+    tensor strides_points;
+    tensor dfl_proj;     
+    int reg_max = 0;     
+    std::vector<float> anchor_host_data;  
+    std::vector<float> stride_host_data;  
+    std::vector<float> dfl_proj_host_data; 
+    std::vector<tensor> dbg_reg_logits_1x1; 
+    std::vector<tensor> dbg_cls_logits_1x1; 
+    std::vector<tensor> dbg_reg_mid;        
+    std::vector<tensor> dbg_cls_mid;        
+    tensor dbg_cls_logits_cat;              
+    tensor dbg_dfl_softmax;                 
+    tensor dbg_box_view;                    
     tensor debug_cls_logits = nullptr;
-
-
 };
-// Image preprocessing for YOLOv9t
+
 struct PreprocessResult {
     tensor input_tensor;
     float scale;
@@ -87,18 +73,18 @@ struct NMSParams {
     int max_wh = 7680;
 };
 
-// functions
+
 
 float resize_longest_side(i32x2 extent, int target_longest_side);
-// image_data yolov9t_process_input(image_data image, yolov9t_params const& p);
+
 LetterboxResult yolov9t_process_input(image_data image, yolov9t_params const& p);
 
 image_data yolov9t_process_input2(image_view image, yolov9t_params const& p);
 void sync_detect_outputs(DetectOutput& outputs, backend_device const& backend);
-// Detection parameters
+
 yolov9t_params yolov9t_detect_params(model_file const& file);
-// Core modules - actual layer implementations
-// Conv function matching Python Conv class parameters
+
+
 tensor Conv(
     model_ref m,
     tensor x,
@@ -201,33 +187,35 @@ tensor Bottleneck(
     int g = 1,
     float e = 0.5,
     bool debug = false);
-// Backbone network
-// std::vector<tensor> yolov9t_backbone(model_ref m, tensor x);
+
+
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x);
 
-// Detection head components
+
 tensor dfl_forward(model_ref m, tensor weight, tensor x, int reg_max, bool debug=false);
 
-void make_anchors(
+std::pair<tensor, tensor> make_anchors(
     model_ref m,
-    std::span<tensor> feats,
-    anchor_params& anchor_p,
+    DetectOutput const& out,
+    std::vector<float>& anchor_host,
+    std::vector<float>& stride_host,
+    std::vector<float> const& strides,
     float grid_cell_offset = 0.5f);
 tensor dist2bbox(model_ref m, tensor dists, tensor anchors, bool xywh);
-// Detect head over multi-scale features
+
 DetectOutput detect_forward(
     model_ref m, std::vector<tensor> features, std::vector<int> ch, int nc, bool training);
-// Main forward pass
+
 DetectOutput yolov9t_forward(model_ref m, tensor x);
 
-// Process outputs to detections
+
 std::vector<DetectOutput> process_outputs(
     detected_obj const& outputs,
     yolov9t_params const& params,
     i32x2 input_size,
     float conf_threshold = 0.25f);
 
-// Post-processing
+
 std::vector<detected_obj> non_max_suppression(
     DetectOutput const& outputs,
     float conf_thres = 0.25f,
@@ -238,28 +226,16 @@ std::vector<detected_obj> non_max_suppression(
 
 image_data hwc_to_chw_f32(image_data const& hwc);
 
-// Class names
+
 std::vector<std::string> const& get_coco_class_names();
 
 int check_img_size(int imgsz, int s = 32, int floor = 0);
-// image_data letterbox(
-//     image_data im,
-//     i32x2 new_shape = {640, 640},
-//     u8x3 color = {114, 114, 114},
-//     bool _auto = true,
-//     bool scaleFill = false,
-//     bool scaleup = true,
-//     int stride = 32);
+
 LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
     bool _auto, bool scaleFill, bool scaleup, int stride);
 
 image_data linear_image_resize(image_data im, i32x2 new_shape);
 image_data image_add_border(image_data im, int top, int bottom, int left, int right, u8x3 color);
-
-// void scale_boxes(
-//     std::vector<detected_obj>& detections,
-//     i32x2 model_shape, // [height, width] of model input
-//     i32x2 img_shape);
 
 void scale_boxes(std::vector<detected_obj>& boxes,
     i32x2 from_shape,
@@ -279,10 +255,10 @@ void draw_detections(
     std::vector<detected_obj> const& detections,
     std::vector<std::string> const& class_names);
 
-// Utilities: save selected feature maps to text files using base path prefix
+
 void save_features_to_txt(
     DetectOutput const& out, char const* base_path, std::vector<int> const& keys = {});
 
-// Save preprocessed input (float32 RGB, CWHN tensor) to a text file
+
 void save_input_to_txt(tensor input, char const* filepath);
-} // namespace visp::yolov9t
+} 

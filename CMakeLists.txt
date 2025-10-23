@@ -94,6 +94,7 @@ if(VISP_CI)
     endforeach()
   endif()
 endif()
+set(GGML_RPC ON)
 add_subdirectory(depend/ggml)
 
 # Vision.cpp libraries and executables
@@ -108,6 +109,9 @@ if(VISP_TESTS)
   add_subdirectory(tests)
   add_subdirectory(models)
 endif()
+
+# Examples (RPC)
+add_subdirectory(examples/rpc)
 
 # Installation
 

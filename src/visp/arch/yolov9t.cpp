@@ -18,7 +18,6 @@
 #include "ggml.h"
 
 #include <optional>
-#include <span>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
@@ -29,15 +28,15 @@ using namespace visp;
 enum PADDING_MODE { NONE = -INT16_MAX, YES = 1 };
 namespace visp::yolov9t {
 
-// Parameter detection from model weights
+
 yolov9t_params yolov9t_detect_params(model_file const& /*file*/) {
     yolov9t_params params;
-    // Use default parameters since metadata functions aren't available
-    // In actual implementation, these would be extracted from GGUF metadata
+    
+    
     params.num_classes = 80;
     params.input_size = 640;
     params.variant = "tiny";
-    // Normalize inputs to [0, 1]
+    
 
     return params;
 }
@@ -45,7 +44,7 @@ int autopad(int k, int p = -1, int d = 1) {
     if (d > 1) {
         k = d * (k - 1) + 1;
     }
-    if (p == -1) { // p is None in Python
+    if (p == -1) { 
         p = k / 2;
     }
     return p;
@@ -58,17 +57,13 @@ inline tensor add_bias_if_exists(model_ref m, tensor x, const std::string& full_
     tensor b = m.find("bias");
     m.prefix = old;
     if (!b) return x;
-    // x: [Cout, W, H, N], b: [Cout]
+    
     GGML_ASSERT(b->ne[0] == x->ne[0]);
     b = ggml_reshape_4d(m, b, b->ne[0], 1, 1, 1);
     return ggml_add(m, x, b);
 }
 
 
-
-// Conv: Standard convolution with BN and SiLU (matching Python Conv class)
-// Parameters: c1(input_ch), c2(output_ch), k(kernel), s(stride), p(padding), g(groups),
-// d(dilation), act(activation)
 tensor Conv(
     model_ref m,
     tensor x,
@@ -87,16 +82,15 @@ tensor Conv(
             (int)x->ne[2], (int)x->ne[3]);
     }
     
-    // Calculate padding using autopad if p == -1
     int auto_pad = autopad(k, p, 1);
 
-    // Save current prefix
+    
     tensor_name old_prefix = m.prefix;
 
-    // Set prefix to the layer name so conv_2d can find "weight" and "bias"
+    
     std::string weight_name = name;
-    // printf("Weight name: %s\n", weight_name.c_str());
-    // printf("Name: %s\n", name.c_str());
+    
+    
     if (name.find(".conv") == std::string::npos) {
         weight_name += ".conv";
     }
@@ -107,10 +101,6 @@ tensor Conv(
         printf("Weight shape: [%d,%d,%d,%d]\n", (int)weight->ne[0], (int)weight->ne[1], (int)weight->ne[2], (int)weight->ne[3]);
         printf("Input shape: [%d,%d,%d,%d]\n", (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }
-
-    // Get input channels from tensor
-    // c1 = (int)x->ne[0]; // input channels
-    // c2 = (int)weight->ne[3]; // output channels in GGML format
     
     if (debug) {
         printf(
@@ -118,22 +108,12 @@ tensor Conv(
             act ? "True" : "False");
     }
 
-    // Check if input is in CWHN format and needs conversion to WHCN
-        
-    // Ensure tensor is contiguous before convolution
     if (!ggml_is_contiguous(x)) {
         x = ggml_cont(m, x);
     }
     
-    // Apply convolution: ggml_conv_2d expects (weight, input)
+    
     x = conv_2d(m, x, s, auto_pad, 1);
-
-    // Apply BatchNorm2d (if bias exists, it's typically the bn bias)
-    // if (m.find("bias")) {
-    //     tensor bias = m.weights("bias");
-    //     x = ggml_add(m, x, bias);
-    // }
-
     if (bn){
         printf("old_prefix: %s\n", name.c_str());
         std::string bn_name = name.c_str();
@@ -146,12 +126,12 @@ tensor Conv(
         m.prefix = tensor_name(bn_name.c_str());
         x = batch_norm_2d(m, x);
     }
-    // Apply SiLU activation if act=true
+    
     if (act) {
         x = ggml_silu(m, x);
     }
 
-    // Restore prefix
+    
     m.prefix = old_prefix;
     
     if (debug) {
@@ -162,8 +142,8 @@ tensor Conv(
     return x;
 }
 
-// AConv: Average pooling + Conv for downsampling
-// Python signature: AConv(c1, c2) where c1=input_ch, c2=output_ch
+
+
 /*
 class AConv(nn.Module):
     """Average pooling convolution for downsampling"""
@@ -178,7 +158,7 @@ class AConv(nn.Module):
         return x
 */
 tensor conv_2d_batch_norm(model_ref m, tensor x, int stride = 1, int pad = 0) {
-    return conv_2d(m, x, stride, pad); // batch_norm is fused into conv_2d at model conversion
+    return conv_2d(m, x, stride, pad); 
 }
 tensor mean_2d(model_ref m, tensor x) {
     auto [w, h, c, n] = nelements_whcn(m, x);
@@ -201,12 +181,12 @@ tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, boo
                (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }
 
-    // 1) AvgPool2d(k=2, s=1, p=0)  — 파이토치: nn.AvgPool2d(2, 1, 0, False, True)
-    //    CWHN에서 풀링은 W,H 축(ne[1], ne[2])에 적용됨.
+    
+    
     printf("Before Pooling (C,W,H,N) = [%d,%d,%d,%d]\n",
            (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     x = contiguous_2d_to_whcn(m, x);
-    // permute
+    
     printf("After Permute (W,H,C,N) = [%d,%d,%d,%d]\n",
            (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     tensor pooled = ggml_pool_2d(
@@ -227,8 +207,8 @@ tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, boo
                (int)pooled->ne[0], (int)pooled->ne[1], (int)pooled->ne[2], (int)pooled->ne[3]);
     }
 
-    // 2) Conv 3x3, stride=2, pad=1  — PyTorch: Conv(c1, c2, 3, 2, 1)
-    //    입력 채널 c1 → 출력 채널 c2
+    
+    
     tensor out = Conv(m, pooled, name + ".cv1.conv", c1, c2, /*k=*/3, /*stride=*/2, /*pad=*/1, /*act=*/true);
     printf("%ld, %ld, %ld, %ld\n", x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
     if (debug) {
@@ -238,25 +218,6 @@ tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, boo
     return out;
 }
 
-// ELAN1: Efficient Layer Aggregation Network block
-// Python signature: ELAN1(c1, c2, c3, c4) where c1=input_ch, c2=output_ch, c3=cv2_ch, c4=cv3_ch
-/*
-class ELAN1(RepNCSPELAN4):
-    """ELAN-1 block"""
-    def __init__(self, c1: int, c2: int, c3: int, c4: int):
-        super().__init__(c1, c2, c3, c4)
-        self.c = c3 // 2
-        self.cv1 = Conv(c1, c3, 1, 1)
-        self.cv2 = Conv(c3 // 2, c4, 3, 1)
-        self.cv3 = Conv(c4, c4, 3, 1)
-        self.cv4 = Conv(c3 + (2 * c4), c2, 1, 1)
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through ELAN1 layer."""
-        y = list(self.cv1(x).chunk(2, 1))
-        y.extend((m(y[-1])) for m in [self.cv2, self.cv3])
-        x = self.cv4(torch.cat(y, 1))
-        return x
-*/
 tensor ELAN1(
     model_ref m,
     tensor x,
@@ -267,19 +228,19 @@ tensor ELAN1(
     int c4,
     bool debug
 ) {
-    // x: CWHN
+    
     if (debug) {
         printf("ELAN1 %s: x (C,W,H,N) = [%d,%d,%d,%d]\n",
                name.c_str(), (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     }
 
-    // cv1: 1x1 conv -> c3 channels
+    
     GGML_ASSERT(c3 % 2 == 0 && "ELAN1: c3 must be even for chunk(2)");
     const int c_half = c3 / 2;
     tensor cv1_out = Conv(m, x, name + ".cv1.conv", c1, c3, 1, 1, -1, true);
 
-    // 채널을 반으로 분할 (PyTorch chunk(2, dim=1)와 동일; 여기선 dim0=C)
-    // slice_t는 [begin, end) 규칙. step은 채널축에서 1만 허용(헬퍼가 그렇게 설계됨).
+    
+    
     tensor split1 = slice(m, cv1_out,
                           /*C*/ {0,       c_half},
                           /*W*/{}, /*H*/ {}, /*N*/ {});
@@ -287,17 +248,17 @@ tensor ELAN1(
                           /*C*/ {c_half, c3},
                           /*W*/ {}, /*H*/ {}, /*N*/ {});
 
-    // 필요 시 연속화 (Conv가 비연속 view 입력을 못 받는 경우 대비)
+    
     if (!ggml_is_contiguous(split1)) split1 = ggml_cont(m, split1);
     if (!ggml_is_contiguous(split2)) split2 = ggml_cont(m, split2);
 
-    // cv2: 3x3 conv on split2 (c_half -> c4)
+    
     tensor cv2_out = Conv(m, split2, name + ".cv2.conv", c_half, c4, 3, 1, -1, true);
 
-    // cv3: 3x3 conv on cv2_out (c4 -> c4)
+    
     tensor cv3_out = Conv(m, cv2_out, name + ".cv3.conv", c4, c4, 3, 1, -1, true);
 
-    // concat: [split1, split2, cv2_out, cv3_out] along channel dim (dim=0 for CWHN)
+    
     tensor cat12   = Concat(m, split1, split2, /*dim=*/0);
     tensor cat123  = Concat(m, cat12,  cv2_out, /*dim=*/0);
     tensor cat1234 = Concat(m, cat123, cv3_out, /*dim=*/0);
@@ -307,10 +268,10 @@ tensor ELAN1(
                name.c_str(), (int)cat1234->ne[0], (int)cat1234->ne[1], (int)cat1234->ne[2], (int)cat1234->ne[3]);
     }
 
-    // cv4: 1x1 conv to final output channels: (c3 + 2*c4) -> c2
+    
     tensor out = Conv(m, cat1234, name + ".cv4.conv", c3 + (2 * c4), c2, 1, 1, -1, true);
 
-    // 레이아웃 변환 불필요 (네트워크 전반 CWHN 유지). 항등 permute/contiguous 강제 없음.
+    
     if (debug) {
         printf("ELAN1 %s: out (C,W,H,N) = [%d,%d,%d,%d]\n",
                name.c_str(), (int)out->ne[0], (int)out->ne[1], (int)out->ne[2], (int)out->ne[3]);
@@ -333,18 +294,13 @@ tensor Bottleneck(
             "Bottleneck %s: In shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3], (int)x->ne[2],
             (int)x->ne[1], (int)x->ne[0]);
     }
-    int c_ = (int)(c2 * e); // hidden channels
+    int c_ = (int)(c2 * e); 
 
-    // cv1: 1x1 conv
+    
     tensor cv1_out = Conv(m, x, name + ".cv1.conv", c1, c_, 1, 1, -1, true);
-
-    // cv2: 3x3 conv
     tensor cv2_out = Conv(m, cv1_out, name + ".cv2.conv", c_, c2, 3, 1, -1, true);
 
-    // Add shortcut if applicable
-    // if (shortcut && x->ne[2] == cv2_out->ne[2]) {
-    //     return ggml_add(m, x, cv2_out);
-    // }
+    
     if (debug) {
         printf(
             "Bottleneck %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)cv2_out->ne[3],
@@ -352,7 +308,7 @@ tensor Bottleneck(
     }
     return cv2_out;
 }
-// RepConv: Reparameterizable Convolution with training and deploy modes
+
 tensor RepConv(
     model_ref m,
     tensor x,
@@ -374,7 +330,7 @@ tensor RepConv(
             (int)x->ne[2], (int)x->ne[3]);
     }
     
-    // Assert k == 3 and p == 1 as in Python implementation
+    
     if (k != 3 || p != 1) {
         throw std::invalid_argument("RepConv requires k=3 and p=1");
     }
@@ -382,28 +338,25 @@ tensor RepConv(
     tensor output;
     
     if (deploy) {
-        // In deploy mode, use fused convolution (would be pre-computed)
+        
         output = Conv(m, x, name + ".fused_conv", c1, c2, k, s, p, act, debug);
     } else {
-        // Training mode: PyTorch structure with conv1 (3x3) + conv2 (1x1)
+        
         
         std::string cv11_name = name;
-        // suffix가 .cv1이면 .cv1.conv1로 교체
+        
         tensor conv1_out = Conv(m, x, cv11_name + ".conv1.conv", c1, c2, k, s, p, false, debug);
-        
-        
-        tensor conv2_out = Conv(m, x, cv11_name + ".conv2.conv", c1, c2, 1, s, (p-k)/2, false, debug);  // stride, pad=1, dilate=1
-        
-        // id_out
+        tensor conv2_out = Conv(m, x, cv11_name + ".conv2.conv", c1, c2, 1, s, (p-k)/2, false, debug);  
+
         if (bn){
             printf("batchnorm 처리해야함\n");
         }
-        // Add conv1 + conv2
+        
         output = ggml_add(m, conv1_out, conv2_out);
         
-        // Apply activation
+        
         if (act) {
-            output = ggml_silu(m, output); // SiLU is default activation
+            output = ggml_silu(m, output); 
         }
     }
     
@@ -417,7 +370,7 @@ tensor RepConv(
 }
 
 
-// RepBottleneck: Bottleneck with RepConv (inherits from Bottleneck behavior)
+
 tensor RepBottleneck(
     model_ref m,
     tensor x,
@@ -435,15 +388,15 @@ tensor RepBottleneck(
             (int)x->ne[2], (int)x->ne[1], (int)x->ne[0]);
     }
     
-    int c_ = (int)(c2 * e); // hidden channels
+    int c_ = (int)(c2 * e); 
     
-    // cv1: RepConv(c1, c_, 3, 1, 1) - RepConv with k=3, s=1, p=1
+    
     tensor cv1_out = RepConv(m, x, name + ".cv1", c1, c_, 3, 1, 1, 1, 1, true, false, false, debug);
     
-    // cv2: Conv(c_, c2, 3, 1) - Regular Conv  
+    
     tensor cv2_out = Conv(m, cv1_out, name + ".cv2", c_, c2, 3, 1, -1, true, debug);
     
-    // Add shortcut if applicable (same as original Bottleneck)
+    
     if (shortcut && c1 == c2) {
         tensor result = ggml_add(m, x, cv2_out);
         if (debug) {
@@ -462,7 +415,7 @@ tensor RepBottleneck(
     
     return cv2_out;
 }
-// C3: CSP Bottleneck with 3 convolutions
+
 tensor C3(
     model_ref m,
     tensor x,
@@ -479,25 +432,25 @@ tensor C3(
             "C3 %s: In shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3], (int)x->ne[2],
             (int)x->ne[1], (int)x->ne[0]);
     }
-    int c_ = (int)(c2 * e); // hidden channels
+    int c_ = (int)(c2 * e); 
     
-    // cv1: 1x1 conv (c1 -> c_)
+    
     tensor cv1_out = Conv(m, x, name + ".cv1", c1, c_, 1, 1, -1, true);
 
-    // cv2: 1x1 conv (c1 -> c_)
+    
     tensor cv2_out = Conv(m, x, name + ".cv2", c1, c_, 1, 1, -1, true);
 
-    // Process cv1_out through n Bottleneck blocks
+    
     tensor m_out = cv1_out;
     for (int i = 0; i < n; ++i) {
         std::string bottleneck_name = name + ".m." + std::to_string(i);
         m_out = Bottleneck(m, m_out, bottleneck_name, c_, c_, shortcut, g, 1.0);
     }
 
-    // Concatenate m_out and cv2_out (2 * c_ channels)
-    tensor concat = ggml_concat(m, m_out, cv2_out, 0); // Channel dimension concat
-    concat = ggml_cont(m, concat); // Ensure contiguous memory
-    // cv3: 1x1 conv (2*c_ -> c2)
+    
+    tensor concat = ggml_concat(m, m_out, cv2_out, 0); 
+    concat = ggml_cont(m, concat); 
+    
     tensor output = Conv(m, concat, name + ".cv3", 2 * c_, c2, 1, 1, -1, true);
     
     if (debug) {
@@ -508,7 +461,7 @@ tensor C3(
     return output;
 }
 
-// RepCSP: Repeatable Cross Stage Partial Network (inherits from C3 behavior)
+
 tensor RepCSP(
     model_ref m,
     tensor x,
@@ -526,25 +479,23 @@ tensor RepCSP(
             (int)x->ne[1], (int)x->ne[0]);
     }
     
-    int c_ = (int)(c2 * e); // hidden channels
+    int c_ = (int)(c2 * e); 
     
-    // cv1: 1x1 conv (c1 -> c_)
+    
     tensor cv1_out = Conv(m, x, name + ".cv1", c1, c_, 1, 1, -1, true);
-
-    // cv2: 1x1 conv (c1 -> c_)
     tensor cv2_out = Conv(m, x, name + ".cv2", c1, c_, 1, 1, -1, true);
 
-    // Process cv1_out through n RepBottleneck blocks (key difference from C3)
+    
     tensor m_out = cv1_out;
     for (int i = 0; i < n; ++i) {
         std::string bottleneck_name = name + ".m." + std::to_string(i);
         m_out = RepBottleneck(m, m_out, bottleneck_name, c_, c_, shortcut, g, 3, 1.0);
     }
 
-    // Concatenate m_out and cv2_out (2 * c_ channels)
-    tensor concat = ggml_concat(m, m_out, cv2_out, 0); // Channel dimension concat
-    concat = ggml_cont(m, concat); // Ensure contiguous memory
-    // cv3: 1x1 conv (2*c_ -> c2)
+    
+    tensor concat = ggml_concat(m, m_out, cv2_out, 0); 
+    concat = ggml_cont(m, concat); 
+    
     tensor output = Conv(m, concat, name + ".cv3", 2 * c_, c2, 1, 1, -1, true);
     
     if (debug) {
@@ -554,9 +505,9 @@ tensor RepCSP(
     }
     return output;
 }
-// RepNCSPELAN4: RepNCSP + ELAN structure
-// Python signature: RepNCSPELAN4(c1, c2, c3, c4, n) where c1=input_ch, c2=output_ch,
-// c3=hidden_ch, c4=branch_ch, n=num_blocks
+
+
+
 tensor RepNCSPELAN4(
     model_ref m, tensor x, std::string const& name, int c1, int c2, int c3, int c4, int n, bool debug) {
     
@@ -567,19 +518,17 @@ tensor RepNCSPELAN4(
     }
     int c = c3 / 2;
     printf("Name: %s, c1=%d, c2=%d, c3=%d, c4=%d, n=%d\n", name.c_str(), c1, c2, c3, c4, n);
-    // cv1: 1x1 conv (c1 -> c3), stride=1, pad=0
+    
     tensor cv1_out = Conv(m, x, name + ".cv1", c1, c3, /*k=*/1, /*stride=*/1, /*pad=*/0, /*bias=*/true);
 
-    // 채널을 반으로 분할: y1 = [0:c_half), y2_input = [c_half:c3)
+    
     tensor cv1_out_h0 = slice(m, cv1_out,
                       /*C*/ slice_t(0,       c),
                       /*W*/ slice_t(), /*H*/ slice_t(), /*N*/ slice_t());
     tensor cv1_out_h1 = slice(m, cv1_out,
                             /*C*/ slice_t(c, c3),
                             /*W*/ slice_t(), /*H*/ slice_t(), /*N*/ slice_t());
-    
 
-    // Conv가 비연속 view를 받지 못할 수 있으니 안전하게 연속화
     if (!ggml_is_contiguous(cv1_out_h0)) 
         cv1_out_h0 = ggml_cont(m, cv1_out_h0);
     if (!ggml_is_contiguous(cv1_out_h1)) 
@@ -590,25 +539,18 @@ tensor RepNCSPELAN4(
         return Conv(m, y2, name + ".1", c_out, c_out, 3, 1, 1, true);
     };
     
-    // y2 = RepCSP(m, y2, name + ".cv3.0", c4, c4, n);
-    // tensor y3 = Conv(m, y2, name + ".cv3.1", c4, c4, 3, 1, 1, true);
-    // cv2: RepCSP(c3//2 -> c4) + Conv(c4 -> c4)
+    
     tensor cv2 = rep_conv(m, cv1_out_h1, name + ".cv2", c3 / 2, c4, n);
-    // cv3: RepCSP(c4 -> c4) + Conv(c4 -> c4)
     tensor cv3 = rep_conv(m, cv2, name + ".cv3", c4, c4, n);
     
-    // Use dimension 0 for channel concat in CWHN
-    // tensor cat = ggml_concat(m, y1, y2_input, 0);
-    // cat = ggml_concat(m, cat, y2, 0);
-    // cat = ggml_concat(m, cat, y3, 0);
     tensor cat = concat(m, {cv1_out_h0, cv1_out_h1, cv2, cv3}, 0);
     if (!ggml_is_contiguous(cat))
     {
         printf("Making concatenated tensor contiguous for RepNCSPELAN4 %s\n", name.c_str());
-        cat = ggml_cont(m, cat); // Ensure contiguous memory
+        cat = ggml_cont(m, cat); 
     }
     
-    // cv4: 1x1 conv (c + 2*c4 -> c2)
+    
     tensor output = Conv(m, cat, name + ".cv4", c3 + (2 * c4), c2, 1, 1, -1, true);
     if (debug) {
         printf(
@@ -619,27 +561,27 @@ tensor RepNCSPELAN4(
     return output;
 }
 
-// SPPELAN: Spatial Pyramid Pooling - ELAN
-// Python signature: SPPELAN(c1, c2, c3) where c1=input_ch, c2=output_ch, c3=hidden_ch
+
+
 tensor SPPELAN(model_ref m, tensor x, std::string const& name, int c1, int c2, int c3, int k, bool debug) {
     if (debug) {
         printf(
             "SPPELAN %s: x shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3],
             (int)x->ne[2], (int)x->ne[1], (int)x->ne[0]);
     }
-    // cv1: 1x1 conv
+    
     tensor cv1 = Conv(m, x, name + ".cv1", c1, c3, 1, 1, -1, true);
-    // 디버깅: cv1 shape 확인
+    
     if (debug) {
         printf("cv1: [%ld, %ld, %ld, %ld]\n", 
                cv1->ne[0], cv1->ne[1], cv1->ne[2], cv1->ne[3]);
     }
     
     int pad = k / 2;
-    // x = contiguous_2d_to_whcn(m, x);
-    // tensor cv2 = ggml_pool_2d(m, cv1, GGML_OP_POOL_MAX, k, k, 1, 1, pad, pad);
     
-    // cv2 = whcn_to_contiguous_2d(m, cv2);
+    
+    
+    
     auto max_pool = [=](model_ref m, tensor x) {
         x = contiguous_2d_to_whcn(m, x);
         x = ggml_pool_2d(m, x, GGML_OP_POOL_MAX, k, k, 1, 1, pad, pad);
@@ -651,186 +593,169 @@ tensor SPPELAN(model_ref m, tensor x, std::string const& name, int c1, int c2, i
     tensor cv4 = max_pool(m, cv3);
     
 
-    // Ensure all tensors are contiguous before concatenation
-    // tensor tensors[4] = { cv1_out, cv2, cv3, cv4 };
-    tensor cv5 = concat(m, {cv1, cv2, cv3, cv4}, 0); // Channel dimension concat in CWHN
-    cv5 = ggml_cont(m, cv5); // Ensure contiguous memory
+    
+    
+    tensor cv5 = concat(m, {cv1, cv2, cv3, cv4}, 0); 
+    cv5 = ggml_cont(m, cv5); 
 
     tensor output = Conv(m, cv5, name + ".cv5", 4*c3, c2, 1, 1, -1, true);
-    // if (debug){
-    //     printf(
-    //         "SPPELAN %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)output->ne[3],
-    //         (int)output->ne[2], (int)output->ne[1], (int)output->ne[0]);
-    // }
+    
+    
+    
+    
+    
     
     return output;
 }
 
-// Upsample: Nearest neighbor upsampling
+
 tensor Upsample(model_ref m, tensor x, int scale_factor, bool debug) {
-    // NHWC to WHNC
+    
     x = permute_cwhn_to_whcn(m, x);
     x = ggml_upscale(m, x, scale_factor, GGML_SCALE_MODE_NEAREST);
     x = permute_whcn_to_cwhn(m, x);
     x = ggml_cont(m, x);
-    return  x; // Ensure contiguous memory
+    return  x; 
 }
-// Concatenate tensors along channel dimension
+
 tensor Concat(model_ref m, tensor a, tensor b, int axis, bool debug) {
-    // In WHCN: channels are at ne[2]
-    // In CWHN: channels are at ne[0]
+    
+    
     int dim = (m.flags & model_build_flag::cwhn) ? 0 : 2;
     tensor output = ggml_concat(m, a, b, dim);
-    // output = ggml_permute(m, output, 2, 1, 0, 3); // NHWC -> WHNC
-    output = ggml_cont(m, output); // Ensure contiguous memory
+    
+    output = ggml_cont(m, output); 
     return output;
 }
 
-// YOLOv9t backbone implementation (matching Python structure)
-// std::vector<tensor> yolov9t_backbone(model_ref m, tensor x) {
+
+
 std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
     std::map<int, tensor> features;
-    // Layer 0: Conv(3, 16, 3, 2) - P1/2
+    
     tensor x0 = Conv(m, x, "model.0", 3, 16, 3, 2, -1, true, false);
     features[0] = x0;
     ggml_set_output(x0);
 
-    // Layer 1: Conv(16, 32, 3, 2) - P2/4
+    
     tensor x1 = Conv(m, x0, "model.1", 16, 32, 3, 2, -1, true, false);
     features[1] = x1;
     ggml_set_output(x1);
     
-    // Layer 2: ELAN1(32, 32, 32, 16)
+    
     tensor x2 = ELAN1(m, x1, "model.2", 32, 32, 32, 16);
     ggml_set_output(x2);
     features[2] = x2;
     
-    // Layer 3: AConv(32, 64) - P3/8
+    
     tensor x3 = AConv(m, x2, "model.3", 32, 64);
     ggml_set_output(x3);
     features[3] = x3;
 
-    // Layer 4: RepNCSPELAN4(64, 64, 64, 32, 3)
+    
     tensor x4 = RepNCSPELAN4(m, x3, "model.4", 64, 64, 64, 32, 3, false);
     features[4] = x4;
     ggml_set_output(x4);
     
-    // Layer 5: AConv(64, 96) - P4/16
+    
     tensor x5 = AConv(m, x4, "model.5", 64, 96);
     features[5] = x5;
     ggml_set_output(x5);
     
-    // Layer 6: RepNCSPELAN4(96, 96, 96, 48, 3)
+    
     tensor x6 = RepNCSPELAN4(m, x5, "model.6", 96, 96, 96, 48, 3);
     features[6] = x6;
     ggml_set_output(x6);
 
-    // Layer 7: AConv(96, 128) - P5/32
+    
     tensor x7 = AConv(m, x6, "model.7", 96, 128);
     features[7] = x7;
     ggml_set_output(x7);
 
-    // Layer 8: RepNCSPELAN4(128, 128, 128, 64, 3)
+    
     tensor x8 = RepNCSPELAN4(m, x7, "model.8", 128, 128, 128, 64, 3);
     features[8] = x8;
     ggml_set_output(x8);
 
-    // Layer 9: SPPELAN(128, 128, 64)
+    
     tensor x9 = SPPELAN(m, x8, "model.9", 128, 128, 64, 5, false);
     features[9] = x9;
     ggml_set_output(x9);
 
-    // Layer 10: Upsample(None, 2, 'nearest')
+    
     tensor x10 = Upsample(m, x9, 2);
     features[10] = x10;
     ggml_set_output(x10);
 
-    // printf("After Upsample layer 10: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-    //        (int)x10->ne[0], (int)x10->ne[1], (int)x10->ne[2], (int)x10->ne[3]);
-    // printf("Feature map from layer 6 (P4): ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-    //        (int)features[6]->ne[0], (int)features[6]->ne[1], (int)features[6]->ne[2], (int)features[6]->ne[3]);
-    // Layer 11: Concat(1) - with P4 (layer 6)
+    
+    
+    
+    
+    
     tensor x11 = Concat(m, x10, features[6], 2);
     features[11] = x11;
     ggml_set_output(x11);
 
-    // printf("After Concat layer 11: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n",
-    //        (int)x11->ne[0], (int)x11->ne[1], (int)x11->ne[2], (int)x11->ne[3]);
-    // Layer 12: RepNCSPELAN4(224, 96, 96, 48, 3)
+    
+    
+    
     tensor x12 = RepNCSPELAN4(m, x11, "model.12", 224, 96, 96, 48, 3, false);
     features[12] = x12;
     ggml_set_output(x12);
 
-    // Layer 13: Upsample(None, 2, 'nearest')
+    
     tensor x13 = Upsample(m, x12, 2);
     features[13] = x13;
     ggml_set_output(x13);
 
-    // Layer 14: Concat(1) - with P3 (layer 4)
+    
     tensor x14 = Concat(m, x13, features[4], 2);
     features[14] = x14;
     ggml_set_output(x14);
 
-    // Layer 15: RepNCSPELAN4(160, 64, 64, 32, 3) - N3 output
+    
     tensor x15 = RepNCSPELAN4(m, x14, "model.15", 160, 64, 64, 32, 3);
     features[15] = x15;
     ggml_set_output(x15);
 
-    // Layer 16: AConv(64, 48)
+    
     tensor x16 = AConv(m, x15, "model.16", 64, 48);
     features[16] = x16;
     ggml_set_output(x16);
 
-    // Layer 17: Concat(1) - with P4 (layer 12)
+    
     tensor x17 = Concat(m, x16, features[12]);
     features[17] = x17;
     ggml_set_output(x17);
 
-    // Layer 18: RepNCSPELAN4(144, 96, 96, 48, 3) - N4 output
+    
     tensor x18 = RepNCSPELAN4(m, x17, "model.18", 144, 96, 96, 48, 3);
     features[18] = x18;
     ggml_set_output(x18);
 
-    // Layer 19: AConv(96, 64)
+    
     tensor x19 = AConv(m, x18, "model.19", 96, 64);
     features[19] = x19;
     ggml_set_output(x19);
 
-    // Layer 20: Concat(1) - with P5 (layer 9)
+    
     tensor x20 = Concat(m, x19, features[9]);
     features[20] = x20;
     ggml_set_output(x20);
 
-    // Layer 21: RepNCSPELAN4(192, 128, 128, 64, 3) - N5 output
+    
     tensor x21 = RepNCSPELAN4(m, x20, "model.21", 192, 128, 128, 64, 3);
     features[21] = x21;
     ggml_set_output(x21);
     
-    // Return detection outputs: N3(x15), N4(x18), N5(x21)
-    // return {x15, x18, x21};
+    
+    
     return features;
 }
-/*
-
-*/
 
 
-// PyTorch 코드를 참고해서 GGML로 변환한 dist2bbox 구현
-// PyTorch 코드:
-// def dist2bbox(distance:Tensor, anchor_points:Tensor, xywh:bool=True, dim:int=-1) -> Tensor:
-//     """Transform distance(ltrb) to box(xywh or xyxy)."""
-//     lt, rb = torch.split(distance, 2, dim)
-//     x1y1 = anchor_points - lt
-//     x2y2 = anchor_points + rb
-//     if xywh:
-//         c_xy = (x1y1 + x2y2) / 2
-//         wh = x2y2 - x1y1
-//         return torch.concatenate((c_xy, wh), dim)  # xywh bbox
-//     return torch.concatenate((x1y1, x2y2), dim)  # xyxy bbox
-
-// tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, bool xywh/*=true*/) {
 tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, tensor stride_tensor, bool xywh) {
-    // distance: [4, N, ...], anchor_points: [2, N, ...]
+    
     printf("distance shape before permute: [%ld,%ld,%ld,%ld]\n",
         distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
     
@@ -842,32 +767,10 @@ tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, tensor stri
     GGML_ASSERT(distance->ne[0] == 4);
     GGML_ASSERT(anchor_points->ne[0] == 2);
 
-    // lt, rb = torch.split(distance, 2, dim=0)
-    // lt = distance[0:2, ...], rb = distance[2:4, ...]
-    // tensor lt = slice(m, distance, slice_t{0, 2}, slice_t{}, slice_t{}, slice_t{});
-    // tensor rb = slice(m, distance, slice_t{2, 4}, slice_t{}, slice_t{}, slice_t{});
-    // // x1y1 = anchor_points - lt
-    // tensor x1y1 = ggml_sub(m, anchor_points, lt);
-
-    // // x2y2 = anchor_points + rb
-    // tensor x2y2 = ggml_add(m, anchor_points, rb);
-
-    // if (xywh) {
-    //     // c_xy = (x1y1 + x2y2) / 2
-    //     tensor c_xy = ggml_scale(m, ggml_add(m, x1y1, x2y2), 0.5f);
-    //     // wh = x2y2 - x1y1
-    //     tensor wh = ggml_sub(m, x2y2, x1y1);
-    //     // return torch.concatenate((c_xy, wh), dim=0)
-    //     return ggml_concat(m, c_xy, wh, 0);
-    // } else {
-    //     // return torch.concatenate((x1y1, x2y2), dim=0)
-    //     return ggml_concat(m, x1y1, x2y2, 0);
-    // }
-    // lt, rb = torch.split(distance, 2, dim=0)
     tensor lt = slice(m, distance, slice_t{0, 2}, slice_t{}, slice_t{}, slice_t{});
     tensor rb = slice(m, distance, slice_t{2, 4}, slice_t{}, slice_t{}, slice_t{});
 
-    // x1y1 = anchor_points - lt * stride
+    
     tensor x1y1 = ggml_sub(m, anchor_points, lt);
     tensor x2y2 = ggml_add(m, anchor_points, rb);
 
@@ -878,33 +781,20 @@ tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, tensor stri
     } else {
         return ggml_concat(m, x1y1, x2y2, 0);
     }
-
     
 }
 
-
-
-
-// DFL (Distribution Focal Loss) layer implementation
 tensor dfl_forward(model_ref m, tensor proj_tensor, tensor x, int reg_max, bool debug) {
-    // Implements Distribution Focal Loss decoding used in the Python DFL layer.
-    // Python behaviour summary:
-    //   b,c,a = x.shape  # b=batch, c=4*reg_max, a=num_anchors
-    //   x = x.view(b, 4, reg_max, a).transpose(2,1) -> (b, reg_max, 4, a)
-    //   x = softmax(x, dim=1)  # softmax over reg_max
-    //   out = conv1x1(proj)(x)  # projection over reg_max -> produces (b,1,4,a)
-    //   return out.view(b,4,a)
-    // In GGML we operate on tensors in CWHN layout. Expected input `x` layout:
-    //   x: [4*reg_max, num_anchors, 1, batch]
+    
     if (debug) {
         printf("dfl_forward: x shape: [%ld,%ld,%ld,%ld] reg_max=%d\n",
                x->ne[0], x->ne[1], x->ne[2], x->ne[3], reg_max);
     }
 
-    // Ensure contiguous
+    
     if (!ggml_is_contiguous(x)) x = ggml_cont(m, x);
 
-    // Compute total elements and infer anchors and batch so reshape matches
+    
     int64_t e0 = x->ne[0];
     int64_t e1 = x->ne[1];
     int64_t e2 = x->ne[2];
@@ -920,58 +810,35 @@ tensor dfl_forward(model_ref m, tensor proj_tensor, tensor x, int reg_max, bool 
     }
     int64_t anchors = total_elements / expected_per_anchor;
 
-    // Reshape x -> [reg_max, 4, anchors, batch]
     tensor reshaped = ggml_reshape_4d(m, x, reg_max, 4, anchors, batch);
 
-    // Softmax along reg_max dimension (first dimension)
     tensor soft = ggml_soft_max(m, reshaped);
 
-    // Prepare projection tensor: proj_tensor may be either a 1D tensor of length reg_max
-    // or a weight shaped (1, reg_max, 1, 1). Reshape it to [reg_max,1,1,1]
     if (!ggml_is_contiguous(proj_tensor)) proj_tensor = ggml_cont(m, proj_tensor);
     tensor proj = ggml_reshape_4d(m, proj_tensor, reg_max, 1, 1, 1);
 
-    // Broadcast-multiply soft * proj -> shape [reg_max,4,anchors,b]
     tensor weighted = ggml_mul(m, soft, proj);
-
-    
-    // {            
-    //     tensor bias_t = m.with_prefix(tensor_name("")).find("detect.cv3.2.2.bias");
-    //     if (bias_t) {
-    //         bias_t = ggml_reshape_4d(m, bias_t, bias_t->ne[0], 1, 1, 1);
-    //         weighted = ggml_add(m.graph_context, weighted, bias_t);
-    //         printf("[DBG] added bias to %s\n", "detect.cv3.2.2.bias");
-    //     } else {
-    //         printf("[WARN] no bias found for %s\n", "detect.cv3.2.2.bias");
-    //     }
-    // }
-
-    // Sum along reg_max (first) dimension -> result shape [4, anchors, batch, 1?]
     tensor summed = ggml_sum_rows(m, weighted);
-    // Ensure contiguous and return
+    
     if (!ggml_is_contiguous(summed)) summed = ggml_cont(m, summed);
     return summed;
 }
 
-//(m, out.raw_outputs, ch, reg_max, nc);
 DetectOutput inference(model_ref m, 
-                DetectOutput out, // List of feature maps from different detection layers.
+                DetectOutput out, 
                 std::vector<int> ch, 
                 int reg_max, 
                 int nc) {
 
     std::vector<tensor> reshaped_outputs;
-    // Concat along anchor dimension (dim 1)
-    tensor x_cat = concat(m, out.features, 1); // [144, 8400, 1]
+    
+    tensor x_cat = concat(m, out.features, 1); 
     printf("x_cat shape: [%ld,%ld,%ld, %ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
 
-    // anchors, strides shape is torch.Size([2, 8400]) torch.Size([1, 8400])
+    
     int64_t total_channels = x_cat->ne[0];
     int64_t total_anchors = x_cat->ne[1];
-    
-    // printf("After concat: channels=%ld, anchors=%ld\n", total_channels, total_anchors);
-    // Done!
-    // === Generate anchors inline ===
+
     std::vector<float> strides_vec;
     for (size_t i = 0; i < out.features.size(); ++i) {
         strides_vec.push_back(8.0f * std::pow(2.0f, (float)i));
@@ -980,7 +847,7 @@ DetectOutput inference(model_ref m,
     std::vector<float> stride_host;
     auto [anchor_points, stride_tensor] = make_anchors(m, out, anchor_host, stride_host, strides_vec, 0.5f);
 
-    // Split into box and cls
+    
     tensor box = ggml_view_4d(m, x_cat,
         reg_max * 4, total_anchors, 1, 1,
         x_cat->nb[1], x_cat->nb[2], x_cat->nb[3],
@@ -996,12 +863,12 @@ DetectOutput inference(model_ref m,
     cls = ggml_cont(m, cls);
 
 
-    tensor cls_logits = ggml_dup(m, cls); // 복사본 확보
+    tensor cls_logits = ggml_dup(m, cls); 
     ggml_set_output(cls_logits);
     out.debug_cls_logits = cls_logits;
 
 
-    // Prepare DFL projection tensor and host data
+    
     tensor proj = ggml_new_tensor_1d(m.graph_context, GGML_TYPE_F32, reg_max);
     ggml_set_name(proj, "dfl_proj");
     out.dfl_proj = proj;
@@ -1009,23 +876,23 @@ DetectOutput inference(model_ref m,
     for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
     out.reg_max = reg_max;
     printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
-
-    // Apply DFL (pass projection tensor `proj`)
+    
+    
     tensor dfl_output = dfl_forward(m, proj, box, reg_max, false);
     printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
-    // Decode bounding boxes
-    // tensor dbox = dist2bbox(m, dfl_output, anchor_points, false);
+    
+    
     tensor dbox = dist2bbox(m, dfl_output, anchor_points, stride_tensor, false);
 
     printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
-    // Multiply by strides
+    
     tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
 
     dbox = ggml_mul(m, dbox, strides_bc);
 
     printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
 
-    // Apply sigmoid to classes
+    
     cls = ggml_sigmoid(m, cls);
     ggml_set_name(cls, "cls_prob");
     printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
@@ -1037,19 +904,15 @@ DetectOutput inference(model_ref m,
     out.strides_points = std::move(stride_tensor);
     out.anchor_host_data = std::move(anchor_host);
     out.stride_host_data = std::move(stride_host);
-
     return out;
 }
-
-
-
 
 DetectOutput detect_forward(model_ref m, 
                             std::vector<tensor> features, 
                             std::vector<int> ch, 
                             int nc,
                             bool training) {
-    int reg_max = 16; // DFL bins
+    int reg_max = 16; 
     int c2 = std::max({16, ch[0] / 4, reg_max * 4});
     int c3 = std::max(ch[0], std::min(nc, 100));
     DetectOutput out;
@@ -1058,49 +921,33 @@ DetectOutput detect_forward(model_ref m,
     std::string cls_base = std::string("detect.cv3");
 
     for (size_t i = 0; i < features.size(); ++i) {
-        // printf("features[%d] shape: [%d,%d,%d,%d]\n", (int)i, (int)features[i]->ne[0], (int)features[i]->ne[1], (int)features[i]->ne[2], (int)features[i]->ne[3]);
         
-        // std::string idx_str = std::to_string(i);
         tensor_name old_prefix_i = m.prefix;
-        // Regression head: two convs, second outputs 4*reg_max channels
         tensor r0 = Conv(m, features[i], reg_base + "."+std::to_string(i)+".0.conv", ch[i], c2, 3, 1, -1, true, false);
-        
         tensor r1 = Conv(m, r0          ,reg_base + "."+std::to_string(i)+".1.conv", c2, c2, 3, 1, -1, true, false);
         
-        // Final regression conv: outputs 4*reg_max channels
-        // Final regression conv: nn.Conv2d (NO .conv suffix)
         m.prefix = tensor_name((reg_base + "."+std::to_string(i)+".2").c_str());
         tensor r2 = conv_2d(m, r1, 1, 0, 1);
 
-        // printf("r2 shape: [%d,%d,%d,%d]\n", (int)r2->ne[0], (int)r2->ne[1], (int)r2->ne[2], (int)r2->ne[3]);
         if (!ggml_is_contiguous(r2)) r2 = ggml_cont(m, r2);
         
-        // Classification head: two convs, second outputs nc channels
-        // m.prefix = old_prefix_i;
         tensor c0 = Conv(m, features[i], cls_base + "."+std::to_string(i)+".0.conv", ch[i], c3, 3, 1, -1, true, false);
         tensor c1 = Conv(m, c0,          cls_base + "."+std::to_string(i)+".1.conv", c3, c3, 3, 1, -1, true, false);
-        // Final classification conv: nn.Conv2d (NO .conv suffix)
         
         m.prefix = tensor_name((cls_base + "." + std::to_string(i) + ".2").c_str());
         tensor c2 = conv_2d(m, c1, 1, 0, 1);
 
-        // printf("c2 shape: [%d,%d,%d,%d]\n", (int)c2->ne[0], (int)c2->ne[1], (int)c2->ne[2], (int)c2->ne[3]);
         if (!ggml_is_contiguous(c2)) c2 = ggml_cont(m, c2);
         
-        
-        // Combine along channel dim and flatten spatial dims to anchors
         tensor combined = Concat(m, r2, c2, 0);
-        // xi.view(shape[0], self.no, -1)
+        
         tensor reshaped_combined = ggml_reshape_2d(m, combined, combined->ne[0], combined->ne[1]*combined->ne[2]); 
-        //reshaped to [144, H, W, N] -> [144, H*W, N] (144, 8400, 1)
+        
 
         combined = ggml_cont(m, combined);
         reshaped_combined = ggml_cont(m, reshaped_combined);
         out.raw_outputs.push_back(std::move(combined));
         out.features.push_back(std::move(reshaped_combined));
-        // torch.Size([1, 144, 80, 80])
-        // torch.Size([1, 144, 40, 40])
-        // torch.Size([1, 144, 20, 20])
         
         m.prefix = old_prefix_i;
     }
@@ -1110,35 +957,31 @@ DetectOutput detect_forward(model_ref m,
         out.predictions_bbox = nullptr;
         return out;
     }
-    // Inference function
+    
     DetectOutput detect = inference(m, out, ch, reg_max, nc);
     
     return detect;
 }
 
-// Main YOLOv9t forward pass with complete Detect head
+
 DetectOutput yolov9t_forward(model_ref m, tensor x) {
     
-    // Run backbone + neck
     std::map<int, tensor> features = yolov9t_backbone(m, x);
     
-    // features = [N3(64 channels), N4(96 channels), N5(128 channels)]   
     printf("features size: [%d]\n", (int)features.size());
     
-    // channels for N3, N4, N5
     std::vector<int> channels = {64, 96, 128};
-    // std::string base_name = std::to_string(i);
-    // {x15, x18, x21};
+    
     std::vector<tensor> features_vector = {features[15], features[18], features[21]};
     DetectOutput d = detect_forward(m, features_vector, channels, 80, false);
     
-    d.features_map = features; // expose backbone/neck features for dumping
+    d.features_map = features; 
     printf("detect_forward complete\n");
     
     return d;
 }
 
-// COCO class names
+
 std::vector<std::string> const& get_coco_class_names() {
     static std::vector<std::string> const class_names = {
         "person",        "bicycle",      "car",
@@ -1170,118 +1013,63 @@ std::vector<std::string> const& get_coco_class_names() {
         "hair drier",    "toothbrush"};
     return class_names;
 }
-/*
 
-def make_anchors(feats:Tensor, strides:Tensor, grid_cell_offset:float=0.5) -> Tuple[Tensor, Tensor]:
-    """Generate anchors from features."""
-    anchor_points, stride_tensor = [], []
-    assert feats is not None
-    dtype, device = feats[0].dtype, feats[0].device
-    for i, stride in enumerate(strides):
-        _, _, h, w = feats[i].shape
-        sx = torch.arange(end=w, device=device, dtype=dtype) + grid_cell_offset  # shift x
-        sy = torch.arange(end=h, device=device, dtype=dtype) + grid_cell_offset  # shift y
-        sy, sx = torch.meshgrid(sy, sx, indexing='ij')
-        anchor_points.append(torch.stack((sx, sy), -1).reshape(-1, 2))
-        stride_tensor.append(torch.full((h * w, 1), fill_value=stride, dtype=dtype, device=device))
-    return torch.concatenate(anchor_points), torch.concatenate(stride_tensor)
-
-*/
-
-// struct anchor_result {
-//     tensor anchor_points;  // [total_anchors, 2]
-//     tensor stride_tensor;  // [total_anchors, 1]
-// };
-
-void make_anchors(
+std::pair<tensor, tensor> make_anchors(
     model_ref m,
-    std::span<tensor> feats,
-    anchor_params& anchor_p,
+    DetectOutput const& out,
+    std::vector<float>& anchor_host,
+    std::vector<float>& stride_host,
+    std::vector<float> const& strides,
     float grid_cell_offset) {
-
-    GGML_ASSERT(!feats.empty());
-    std::vector<float> effective_strides;
-    effective_strides.resize(feats.size());
-    for (size_t i = 0; i < feats.size(); ++i) {
-        if (i < anchor_p.strides.size()) {
-            effective_strides[i] = anchor_p.strides[i];
-        } else {
-            effective_strides[i] = 8.0f * std::pow(2.0f, (float)i);
-        }
-    }
-    // Calculate total number of anchors
+    
+    GGML_ASSERT(out.raw_outputs.size() == strides.size());
+    GGML_ASSERT(!out.raw_outputs.empty());
+    
+    
     int64_t total_anchors = 0;
-    for (size_t i = 0; i < feats.size(); ++i) {
-        auto ne = nelements(feats[i]);
-        total_anchors += ne[1] * ne[2]; // w * h
+    for (size_t i = 0; i < out.raw_outputs.size(); ++i) {
+        auto ne = nelements(out.raw_outputs[i]);
+        total_anchors += ne[1] * ne[2]; 
     }
 
-    // CPU에서 먼저 데이터 준비
+
+    
     std::vector<float> anchor_data(2 * total_anchors);
     std::vector<float> stride_data(total_anchors);
     
     int64_t offset = 0;
-    for (size_t i = 0; i < feats.size(); ++i) {
-        int64_t w = feats[i]->ne[1];
-        int64_t h = feats[i]->ne[2];
-
+    for (size_t i = 0; i < strides.size(); ++i) {
+        int64_t w = out.raw_outputs[i]->ne[1];
+        int64_t h = out.raw_outputs[i]->ne[2];
+        
         for (int64_t y = 0; y < h; ++y) {
             for (int64_t x = 0; x < w; ++x) {
                 int64_t idx = offset + y * w + x;
                 anchor_data[idx * 2 + 0] = x + grid_cell_offset;
                 anchor_data[idx * 2 + 1] = y + grid_cell_offset;
-                stride_data[idx] = effective_strides[i];
+                stride_data[idx] = strides[i];
             }
         }
         offset += w * h;
     }
-    anchor_p.anchor_data = std::move(anchor_data);
-    anchor_p.stride_data = std::move(stride_data);
-
-    // graph_context에 tensor 생성 (no_alloc이므로 data는 nullptr)
-    // tensor anchor_points = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 2, total_anchors);
-    // tensor stride_tensor = ggml_new_tensor_2d(m.graph_context, GGML_TYPE_F32, 1, total_anchors);
     
-
     tensor anchor_points = compute_graph_input(
         m, GGML_TYPE_F32, {2, total_anchors, 1, 1}, "anchor_points");
     tensor stride_tensor = compute_graph_input(
         m, GGML_TYPE_F32, {1, total_anchors, 1, 1}, "stride_points");
 
-    
-    // Save host data to upload later after graph allocation
-    // anchor_host = std::move(anchor_data);
     anchor_host = std::move(anchor_data);
 
     stride_host = std::move(stride_data);
     
     printf("anchor_points shape: [%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1]);
     printf("stride_tensor shape: [%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1]);
-
+    
+    return std::make_pair(anchor_points, stride_tensor);
 }
 
-
-/*
-def check_img_size(imgsz, s=32, floor=0):
-    def make_divisible(x, divisor):
-        # Returns nearest x divisible by divisor
-        if isinstance(divisor, torch.Tensor):
-            divisor = int(divisor.max())  # to int
-        return math.ceil(x / divisor) * divisor
-
-    # Verify image size is a multiple of stride s in each dimension
-    if isinstance(imgsz, int):  # integer i.e. img_size=640
-        new_size = max(make_divisible(imgsz, int(s)), floor)
-    else:  # list i.e. img_size=[640, 480]
-        imgsz = list(imgsz)  # convert to list if tuple
-        new_size = [max(make_divisible(x, int(s)), floor) for x in imgsz]
-    if new_size != imgsz:
-        LOGGER.warning(f'WARNING ⚠️ --img-size {imgsz} must be multiple of max stride {s}, updating to {new_size}')
-    return new_size
-*/
-
 int make_divisible(int x, int divisor) {
-    // Returns nearest x divisible by divisor
+    
     if (divisor < 1) {
         return x;
     }
@@ -1295,47 +1083,17 @@ int check_img_size(int imgsz, int s, int floor) {
     return new_size;
 }
 
-// image_data image_add_border(image_data im, int top, int bottom, 
-//                            int left, int right, u8x3 color) {
-//     i32x2 new_extent = {im.extent[0] + top + bottom, 
-//                        im.extent[1] + left + right};
-//     image_data bordered = image_alloc(new_extent, im.format);
-
-//     // 전체 영역을 먼저 테두리 색상으로 채우기
-//     for (int y = 0; y < new_extent[0]; ++y) {
-//         for (int x = 0; x < new_extent[1]; ++x) {
-//             for (int c = 0; c < 3; ++c) {
-//                 bordered.data[(y * new_extent[1] + x) * 3 + c] = color[c];
-//             }
-//         }
-//     }
-
-//     // 원본 이미지를 중앙에 복사
-//     for (int y = 0; y < im.extent[0]; ++y) {
-//         for (int x = 0; x < im.extent[1]; ++x) {
-//             for (int c = 0; c < 3; ++c) {
-//                 int src_idx = (y * im.extent[1] + x) * 3 + c;
-//                 int dst_idx = ((y + top) * new_extent[1] + (x + left)) * 3 + c;
-//                 bordered.data[dst_idx] = im.data[src_idx];
-//             }
-//         }
-//     }
-
-//     return bordered;
-// }
-
 image_data image_add_border(image_data im, int top, int bottom,
                             int left, int right, u8x3 color) {
-    // extent = {W, H}
+    
     int W = im.extent[0];
     int H = im.extent[1];
     int channels = 3;
 
-    // 새 크기 (W,H)
     i32x2 new_extent = { W + left + right, H + top + bottom };
     image_data bordered = image_alloc(new_extent, im.format);
 
-    // 배경 채우기
+    
     for (int y = 0; y < new_extent[1]; ++y) {
         for (int x = 0; x < new_extent[0]; ++x) {
             int idx = (y * new_extent[0] + x) * channels;
@@ -1345,7 +1103,7 @@ image_data image_add_border(image_data im, int top, int bottom,
         }
     }
 
-    // 원본 복사 (좌상단 오프셋 = (left, top))
+    
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
             int src = (y * W + x) * channels;
@@ -1359,8 +1117,6 @@ image_data image_add_border(image_data im, int top, int bottom,
 }
 
 
-
-// RGB 이미지를 직접 처리하는 특화된 버전
 void resize_rgb_bilinear(
     uint8_t* src_data,
     i32x2 src_extent,
@@ -1390,7 +1146,7 @@ void resize_rgb_bilinear(
             double w10 = (1 - wx) * wy;
             double w11 = wx * wy;
             
-            // 3채널 동시 처리
+            
             for (int c = 0; c < 3; ++c) {
                 double value = 
                     src_data[(y0 * src_extent[0] + x0) * 3 + c] * w00 +
@@ -1405,74 +1161,18 @@ void resize_rgb_bilinear(
     }
 }
 
-// 사용 예시
+
 image_data linear_image_resize(image_data im, i32x2 new_shape) {
     image_data resized = image_alloc(new_shape, im.format);
     resize_rgb_bilinear(im.data.get(), im.extent, resized.data.get(), new_shape);
     return resized;
 }
-// image_data letterbox(image_data im, i32x2 new_shape, u8x3 color, 
-//               bool _auto, bool scaleFill, bool scaleup, int stride) {
-//     i32x2 shape = im.extent;  // 현재 이미지의 크기 [height, width]
-//     if (new_shape[0] == 0) {
-//         new_shape = {new_shape[1], new_shape[1]};
-//     }
-//     // int width = img.extent[0];
-//     // int height = img.extent[1];
-//     printf("extent[0]=%d, extent[1]=%d\n", im.extent[0], im.extent[1]);
-
-//     // 스케일 비율 (new / old)
-//     float r = std::min(static_cast<float>(new_shape[0]) / shape[0], static_cast<float>(new_shape[1]) / shape[1]);
-
-//     if (!scaleup) {  // 스케일 업을 하지 않음
-//         r = std::min(r, 1.0f);
-//     }
-
-//     // 패딩 계산
-//     i32x2 new_unpad = {static_cast<int>(round(shape[1] * r)), static_cast<int>(round(shape[0] * r))};
-//     float dw = new_shape[1] - new_unpad[0];
-//     float dh = new_shape[0] - new_unpad[1];
-
-//     if (_auto) {  // 최소 직사각형
-//         dw = std::fmod(dw, stride);
-//         dh = std::fmod(dh, stride);
-//     } else if (scaleFill) {  // 스트레치
-//         dw = 0.0f;
-//         dh = 0.0f;
-//         new_unpad = {new_shape[1], new_shape[0]};
-//     }
-
-//     dw /= 2;  // 패딩을 양쪽으로 나눔
-//     dh /= 2;
-
-    
-//     im = image_scale(im, new_unpad);  // 이미지 크기 조정
-//     // Bilinear interpolation 수행
-//     // im = linear_image_resize(std::move(im), new_unpad);
-    
-
-//     int top = static_cast<int>(round(dh - 0.1f));
-//     int bottom = static_cast<int>(round(dh + 0.1f));
-//     int left = static_cast<int>(round(dw - 0.1f));
-//     int right = static_cast<int>(round(dw + 0.1f));
-//     im = image_add_border(std::move(im), top, bottom, left, right, color);  // 테두리 추가
-
-//     printf("[LB] orig=[%d,%d] -> new=[%d,%d], pad=[l=%d r=%d t=%d b=%d]\n",
-//         shape[0], shape[1], new_shape[0], new_shape[1],
-//         left, right, top, bottom);
-        
-//     return im;
-// }
-
-
-
-
 
 
 LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
                           bool _auto, bool scaleFill, bool scaleup, int stride)
 {
-    i32x2 shape = im.extent;  // [width, height]
+    i32x2 shape = im.extent;  
     int orig_w = shape[0];
     int orig_h = shape[1];
 
@@ -1482,16 +1182,16 @@ LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
     printf("[LB] extent: width=%d, height=%d, target=(%d,%d)\n",
            orig_w, orig_h, new_shape[0], new_shape[1]);
 
-    // ✅ 올바른 비율 계산 (height 우선)
+    
     float r = std::min(
-        (float)new_shape[1] / (float)orig_h,  // height ratio
-        (float)new_shape[0] / (float)orig_w   // width ratio
+        (float)new_shape[1] / (float)orig_h,  
+        (float)new_shape[0] / (float)orig_w   
     );
 
     if (!scaleup)
         r = std::min(r, 1.0f);
 
-    // 새 크기
+    
     int new_unpad_w = std::round(orig_w * r);
     int new_unpad_h = std::round(orig_h * r);
 
@@ -1532,12 +1232,8 @@ LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
 }
 
 
-
-
-
-// 1. xywh -> xyxy box conversion, inplace
 inline void xywh2xyxy(float* boxes, int n) {
-    // inplace conversion. boxes: n x 4 [x,y,w,h]
+    
     for (int i = 0; i < n; ++i) {
         float x = boxes[i * 4 + 0];
         float y = boxes[i * 4 + 1];
@@ -1550,9 +1246,9 @@ inline void xywh2xyxy(float* boxes, int n) {
     }
 }
 
-// IoU(box1, box2) for NMS
+
 inline float box_iou(const float* b1, const float* b2) {
-    // box: x1, y1, x2, y2
+    
     float ix1 = std::max(b1[0], b2[0]);
     float iy1 = std::max(b1[1], b2[1]);
     float ix2 = std::min(b1[2], b2[2]);
@@ -1566,7 +1262,7 @@ inline float box_iou(const float* b1, const float* b2) {
     return union_ > 0.f ? (inter / union_) : 0.f;
 }
 
-// NMS - similar to torchvision.ops.nms (offset by class for agnostic==false!)
+
 std::vector<int> nms(const std::vector<std::array<float, 4>>& boxes, const std::vector<float>& scores, const std::vector<int>& class_ids, float iou_thres, bool agnostic, int max_wh) {
     std::vector<int> order(boxes.size());
     std::iota(order.begin(), order.end(), 0);
@@ -1595,80 +1291,6 @@ std::vector<int> nms(const std::vector<std::array<float, 4>>& boxes, const std::
     return kept;
 }
 
-// PyTorch-like non_max_suppression for YOLOv8/YOLOv9 outputs, closely following PyTorch logic.
-/*
-def non_max_suppression(
-    prediction,
-    conf_thres: float = 0.25,
-    iou_thres: float = 0.45,
-    max_det: int = 300,
-    max_nms: int = 30000,
-    max_wh: int = 7680
-):
-    import torchvision  # scope for faster 'import ultralytics'
-
-    # Checks
-    assert 0 <= conf_thres <= 1, f"Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0"
-    assert 0 <= iou_thres <= 1, f"Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0"
-    if isinstance(prediction, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
-        prediction = prediction[0]  # select only inference output
-    
-    bs = prediction.shape[0]  # batch size (BCN, i.e. 1,84,8400)
-    nc = prediction.shape[1] - 4  # number of classes
-    extra = prediction.shape[1] - nc - 4  # number of extra info
-    mi = 4 + nc  # mask start index
-    xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
-    xinds = torch.stack([torch.arange(len(i), device=prediction.device) for i in xc])[..., None]  # to track idxs
-    
-    # Settings
-    time_limit = 2.0 + 0.05 * bs  # seconds to quit after
-    
-    prediction = prediction.transpose(-1, -2)  # shape(1,84,8400) to shape(1,8400,84)
-    
-    prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # xywh to xyxy
-
-
-    t = time.time()
-    output = [torch.zeros((0, 6 + extra), device=prediction.device)] * bs
-    keepi = [torch.zeros((0, 1), device=prediction.device)] * bs  # to store the kept idxs
-    for xi, (x, xk) in enumerate(zip(prediction, xinds)):  # image index, (preds, preds indices)
-        # Apply constraints
-        # x[((x[:, 2:4] < min_wh) | (x[:, 2:4] > max_wh)).any(1), 4] = 0  # width-height
-        filt = xc[xi]  # confidence
-        x, xk = x[filt], xk[filt]
-        
-        # If none remain process next image
-        if not x.shape[0]:
-            continue
-
-        # Detections matrix nx6 (xyxy, conf, cls)
-        box, cls, mask = x.split((4, nc, extra), 1)
-        
-        conf, j = cls.max(1, keepdim=True)
-        filt = conf.view(-1) > conf_thres
-        x = torch.cat((box, conf, j.float(), mask), 1)[filt]
-        xk = xk[filt]
-
-        # Check shape
-        n = x.shape[0]  # number of boxes
-        if not n:  # no boxes
-            continue
-        if n > max_nms:  # excess boxes
-            filt = x[:, 4].argsort(descending=True)[:max_nms]  # sort by confidence and remove excess boxes
-            x, xk = x[filt], xk[filt]
-        # Batched NMS
-        c = x[:, 5:6] * max_wh  # classes
-        scores = x[:, 4]  # scores
-        boxes = x[:, :4] + c  # boxes (offset by class)
-        i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
-        i = i[:max_det]  # limit detections
-
-        output[xi], keepi[xi] = x[i], xk[i].reshape(-1)
-        if (time.time() - t) > time_limit:
-            break  # time limit exceeded
-
-    return output
-*/
 std::vector<detected_obj> non_max_suppression(
     DetectOutput const& outputs,
     float conf_thres,
@@ -1678,25 +1300,18 @@ std::vector<detected_obj> non_max_suppression(
     int max_wh
 ) {
     if (!outputs.predictions_cls || !outputs.predictions_bbox) {
-        printf("[NMS Debug] ❌ predictions_cls or predictions_bbox is null!\n");
         return {};
     }
     
     if (!(0.0f <= conf_thres && conf_thres <= 1.0f)) throw std::runtime_error("Invalid Confidence threshold");
     if (!(0.0f <= iou_thres && iou_thres <= 1.0f)) throw std::runtime_error("Invalid IoU threshold");
 
-    const int64_t nc = outputs.predictions_cls->ne[0]; // classes
-    const int64_t na = outputs.predictions_cls->ne[1]; // anchors
-
-    printf("[NMS Debug] nc=%ld, na=%ld, conf_thres=%.2f\n", nc, na, conf_thres);
-
-    // fetch
     tensor_data td_cls = transfer_from_backend(outputs.predictions_cls);
     tensor_data td_box = transfer_from_backend(outputs.predictions_bbox);
     const float* cls_ptr = td_cls.as_f32().data();
     const float* box_ptr = td_box.as_f32().data();
-
-    // ✅ Confidence 범위 확인
+    const int64_t nc = outputs.predictions_cls->ne[0]; 
+    const int64_t na = outputs.predictions_cls->ne[1]; 
     float max_conf = -1.0f;
     float min_conf = 2.0f;
     int max_conf_anchor = -1;
@@ -1714,59 +1329,41 @@ std::vector<detected_obj> non_max_suppression(
         }
     }
     
-    printf("[NMS Debug] Confidence range: [%.6f, %.6f]\n", min_conf, max_conf);
-    printf("[NMS Debug] Max conf %.6f at anchor %d, class %d\n", 
-           max_conf, max_conf_anchor, max_conf_class);
-
-    // ✅ 해당 앵커의 박스 좌표 확인
     if (max_conf_anchor >= 0) {
         float x1 = box_ptr[0 + max_conf_anchor*4];
         float y1 = box_ptr[1 + max_conf_anchor*4];
         float x2 = box_ptr[2 + max_conf_anchor*4];
         float y2 = box_ptr[3 + max_conf_anchor*4];
-        printf("[NMS Debug] Best box coords: [%.1f, %.1f, %.1f, %.1f]\n", 
-               x1, y1, x2, y2);
     }
-
     std::vector<std::array<float, 4>> boxes;
     std::vector<float> scores;
     std::vector<int> class_ids;
     boxes.reserve(na);
     scores.reserve(na);
     class_ids.reserve(na);
-
-    // Multi-label 후보 생성
+    
     for (int64_t j = 0; j < na; ++j) {
         float x1 = box_ptr[0 + j*4];
         float y1 = box_ptr[1 + j*4];
         float x2 = box_ptr[2 + j*4];
         float y2 = box_ptr[3 + j*4];
-
         for (int64_t c = 0; c < nc; ++c) {
             float conf = cls_ptr[c + j*nc];
             if (conf < conf_thres) continue;
-
             boxes.push_back({x1, y1, x2, y2});
             scores.push_back(conf);
             class_ids.push_back((int)c);
         }
     }
-
-    printf("[NMS Debug] Candidates after conf filter (%.2f): %zu\n", 
-           conf_thres, boxes.size());
-
     if (boxes.empty()) {
-        printf("[NMS Debug] ❌ No boxes passed confidence threshold!\n");
         return {};
     }
-
     if ((int)boxes.size() > max_nms) {
         std::vector<int> order(boxes.size());
         std::iota(order.begin(), order.end(), 0);
         std::partial_sort(order.begin(), order.begin() + max_nms, order.end(),
                           [&](int a, int b){ return scores[a] > scores[b]; });
         order.resize(max_nms);
-
         std::vector<std::array<float, 4>> b2;
         std::vector<float> s2;
         std::vector<int> c2;
@@ -1780,21 +1377,14 @@ std::vector<detected_obj> non_max_suppression(
         scores.swap(s2);
         class_ids.swap(c2);
     }
-
-    printf("[NMS Debug] Total candidates before filtering: %zu\n", boxes.size());
-    printf("[NMS Debug] conf_thres=%.2f, iou_thres=%.2f\n", conf_thres, iou_thres);
-    // ✅ 추가: 최대 confidence 확인
     if (!scores.empty()) {
         float max_score = *std::max_element(scores.begin(), scores.end());
-        printf("[NMS Debug] Max confidence: %.4f\n", max_score);
     }
-    
     if (boxes.empty()) {
-        printf("[NMS Debug] No boxes passed confidence threshold!\n");
         return {};
     }
     std::vector<int> keep = nms(boxes, scores, class_ids, iou_thres, /*agnostic=*/false, max_wh);
-    printf("[NMS Debug] Boxes after NMS: %zu\n", keep.size());
+    
     if ((int)keep.size() > max_det) keep.resize(max_det);
 
     std::vector<detected_obj> result;
@@ -1810,44 +1400,6 @@ std::vector<detected_obj> non_max_suppression(
     }
     return result;
 }
-
-
-
-
-// Scale boxes 함수도 detected_obj에 맞게 수정
-// void scale_boxes(
-//     std::vector<detected_obj>& detections,
-//     i32x2 model_shape,  // [height, width] of model input
-//     i32x2 img_shape) {   // [height, width] of original image
-    
-//     // Calculate gain and padding (same as letterbox)
-//     float gain = std::min(
-//         (float)model_shape[0] / img_shape[0],
-//         (float)model_shape[1] / img_shape[1]
-//     );
-    
-//     float pad_w = (model_shape[1] - img_shape[1] * gain) / 2.0f;
-//     float pad_h = (model_shape[0] - img_shape[0] * gain) / 2.0f;
-    
-//     for (auto& det : detections) {
-//         // Remove padding
-//         det.x1 = (det.x1 - pad_w) / gain;
-//         det.y1 = (det.y1 - pad_h) / gain;
-//         det.x2 = (det.x2 - pad_w) / gain;
-//         det.y2 = (det.y2 - pad_h) / gain;
-        
-//         // Clip to image boundaries
-//         det.x1 = std::max(0.0f, std::min(det.x1, (float)img_shape[1]));
-//         det.y1 = std::max(0.0f, std::min(det.y1, (float)img_shape[0]));
-//         det.x2 = std::max(0.0f, std::min(det.x2, (float)img_shape[1]));
-//         det.y2 = std::max(0.0f, std::min(det.y2, (float)img_shape[0]));
-
-//     printf("[DBG] scale_boxes: gain=%.4f, pad=(%.1f,%.1f)\n", gain, pad_w, pad_h);
-//     for (auto &det : detections) {
-//         printf(" - before: (%.1f,%.1f,%.1f,%.1f)\n", det.x1, det.y1, det.x2, det.y2);
-//     }
-//     }
-// }
 
 void scale_boxes(
     std::vector<detected_obj>& detections,
@@ -1878,15 +1430,9 @@ void scale_boxes(
     printf("[DBG] scale_boxes: gain=%.4f, pad=(%.1f,%.1f)\n", gain, pad_w, pad_h);
 }
 
-
-
-
-
-
-// Helper: Draw a line on image
 void draw_line(uint8_t* img, int width, int height, int channels,
     int x1, int y1, int x2, int y2, uint8_t r, uint8_t g, uint8_t b, int thickness = 2) {
-// Bresenham's line algorithm
+
 int dx = abs(x2 - x1);
 int dy = abs(y2 - y1);
 int sx = (x1 < x2) ? 1 : -1;
@@ -1894,7 +1440,7 @@ int sy = (y1 < y2) ? 1 : -1;
 int err = dx - dy;
 
 while (true) {
-// Draw thick line by drawing multiple pixels
+
 for (int ty = -thickness/2; ty <= thickness/2; ty++) {
  for (int tx = -thickness/2; tx <= thickness/2; tx++) {
      int px = x1 + tx;
@@ -1921,24 +1467,24 @@ if (e2 < dx) {
 }
 }
 
-// Helper: Draw rectangle
+
 void draw_rectangle(uint8_t* img, int width, int height, int channels,
          int x1, int y1, int x2, int y2,
          uint8_t r, uint8_t g, uint8_t b, int thickness = 2) {
-// Clamp coordinates
+
 x1 = std::max(0, std::min(x1, width - 1));
 y1 = std::max(0, std::min(y1, height - 1));
 x2 = std::max(0, std::min(x2, width - 1));
 y2 = std::max(0, std::min(y2, height - 1));
 
-// Draw four lines
-draw_line(img, width, height, channels, x1, y1, x2, y1, r, g, b, thickness); // Top
-draw_line(img, width, height, channels, x2, y1, x2, y2, r, g, b, thickness); // Right
-draw_line(img, width, height, channels, x2, y2, x1, y2, r, g, b, thickness); // Bottom
-draw_line(img, width, height, channels, x1, y1, x1, y2, r, g, b, thickness); // Left
+
+draw_line(img, width, height, channels, x1, y1, x2, y1, r, g, b, thickness); 
+draw_line(img, width, height, channels, x2, y1, x2, y2, r, g, b, thickness); 
+draw_line(img, width, height, channels, x2, y2, x1, y2, r, g, b, thickness); 
+draw_line(img, width, height, channels, x1, y1, x1, y2, r, g, b, thickness); 
 }
 
-// Helper: Draw filled rectangle (for text background)
+
 void draw_filled_rectangle(uint8_t* img, int width, int height, int channels,
                int x1, int y1, int x2, int y2,
                uint8_t r, uint8_t g, uint8_t b) {
@@ -1957,39 +1503,39 @@ for (int x = x1; x <= x2; x++) {
 }
 }
 
-// Simple 5x7 bitmap font for digits and basic chars
+
 void draw_char(uint8_t* img, int width, int height, int channels,
     int x, int y, char c, uint8_t r, uint8_t g, uint8_t b) {
-// Simple 5x7 font patterns (only digits and %)
+
 static const uint8_t font_5x7[][7] = {
-// '0'
+
 {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E},
-// '1'
+
 {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},
-// '2'
+
 {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},
-// '3'
+
 {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},
-// '4'
+
 {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02},
-// '5'
+
 {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
-// '6'
+
 {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E},
-// '7'
+
 {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},
-// '8'
+
 {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E},
-// '9'
+
 {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},
-// '%'
+
 {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03}
 };
 
 int idx = -1;
 if (c >= '0' && c <= '9') idx = c - '0';
 else if (c == '%') idx = 10;
-else return; // Unknown character
+else return; 
 
 for (int row = 0; row < 7; row++) {
 uint8_t pattern = font_5x7[idx][row];
@@ -2008,26 +1554,26 @@ for (int col = 0; col < 5; col++) {
 }
 }
 
-// Draw text string
+
 void draw_text(uint8_t* img, int width, int height, int channels,
     int x, int y, const char* text,
     uint8_t r, uint8_t g, uint8_t b) {
 int offset = 0;
 while (*text) {
 draw_char(img, width, height, channels, x + offset, y, *text, r, g, b);
-offset += 6; // 5 pixels + 1 space
+offset += 6; 
 text++;
 }
 }
 
-// Get color for class (simple color wheel)
+
 void get_class_color(int class_id, uint8_t& r, uint8_t& g, uint8_t& b) {
-// Generate distinct colors for different classes
-int h = (class_id * 137) % 360; // Golden angle for good distribution
+
+int h = (class_id * 137) % 360; 
 float s = 0.8f;
 float v = 0.95f;
 
-// HSV to RGB
+
 float c = v * s;
 float x = c * (1 - std::fabs(std::fmod(h / 60.0f, 2) - 1));
 float m = v - c;
@@ -2044,37 +1590,37 @@ r = (uint8_t)((r1 + m) * 255);
 g = (uint8_t)((g1 + m) * 255);
 b = (uint8_t)((b1 + m) * 255);
 }
-// Main drawing function - 이미지를 직접 수정하고 반환
+
 void draw_detections(
     image_data& img,
     std::vector<detected_obj> const& detections,
     std::vector<std::string> const& class_names) {
     
-    // Get image properties
+    
     int width = img.extent[0];
     int height = img.extent[1];
     int channels = 3;
     
-    // Get raw pointer to image data
+    
     uint8_t* img_data = nullptr;
-    // bool is_f32 = false;
+    
     
     if (img.format == image_format::rgb_u8 || img.format == image_format::rgba_u8) {
         img_data = img.data.get();
         channels = (img.format == image_format::rgba_u8) ? 4 : 3;
     } else if (img.format == image_format::rgb_f32 || img.format == image_format::rgba_f32) {
-        // F32 format - we'll need to convert after drawing
-        // is_f32 = true;
+        
+        
         channels = (img.format == image_format::rgba_f32) ? 4 : 3;
         
-        // Convert to U8 for drawing
+        
         image_data temp_u8 = image_f32_to_u8(img, 
             channels == 4 ? image_format::rgba_u8 : image_format::rgb_u8);
         
-        // Draw on the U8 image
+        
         img_data = temp_u8.data.get();
         
-        // Draw each detection
+        
         for (auto const& det : detections) {
             int x1 = (int)det.x1;
             int y1 = (int)det.y1;
@@ -2107,7 +1653,7 @@ void draw_detections(
                      x1 + 2, label_y + 2, conf_str, 255, 255, 255);
         }
         
-        // Replace original image with drawn U8 image
+        
         img = std::move(temp_u8);
         return;
     } else {
@@ -2115,7 +1661,7 @@ void draw_detections(
         return;
     }
 
-    // Draw each detection (for U8 format)
+    
     for (auto const& det : detections) {
         int x1 = (int)det.x1;
         int y1 = (int)det.y1;
@@ -2148,7 +1694,7 @@ void draw_detections(
                  x1 + 2, label_y + 2, conf_str, 255, 255, 255);
     }
 }
-} // namespace visp::yolov9t
+} 
 
 namespace visp::yolov9t {
 
@@ -2176,23 +1722,10 @@ image_data yolov9t_process_input2(image_view image, yolov9t_params const& p) {
     return image_u8_to_f32(image, image_format::rgb_f32, p.offset, 1.f / p.scale);
 }
 
-
-// image_data yolov9t_process_input(image_data image, yolov9t_params const& p) {
-//     // 1) letterbox to square (p.input_size)
-//     image_data lb = letterbox(std::move(image), {p.input_size, p.input_size}, u8x3{114,114,114}, true, false, true, yolov9t_params::stride);
-//     // 2) convert to f32 and normalize to [0,1]
-//     image_data result = image_alloc({p.input_size, p.input_size}, image_format::rgb_f32);
-//     image_u8_to_f32(lb, result, f32x4(p.offset), f32x4(p.scale));
-//     return result;
-// }
 LetterboxResult yolov9t_process_input(image_data image, yolov9t_params const& p) {
     printf("[DBG] before letterbox: format=%d (0=rgb_u8, 1=bgr_u8?, 2=rgba_u8, 3=rgb_f32)\n", (int)image.format);
 
-    // 만약 bgr_u8 타입이 정의되어 있지 않다면 이 분기 삭제
-    // if (image.format == image_format::bgr_u8)
-    //     image = image_bgr_to_rgb(std::move(image));
-
-    // 기존: true, false, true, stride
+    
     LetterboxResult lb = letterbox(
         std::move(image),
         {p.input_size, p.input_size},
@@ -2221,10 +1754,6 @@ LetterboxResult yolov9t_process_input(image_data image, yolov9t_params const& p)
     return out;
 }
 
-
-
-
-
 static void write_tensor_txt(tensor t, char const* filename) {
     if (!t) {
         return;
@@ -2234,13 +1763,13 @@ static void write_tensor_txt(tensor t, char const* filename) {
         printf("Failed to open %s for writing\n", filename);
         return;
     }
-    // Header with shape and type
+    
     fprintf(
         f,
         "# %ld,%ld,%ld,%ld\n# %s\n",
         (long)t->ne[0], (long)t->ne[1], (long)t->ne[2], (long)t->ne[3], ggml_type_name(t->type));
 
-    // Fetch data from backend
+    
     tensor_data td = transfer_from_backend(t);
     size_t n = ggml_nelements(t);
 
@@ -2261,7 +1790,7 @@ static void write_tensor_txt(tensor t, char const* filename) {
             fprintf(f, i + 1 == data.size() ? "%d\n" : "%d ", data[i]);
         }
     } else {
-        // Raw bytes as hex fallback
+        
         const unsigned char* bytes = reinterpret_cast<const unsigned char*>(td.data.get());
         size_t nb = ggml_nbytes(t);
         for (size_t i = 0; i < nb; ++i) {
@@ -2275,7 +1804,7 @@ void save_features_to_txt(DetectOutput const& out, char const* base_path, std::v
     if (!base_path) {
         base_path = "features";
     }
-    // Decide which keys to dump
+    
     if (!keys.empty()) {
         for (int k : keys) {
             auto it = out.features_map.find(k);
@@ -2293,7 +1822,7 @@ void save_features_to_txt(DetectOutput const& out, char const* base_path, std::v
     }
 }
 
-} // namespace visp::yolov9t
+} 
 
 namespace visp::yolov9t {
 
@@ -2306,7 +1835,7 @@ void save_input_to_txt(tensor input, char const* filepath) {
     }
     fprintf(f, "# input shape C,H,W,N = %ld,%ld,%ld,%ld\n# type = %s\n",
             (long)input->ne[0], (long)input->ne[1], (long)input->ne[2], (long)input->ne[3], ggml_type_name(input->type));
-    // Ensure data is fetched from backend
+    
     tensor_data td = transfer_from_backend(input);
     if (input->type == GGML_TYPE_F32) {
         auto data = td.as_f32();
@@ -2335,4 +1864,4 @@ void save_input_to_txt(tensor input, char const* filepath) {
     fclose(f);
 }
 
-} // namespace visp::yolov9t
+} 
