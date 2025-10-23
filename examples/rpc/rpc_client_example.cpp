@@ -1,16 +1,9 @@
 #include "ggml.h"
-#include "ggml-cpu.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-rpc.h"
 
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
-
-#ifdef GGML_USE_METAL
-#include "ggml-metal.h"
-#endif
+// no local GPU/CPU headers needed; we use RPC backend
 
 #include <cassert>
 #include <cmath>
@@ -18,7 +11,6 @@
 #include <cstring>
 #include <vector>
 #include <cstdint>
-#include <vector>
 
 static void ggml_log_callback_default(ggml_log_level level, const char * text, void * user_data) {
     (void) level;
@@ -43,30 +35,11 @@ struct simple_model {
 };
 
 // initialize the tensors of the model in this case two matrices 2x2
-void load_model(simple_model & model, float * a, float * b, int rows_A, int cols_A, int rows_B, int cols_B) {
+void load_model(simple_model & model, ggml_backend_t backend, float * a, float * b, int rows_A, int cols_A, int rows_B, int cols_B) {
     ggml_log_set(ggml_log_callback_default, nullptr);
 
-    // initialize the backend
-#ifdef GGML_USE_CUDA
-    fprintf(stderr, "%s: using CUDA backend\n", __func__);
-    model.backend = ggml_backend_cuda_init(0); // init device 0
-    if (!model.backend) {
-        fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
-    }
-#endif
-
-#ifdef GGML_USE_METAL
-    fprintf(stderr, "%s: using Metal backend\n", __func__);
-    model.backend = ggml_backend_metal_init();
-    if (!model.backend) {
-        fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
-    }
-#endif
-
-    // if there aren't GPU Backends fallback to CPU backend
-    if (!model.backend) {
-        model.backend = ggml_backend_cpu_init();
-    }
+    // backend은 main에서 RPC로 생성되어 model.backend에 설정됨
+    model.backend = backend;
 
     int num_tensors = 2;
 
@@ -142,10 +115,14 @@ struct ggml_tensor * compute(const simple_model & model, ggml_gallocr_t allocr) 
 int main(int argc, char ** argv){
     ggml_time_init();
 
-    const char * endpoint = argc > 1 ? argv[1] : "127.0.0.1:50051";
+    const char * endpoint = argc > 1 ? argv[1] : "127.0.0.1:50052";
 
-    // 1) RPC 백엔드 초기화 (device index 0)
-    ggml_backend_t backend = ggml_backend_rpc_init(endpoint, 0);
+    // 1) RPC 백엔드 초기화 (구버전 시그니처)
+    ggml_backend_t backend = ggml_backend_rpc_init(endpoint);
+    if (!backend) {
+        fprintf(stderr, "failed to init RPC backend (%s)\n", endpoint);
+        return 1;
+    }
     // initialize data of matrices to perform matrix multiplication
     const int rows_A = 4, cols_A = 2;
 
@@ -169,7 +146,7 @@ int main(int argc, char ** argv){
 
     simple_model model;
     // 클라이언트 모델은 RPC 백엔드를 사용해 원격 버퍼/실행을 수행
-    load_model(model, matrix_A, matrix_B, rows_A, cols_A, rows_B, cols_B);
+    load_model(model, backend, matrix_A, matrix_B, rows_A, cols_A, rows_B, cols_B);
 
     // calculate the temporaly memory required to compute
     ggml_gallocr_t allocr = NULL;
