@@ -131,64 +131,64 @@ DEF(conv_2d_deform)(model_ref m, span<tensor> input, param_dict const& p) {
 // so the function must match that signature. Create a local anchor_params here
 // and pass it to the C++ implementation.
 DEF(make_anchors_cpp)(model_ref m, span<tensor> input, param_dict const& p) {
-    visp::yolov9t::anchor_params anchor_p;
-    // Expect input: a list of feature tensors (one per scale)
-    // Params:
-    //   strides: comma-separated list of floats, e.g. "8.0, 16.0, 32.0"
-    //   grid_cell_offset: optional float (default 0.5)
-    const char* strides_s = p.get("strides", "");
-    std::vector<float> strides_vec;
-    if (strides_s && strides_s[0] != '\0') {
-        std::string s(strides_s);
-        size_t pos = 0;
-        while (pos < s.size()) {
-            size_t comma = s.find(',', pos);
-            std::string token = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-            try {
-                strides_vec.push_back(std::stof(token));
-            } catch (...) {
-                // ignore parse errors
-            }
-            if (comma == std::string::npos) break;
-            pos = comma + 1;
-        }
-    }
+    // visp::yolov9t::anchor_params anchor_p;
+    // // Expect input: a list of feature tensors (one per scale)
+    // // Params:
+    // //   strides: comma-separated list of floats, e.g. "8.0, 16.0, 32.0"
+    // //   grid_cell_offset: optional float (default 0.5)
+    // const char* strides_s = p.get("strides", "");
+    // std::vector<float> strides_vec;
+    // if (strides_s && strides_s[0] != '\0') {
+    //     std::string s(strides_s);
+    //     size_t pos = 0;
+    //     while (pos < s.size()) {
+    //         size_t comma = s.find(',', pos);
+    //         std::string token = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    //         try {
+    //             strides_vec.push_back(std::stof(token));
+    //         } catch (...) {
+    //             // ignore parse errors
+    //         }
+    //         if (comma == std::string::npos) break;
+    //         pos = comma + 1;
+    //     }
+    // }
 
-    float grid_cell_offset = p.get("grid_cell_offset", 0.5f);
+    // float grid_cell_offset = p.get("grid_cell_offset", 0.5f);
 
-    // Inputs are the feature tensors (one per scale) - pass them directly
+    // // Inputs are the feature tensors (one per scale) - pass them directly
     
-    // If caller provided strides (strides_vec non-empty) use them; otherwise
-    // fill default strides for each feature (8 * 2^i).
-    if (!strides_vec.empty()) {
-        anchor_p.strides = strides_vec;
-    } else {
-        anchor_p.strides.clear();
-        anchor_p.strides.reserve(input.size());
-        for (size_t i = 0; i < input.size(); ++i) {
-            anchor_p.strides.push_back(8.0f * std::pow(2.0f, (float)i));
-        }
-    }
+    // // If caller provided strides (strides_vec non-empty) use them; otherwise
+    // // fill default strides for each feature (8 * 2^i).
+    // if (!strides_vec.empty()) {
+    //     anchor_p.strides = strides_vec;
+    // } else {
+    //     anchor_p.strides.clear();
+    //     anchor_p.strides.reserve(input.size());
+    //     for (size_t i = 0; i < input.size(); ++i) {
+    //         anchor_p.strides.push_back(8.0f * std::pow(2.0f, (float)i));
+    //     }
+    // }
     
 
-    printf("make_anchors_cpp: n_feats=%zu, n_strides=%zu, strides_s='%s', grid_cell_offset=%f\n", input.size(), strides_vec.size(), strides_s ? strides_s : "", grid_cell_offset);
+    // printf("make_anchors_cpp: n_feats=%zu, n_strides=%zu, strides_s='%s', grid_cell_offset=%f\n", input.size(), strides_vec.size(), strides_s ? strides_s : "", grid_cell_offset);
 
-    visp::yolov9t::make_anchors(m, std::span<tensor>(input.data(), input.size()), anchor_p, grid_cell_offset);
+    // visp::yolov9t::make_anchors(m, std::span<tensor>(input.data(), input.size()), anchor_p, grid_cell_offset);
 
-    // The anchor_p contains host-side buffers and graph tensors allocated in
-    // the model's graph_context. We need to ensure those tensors have backend
-    // storage and then upload the host buffers into them before returning.
-    // Use ggml_backend_alloc_ctx_tensors to allocate backend buffers for all
-    // graph tensors associated with the model. Then transfer the host data.
-    ggml_backend_alloc_ctx_tensors(m.graph_context, workbench_backend());
-    if (!anchor_p.anchor_data.empty()) {
-        transfer_to_backend(anchor_p.anchor_tensor, span(anchor_p.anchor_data.data(), anchor_p.anchor_data.size()));
-    }
-    if (!anchor_p.stride_data.empty()) {
-        transfer_to_backend(anchor_p.stride_tensor, span(anchor_p.stride_data.data(), anchor_p.stride_data.size()));
-    }
+    // // The anchor_p contains host-side buffers and graph tensors allocated in
+    // // the model's graph_context. We need to ensure those tensors have backend
+    // // storage and then upload the host buffers into them before returning.
+    // // Use ggml_backend_alloc_ctx_tensors to allocate backend buffers for all
+    // // graph tensors associated with the model. Then transfer the host data.
+    // ggml_backend_alloc_ctx_tensors(m.graph_context, workbench_backend());
+    // if (!anchor_p.anchor_data.empty()) {
+    //     transfer_to_backend(anchor_p.anchor_tensor, span(anchor_p.anchor_data.data(), anchor_p.anchor_data.size()));
+    // }
+    // if (!anchor_p.stride_data.empty()) {
+    //     transfer_to_backend(anchor_p.stride_tensor, span(anchor_p.stride_data.data(), anchor_p.stride_data.size()));
+    // }
 
-    return {anchor_p.anchor_tensor, anchor_p.stride_tensor};
+    // return {anchor_p.anchor_tensor, anchor_p.stride_tensor};
 }
 
 DEF(batch_norm_2d)(model_ref m, span<tensor> input, param_dict const& p) {
