@@ -1,6 +1,9 @@
 #include "testing.h"
 #include "visp/ml.h"
 
+#include "visp/arch/sam3.h"
+#include "testing.h"
+
 #include <numeric>
 
 namespace visp {
@@ -97,6 +100,24 @@ VISP_TEST(model_transfer_layout_conversion) {
     float const* no_conv_result = (float const*)ggml_get_tensor(dst, "no_conv")->data;
     CHECK_EQUAL(no_conv_result[0], 1.0f);
     CHECK_EQUAL(no_conv_result[1], 2.0f);
+}
+
+VISP_TEST(clip_tokenizer) {
+    path vocab_path = test_dir().data / "sam3-vocab.gguf";
+    model_file file = model_load(vocab_path.string().c_str());
+    sam3::clip_tokenizer tokenizer = sam3::clip_tokenizer_init(file);
+
+    std::string_view text = "shirt cow H7";
+    auto result = std::vector<int64_t>(16);
+    tokenizer.tokenize(text, result);
+    CHECK_EQUAL(result[0], tokenizer.bos_token_id);
+    CHECK_EQUAL(result[1], tokenizer.vocab.at("shirt</w>"));
+    CHECK_EQUAL(result[2], tokenizer.vocab.at("cow</w>"));
+    CHECK_EQUAL(result[3], tokenizer.vocab.at("h</w>"));
+    CHECK_EQUAL(result[4], tokenizer.vocab.at("7</w>"));
+    for (int i = 5; i < 16; ++i) {
+        CHECK_EQUAL(result[i], tokenizer.pad_token_id);
+    }
 }
 
 } // namespace visp

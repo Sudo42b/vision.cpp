@@ -95,6 +95,7 @@ struct model_file {
 
     VISP_API int64_t key(char const* name) const;
     VISP_API int get_int(char const* name) const;
+    VISP_API uint32_t get_uint32(char const* name) const;
     VISP_API std::string_view get_string(char const* name) const;
     VISP_API void get_array(char const* name, span<int> out_values) const;
 };

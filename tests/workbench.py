@@ -6,9 +6,16 @@ from functools import reduce
 from typing import Mapping
 from pathlib import Path
 from torch import Tensor
+from PIL import Image
 
 float_ptr = ctypes.POINTER(ctypes.c_float)
-
+dtype_torch_to_ggml = {
+    torch.float32: 0,  # GGML_TYPE_F32
+    torch.float16: 1,  # GGML_TYPE_F16
+    torch.int32: 26,  # GGML_TYPE_I32
+    torch.int64: 27,  # GGML_TYPE_I64
+}
+dtype_ggml_to_torch = {v: k for k, v in dtype_torch_to_ggml.items()}
 
 class RawTensor(ctypes.Structure):
     _fields_ = [
@@ -20,7 +27,8 @@ class RawTensor(ctypes.Structure):
 
     @property
     def n_bytes(self):
-        return 4 * self.ne[0] * self.ne[1] * self.ne[2] * self.ne[3]
+        tsize=dtype_ggml_to_torch.get(self.type, torch.float32).itemsize
+        return self.ne[0] * self.ne[1] * self.ne[2] * self.ne[3] * tsize
 
 
 class RawParam(ctypes.Structure):
@@ -32,13 +40,9 @@ class RawParam(ctypes.Structure):
 
 
 def torch_to_raw_tensor(name: str, tensor: torch.Tensor):
-    tensor_types = {
-        torch.float32: 0,  # GGML_TYPE_F32
-        torch.float16: 1,  # GGML_TYPE_F16
-        torch.int32: 26,  # GGML_TYPE_I32
-    }
+
     t = tensor.contiguous()
-    if tensor.dtype not in tensor_types:
+    if tensor.dtype not in dtype_torch_to_ggml:
         print(f"Warning: tensor {name} has unsupported dtype {tensor.dtype}, converting to float")
         t = t.to(torch.float32)
     while t.dim() < 4:
@@ -47,7 +51,7 @@ def torch_to_raw_tensor(name: str, tensor: torch.Tensor):
     raw_tensor = RawTensor()
     raw_tensor.name = name.encode()
     raw_tensor.data = ctypes.cast(t.data_ptr(), ctypes.c_void_p)
-    raw_tensor.type = tensor_types[t.dtype]
+    raw_tensor.type = dtype_torch_to_ggml[t.dtype]
     raw_tensor.ne[0] = t.size(3)
     raw_tensor.ne[1] = t.size(2)
     raw_tensor.ne[2] = t.size(1)
@@ -56,11 +60,7 @@ def torch_to_raw_tensor(name: str, tensor: torch.Tensor):
 
 
 def raw_to_torch_tensor(raw_tensor: RawTensor):
-    dtype = {
-        0: torch.float32,  # GGML_TYPE_F32
-        26: torch.int32,  # GGML_TYPE_I32
-    }.get(raw_tensor.type, torch.float32)
-
+    dtype = dtype_ggml_to_torch.get(raw_tensor.type, torch.float32)
     shape = tuple(raw_tensor.ne[i] for i in range(3, -1, -1))
     return torch.frombuffer(
         bytearray(ctypes.string_at(raw_tensor.data, raw_tensor.n_bytes)),
@@ -92,6 +92,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 root_dir = Path(__file__).parent.parent
 
+
 def _load_library():
     system = platform.system().lower()
     if system == "windows":
@@ -108,6 +109,7 @@ def _load_library():
         libdir = "lib"
     lib_path = root_dir / "build" / libdir / f"{prefix}vision-workbench{suffix}"
     return ctypes.CDLL(str(lib_path))
+
 
 try:
     lib = _load_library()
@@ -189,7 +191,7 @@ def to_nhwc(tensor: torch.Tensor):
     return tensor.permute(0, 2, 3, 1).contiguous()
 
 
-def to_nchw(tensor: Tensor|list[Tensor]|None):
+def to_nchw(tensor: Tensor | list[Tensor] | None):
     assert tensor is not None
     if isinstance(tensor, list):
         return [t.permute(0, 3, 1, 2).contiguous() for t in tensor]
@@ -296,3 +298,31 @@ def tensors_match(
     if show:
         print_results(result, expected)
     return torch.allclose(result, expected, rtol=rtol, atol=atol)
+
+
+def images_match(result: Tensor | list[Tensor] | None, expected: Tensor | list[Tensor], tol=0.001):
+    assert result is not None, "No result returned"
+    if isinstance(expected, list):
+        assert isinstance(result, list), "Result is not a list"
+        assert len(result) == len(expected), f"Expected {len(expected)} tensors, got {len(result)}"
+        return all(images_match(r, e, tol) for r, e in zip(result, expected))
+    assert isinstance(result, Tensor), "Result is not a tensor"
+    rmse = torch.sqrt(torch.mean((result - expected) ** 2))
+    return rmse.item() < tol
+
+
+def dump_image(t:Tensor, filepath:str):
+    image = Image.fromarray((t.permute(0, 2, 3, 1).numpy() * 255).astype("uint8")[0])
+    image.save(filepath)
+
+def dump_images(result: Tensor | list[Tensor], expected: Tensor | list[Tensor], prefix="result"):
+    if isinstance(expected, list):
+        assert isinstance(result, list), "Result is not a list"
+        assert len(result) == len(expected), f"Expected {len(expected)} tensors, got {len(result)}"
+        for i, (r, e) in enumerate(zip(result, expected)):
+            dump_images(r, e, prefix=f"{prefix}_{i}")
+    else:
+        assert isinstance(result, Tensor), "Result is not a tensor"
+        dump_image(result, f"{prefix}_result.png")
+        dump_image(expected, f"{prefix}_expected.png")
+

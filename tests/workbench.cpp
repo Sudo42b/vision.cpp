@@ -5,6 +5,7 @@
 #include "visp/arch/esrgan.h"
 #include "visp/arch/migan.h"
 #include "visp/arch/mobile-sam.h"
+#include "visp/arch/sam3.h"
 #include "visp/arch/swin.h"
 #include "visp/nn.h"
 
@@ -242,6 +243,26 @@ DEF(sam_predict_masks)(model_ref m, span<tensor> input, param_dict const& p) {
     tensor dense_prompt = m.weights("input_dense_prompt");
     auto [masks, iou] = sam::predict_masks(m, image_embeddings, sparse_prompt, dense_prompt);
     return {masks, iou};
+}
+
+//
+// SAM 3
+
+DEF(sam3_process_image)(model_ref m, span<tensor> input, param_dict const& p) {
+    image_data img = image_load(p.get("image", "tests/input/wardrobe.jpg"));
+    image_data result = sam3_process_input(img);
+    tensor x = ggml_new_tensor_4d(m, GGML_TYPE_F32, 3, result.extent[0], result.extent[1], 1);
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
+    transfer_to_backend(x, result);
+    return {x};
+}
+
+DEF(sam3_process_text)(model_ref m, span<tensor> input, param_dict const& p) {
+    model_file file = model_load(p.get("vocab", "tests/data/sam3-vocab.gguf"));
+    tensor_data result = sam3_process_text(m, file, p.get("text", "default text"));
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
+    transfer_to_backend(result);
+    return {result.x};
 }
 
 //

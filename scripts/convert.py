@@ -18,6 +18,7 @@ import itertools
 import torch
 import safetensors
 import numpy as np
+import json
 
 from enum import Enum
 from pathlib import Path
@@ -43,18 +44,21 @@ class TensorLayout(Enum):
 
 
 class Writer(GGUFWriter):
-    def __init__(self, path: Path, arch_name: str, float_type: str, verbose: bool):
+    def __init__(self, path: Path, arch_name: str, float_type: str, no_weights:bool, verbose: bool):
         super().__init__(path, arch_name)
         self.arch = arch_name
         self.float_type = float_type
         self.tensor_layout = TensorLayout.unknown
         self.verbose = verbose
+        self.no_weights = no_weights
         self.conv2d_weights: list[int] = []
         self._index = 0
 
     def add_tensor(self, name: str, tensor: Tensor, float_type: str | None = None):
         if len(name) >= 64:
             print("Warning: name too long", len(name), name)
+        if self.no_weights:
+            return
 
         float_type = float_type or self.float_type
         if float_type == "f16" and tensor.dtype == torch.float32:
@@ -279,6 +283,72 @@ def build_dense_positional_embeddings(
 
 
 #
+# SAM3
+
+def convert_sam3(input_filepath: Path, writer: Writer):
+    writer.add_license("sam-license")
+    writer.set_tensor_layout_default(TensorLayout.nchw)
+
+    model = load_model(input_filepath)
+
+    # Export tokenizer metadata and vocabulary
+    model_dir = input_filepath.parent
+    vocab_path = model_dir / "vocab.json"
+    merges_path = model_dir / "merges.txt"
+    tokenizer_config_path = model_dir / "tokenizer_config.json"
+    
+    # Load vocab.json: dict mapping token string -> token id
+    with open(vocab_path) as f:
+        vocab = json.load(f)
+    
+    # Load tokenizer_config.json for special token IDs and metadata
+    with open(tokenizer_config_path) as f:
+        tokenizer_config = json.load(f)
+    
+    bos_token_id = tokenizer_config.get("bos_token_id", 49406)
+    eos_token_id = tokenizer_config.get("eos_token_id", 49407)
+    pad_token_id = tokenizer_config.get("pad_token_id", 49407)
+    unk_token_id = tokenizer_config.get("unk_token_id", 49407)
+    max_length = tokenizer_config.get("model_max_length", 32)
+    
+    # Build ordered token list: create array indexed by token id, populated with token strings
+    vocab_size = max(vocab.values()) + 1
+    token_list = [""] * vocab_size
+    for token_str, token_id in vocab.items():
+        token_list[token_id] = token_str
+    
+    # Load and parse BPE merges (each line contains two tokens separated by space)
+    merges = []
+    with open(merges_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                merges.append(line)
+    
+    writer.add_tokenizer_model("clip")
+    writer.add_token_list(token_list)
+    writer.add_token_merges(merges)
+    writer.add_bos_token_id(bos_token_id)
+    writer.add_eos_token_id(eos_token_id)
+    writer.add_pad_token_id(pad_token_id)
+    writer.add_unk_token_id(unk_token_id)
+    writer.add_int32("sam3.tokenizer.max_length", max_length)
+
+    # Export model weights
+    for key, tensor in model.items():
+        name = key
+        name = name.replace("detector_model", "det")
+        name = name.replace("text_encoder", "te")
+        name = name.replace("vision_encoder", "ve")
+        name = name.replace("tracker_model", "trk")
+        name = name.replace("mask_decoder.", "decoder.")
+        name = name.replace("_image_to_token.", "_i2t.")
+        name = name.replace("_token_to_image.", "_t2i.")
+
+        writer.add_tensor(name, tensor)
+
+
+#
 # BirefNet
 
 
@@ -460,6 +530,7 @@ def convert_esrgan(input_filepath: Path, writer: Writer):
 
 arch_names = {
     "sam": "mobile-sam",
+    "sam3": "sam3",
     "birefnet": "birefnet",
     "depth-anything": "depthanything",
     "migan": "migan",
@@ -476,6 +547,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", "-o", type=str, default="models", help="Path to the output directory or file")
     parser.add_argument("--quantize", "-q", choices=["f16"], default=None, help="Convert float weights to the specified data type")
     parser.add_argument("--layout", "-l", choices=["whcn", "cwhn"], default=None, help="Tensor data layout for 2D operations like convolution")
+    parser.add_argument("--no-weights", action="store_true", help="Don't export weights, only metadata (for testing/debugging)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument("--model-name", type=str, default=None, help="Name of the model for metadata")
     parser.add_argument("--metadata", type=Path, help="Specify the path for an authorship metadata override file")
@@ -498,6 +570,7 @@ if __name__ == "__main__":
             output_path,
             arch_names.get(args.arch, args.arch),
             args.quantize,
+            args.no_weights,
             args.verbose,
         )
         metadata = Metadata.load(args.metadata, input_path.with_suffix(""), args.model_name)
@@ -508,6 +581,8 @@ if __name__ == "__main__":
         match args.arch:
             case "sam":
                 convert_sam(input_path, writer)
+            case "sam3":
+                convert_sam3(input_path, writer)
             case "birefnet":
                 convert_birefnet(input_path, writer)
             case "depthany" | "depth-anything":

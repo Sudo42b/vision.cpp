@@ -39,6 +39,10 @@ struct fixed_string {
         std::copy(str, str + length, data);
     }
 
+    explicit constexpr fixed_string(char c) : length(1) {
+        data[0] = c;
+    }
+
     char const* c_str() const { return data; }
 
     std::string_view view() const { return {data, length}; }

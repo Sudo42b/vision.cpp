@@ -173,7 +173,8 @@ test_directories const& test_dir() {
             .test = cur / "tests",
             .input = cur / "tests" / "input",
             .results = cur / "tests" / "results",
-            .reference = cur / "tests" / "reference"};
+            .reference = cur / "tests" / "reference",
+            .data = cur / "tests" / "data"};
         if (!exists(dirs.results)) {
             create_directories(dirs.results);
         }

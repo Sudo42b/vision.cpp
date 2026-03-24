@@ -52,6 +52,7 @@ struct test_directories {
     path input;
     path results;
     path reference;
+    path data;
 };
 
 test_directories const& test_dir();

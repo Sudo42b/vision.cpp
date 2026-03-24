@@ -17,6 +17,7 @@ dev = [
     "spandrel>=0.4.1",
     "gguf>=0.17.1",
     "boto3~=1.39.0",
+    "transformers>=5",
 ]
 
 [tool.uv]

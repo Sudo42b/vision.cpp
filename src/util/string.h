@@ -30,6 +30,9 @@ using std::vformat_to;
 namespace visp {
 using fmt::format;
 
+//
+// String formatting
+
 struct truncating_iterator {
     using iterator_category = std::output_iterator_tag;
     using value_type = char;
@@ -77,6 +80,9 @@ String format(char const* fmt, Args&&... args) {
     format(result, fmt, std::forward<Args>(args)...);
     return result;
 }
+
+//
+// Exception and assertion helpers
 
 template <typename... Args>
 exception except(char const* fmt, Args&&... args) {

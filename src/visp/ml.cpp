@@ -237,6 +237,10 @@ int model_file::get_int(char const* key_name) const {
     return gguf_get_val_i32(gguf.get(), key(key_name));
 }
 
+uint32_t model_file::get_uint32(char const* key_name) const {
+    return gguf_get_val_u32(gguf.get(), key(key_name));
+}
+
 void model_file::get_array(char const* key_name, span<int> out_values) const {
     int64_t key_id = key(key_name);
     if (gguf_get_arr_n(gguf.get(), key_id) != out_values.size()) {
