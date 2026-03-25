@@ -5,8 +5,6 @@ from torch import nn
 from . import workbench
 from .workbench import input_tensor, generate_state, to_nhwc, to_nchw
 
-torch.set_printoptions(precision=3, sci_mode=False)
-
 # Reference: https://github.com/chaiNNer-org/spandrel/blob/main/libs/spandrel/spandrel/architectures/ESRGAN/__arch/RRDB.py
 
 def conv_block(

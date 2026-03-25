@@ -13,8 +13,6 @@ from . import workbench
 from .workbench import fuse_batch_norm, to_nhwc, to_nchw, convert_to_nhwc, fuse_conv_2d_batch_norm
 from .workbench import input_tensor, generate_state
 
-torch.set_printoptions(precision=3, linewidth=100, edgeitems=6, sci_mode=False)
-
 nhwc_layout = dict(memory_layout="nhwc")
 
 

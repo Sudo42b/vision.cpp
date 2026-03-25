@@ -7,6 +7,10 @@
 
 namespace visp {
 using std::clamp;
+
+constexpr uint16_t f16_zero = 0x0000u;
+constexpr uint16_t f16_neg_inf = 0xfc00u;
+
 // clang-format off
 
 constexpr int32_t div_ceil(int32_t a, int32_t b) { return (a + b - 1) / b; }
@@ -61,6 +65,7 @@ constexpr i32x2 next_multiple(i32x2 x, int32_t mult) { return div_ceil(x, mult) 
 constexpr i32x2 min(i32x2 a, i32x2 b) { return {std::min(a[0], b[0]), std::min(a[1], b[1])}; }
 
 // i64x2 operations
+
 constexpr i64x2 operator*(i64x2 a, int64_t b) { return {a[0] * b, a[1] * b}; }
 constexpr i64x2 operator/(i64x2 a, int64_t b) { return {a[0] / b, a[1] / b}; }
 

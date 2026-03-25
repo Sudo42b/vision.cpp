@@ -261,13 +261,27 @@ DEF(sam3_process_image)(model_ref m, span<tensor> input, param_dict const& p) {
 DEF(sam3_process_text)(model_ref m, span<tensor> input, param_dict const& p) {
     model_file file = model_load(p.get("vocab", "tests/data/sam3-vocab.gguf"));
     clip_text_tokens result = clip_tokenize(file, p.get("text", "default text"));
-    tensor ids = ggml_new_tensor_2d(m, GGML_TYPE_I64, (int64_t)result.token_ids.size(), 1);
-    tensor msk = ggml_new_tensor_2d(m, GGML_TYPE_I64, (int64_t)result.attention_mask.size(), 1);
+    int64_t n = (int64_t)result.token_ids.size();
+    tensor ids = ggml_new_tensor_1d(m, GGML_TYPE_I32, n);
+    tensor msk = ggml_new_tensor_2d(m, GGML_TYPE_F16, n, n);
 
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
     transfer_to_backend(ids, as_bytes(span(result.token_ids)));
     transfer_to_backend(msk, as_bytes(span(result.attention_mask)));
     return {ids, msk};
+}
+
+DEF(sam3_text_embeds)(model_ref m, span<tensor> input, param_dict const& p) {
+    model_file file = model_load(p.get("model", "models/SAM3-FP32.gguf"));
+    clip_text_tokens result = clip_tokenize(file, p.get("text", "default text"));
+    int64_t n = (int64_t)result.token_ids.size();
+    tensor ids = ggml_new_tensor_1d(m, GGML_TYPE_I32, n);
+    tensor msk = ggml_new_tensor_2d(m, GGML_TYPE_F16, n, n);
+
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
+    transfer_to_backend(ids, as_bytes(span(result.token_ids)));
+    transfer_to_backend(msk, as_bytes(span(result.attention_mask)));
+    return {sam3::encode_text(m["det"], ids, msk)};
 }
 
 //

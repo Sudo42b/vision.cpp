@@ -8,6 +8,7 @@ from pathlib import Path
 from torch import Tensor
 from PIL import Image
 
+
 float_ptr = ctypes.POINTER(ctypes.c_float)
 dtype_torch_to_ggml = {
     torch.float32: 0,  # GGML_TYPE_F32
@@ -16,6 +17,7 @@ dtype_torch_to_ggml = {
     torch.int64: 27,  # GGML_TYPE_I64
 }
 dtype_ggml_to_torch = {v: k for k, v in dtype_torch_to_ggml.items()}
+
 
 class RawTensor(ctypes.Structure):
     _fields_ = [
@@ -27,7 +29,7 @@ class RawTensor(ctypes.Structure):
 
     @property
     def n_bytes(self):
-        tsize=dtype_ggml_to_torch.get(self.type, torch.float32).itemsize
+        tsize = dtype_ggml_to_torch.get(self.type, torch.float32).itemsize
         return self.ne[0] * self.ne[1] * self.ne[2] * self.ne[3] * tsize
 
 
@@ -277,6 +279,7 @@ def fuse_conv_2d_batch_norm(
 
 
 def print_results(result: Tensor, expected: Tensor):
+    torch.set_printoptions(precision=4, linewidth=100, sci_mode=False)
     print("\ntorch seed:", torch.initial_seed())
     print("\nresult -----", result, sep="\n")
     print("\nexpected ---", expected, sep="\n")
@@ -311,9 +314,10 @@ def images_match(result: Tensor | list[Tensor] | None, expected: Tensor | list[T
     return rmse.item() < tol
 
 
-def dump_image(t:Tensor, filepath:str):
+def dump_image(t: Tensor, filepath: str):
     image = Image.fromarray((t.permute(0, 2, 3, 1).numpy() * 255).astype("uint8")[0])
     image.save(filepath)
+
 
 def dump_images(result: Tensor | list[Tensor], expected: Tensor | list[Tensor], prefix="result"):
     if isinstance(expected, list):
@@ -325,4 +329,3 @@ def dump_images(result: Tensor | list[Tensor], expected: Tensor | list[Tensor], 
         assert isinstance(result, Tensor), "Result is not a tensor"
         dump_image(result, f"{prefix}_result.png")
         dump_image(expected, f"{prefix}_expected.png")
-

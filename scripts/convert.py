@@ -336,6 +336,9 @@ def convert_sam3(input_filepath: Path, writer: Writer):
 
     # Export model weights
     for key, tensor in model.items():
+        if key.startswith("detector_model.text_encoder.text_projection"):
+            continue
+
         name = key
         name = name.replace("detector_model", "det")
         name = name.replace("text_encoder", "te")

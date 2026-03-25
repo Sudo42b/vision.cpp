@@ -108,20 +108,20 @@ VISP_TEST(clip_tokenizer) {
     sam3::clip_tokenizer tokenizer = sam3::clip_tokenizer_init(file);
 
     std::string_view text = "shirt cow H7";
-    auto ids = std::vector<int64_t>(16);
-    auto mask = std::vector<int64_t>(16);
-    tokenizer.tokenize(text, ids, mask);
+    auto [ids, mask] = tokenizer.tokenize(text, 16);
     CHECK_EQUAL(ids[0], tokenizer.bos_token_id);
     CHECK_EQUAL(ids[1], tokenizer.vocab.at("shirt</w>"));
     CHECK_EQUAL(ids[2], tokenizer.vocab.at("cow</w>"));
     CHECK_EQUAL(ids[3], tokenizer.vocab.at("h</w>"));
     CHECK_EQUAL(ids[4], tokenizer.vocab.at("7</w>"));
-    for (int i = 0; i < 5; ++i) {
-        CHECK_EQUAL(mask[i], int64_t(1));
-    }
     for (int i = 5; i < 16; ++i) {
         CHECK_EQUAL(ids[i], tokenizer.pad_token_id);
-        CHECK_EQUAL(mask[i], int64_t(0));
+    }
+    for (int i = 0; i < 16 * 16; ++i) {
+        int row = i / 16;
+        int col = i % 16;
+        uint16_t expected = (row <= col && row < 5) ? f16_zero : f16_neg_inf;
+        CHECK_EQUAL(mask[i], expected);
     }
 }
 

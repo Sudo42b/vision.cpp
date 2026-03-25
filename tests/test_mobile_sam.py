@@ -8,8 +8,6 @@ from torch import Tensor
 from . import workbench
 from .workbench import to_nhwc, to_nchw, convert_to_nhwc, fuse_conv_2d_batch_norm, tensors_match
 
-torch.set_printoptions(precision=2, linewidth=100, sci_mode=False)
-
 nhwc_layout = dict(memory_layout="nhwc")
 
 #
