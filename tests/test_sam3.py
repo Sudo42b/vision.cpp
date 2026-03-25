@@ -51,11 +51,10 @@ def test_processor():
     expected = processor(images=image, text="shirt cow H7", return_tensors="pt")
     expected_pixels = expected["pixel_values"]
     expected_ids = expected["input_ids"]
+    expected_mask = expected["attention_mask"]
     assert isinstance(expected_pixels, torch.Tensor)
     assert isinstance(expected_ids, torch.Tensor)
-
-    for key, value in expected.items():
-        print(f"{key}: {value.shape if isinstance(value, torch.Tensor) else value}")
+    assert isinstance(expected_mask, torch.Tensor)
 
     result_pixels = workbench.invoke_test("sam3_process_image", [], {}, {"image": str(image_path)})
     assert isinstance(result_pixels, torch.Tensor)
@@ -63,7 +62,9 @@ def test_processor():
 
     assert images_match(result_pixels, expected_pixels, tol=0.05)
 
-    result_ids = workbench.invoke_test("sam3_process_text", [], {}, {"text": "shirt cow H7", "vocab": "tests/data/sam3-vocab.gguf"})
-    assert isinstance(result_ids, torch.Tensor)
-    workbench.print_results(result_ids, expected_ids)
-    assert tensors_match(result_ids, expected_ids)
+    result = workbench.invoke_test(
+        "sam3_process_text", [], {}, {"text": "shirt cow H7", "vocab": "tests/data/sam3-vocab.gguf"}
+    )
+    assert isinstance(result, list)
+    assert tensors_match(result[0], expected_ids)
+    assert tensors_match(result[1], expected_mask)

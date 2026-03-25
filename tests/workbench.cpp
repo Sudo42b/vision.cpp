@@ -1,3 +1,4 @@
+#include "util/common.h"
 #include "util/string.h"
 #include "visp/arch/birefnet.h"
 #include "visp/arch/depth-anything.h"
@@ -259,10 +260,14 @@ DEF(sam3_process_image)(model_ref m, span<tensor> input, param_dict const& p) {
 
 DEF(sam3_process_text)(model_ref m, span<tensor> input, param_dict const& p) {
     model_file file = model_load(p.get("vocab", "tests/data/sam3-vocab.gguf"));
-    tensor_data result = sam3_process_text(m, file, p.get("text", "default text"));
+    clip_text_tokens result = clip_tokenize(file, p.get("text", "default text"));
+    tensor ids = ggml_new_tensor_2d(m, GGML_TYPE_I64, (int64_t)result.token_ids.size(), 1);
+    tensor msk = ggml_new_tensor_2d(m, GGML_TYPE_I64, (int64_t)result.attention_mask.size(), 1);
+
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
-    transfer_to_backend(result);
-    return {result.x};
+    transfer_to_backend(ids, as_bytes(span(result.token_ids)));
+    transfer_to_backend(msk, as_bytes(span(result.attention_mask)));
+    return {ids, msk};
 }
 
 //
@@ -694,8 +699,7 @@ extern "C" {
 #ifdef _MSC_VER
 __declspec(dllexport)
 #endif
-int32_t
-visp_workbench(
+int32_t visp_workbench(
     char const* testcase,
     visp::raw_tensor const* inputs,
     int32_t n_inputs,

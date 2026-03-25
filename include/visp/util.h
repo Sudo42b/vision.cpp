@@ -39,9 +39,7 @@ struct fixed_string {
         std::copy(str, str + length, data);
     }
 
-    explicit constexpr fixed_string(char c) : length(1) {
-        data[0] = c;
-    }
+    explicit constexpr fixed_string(char c) : length(1) { data[0] = c; }
 
     char const* c_str() const { return data; }
 
@@ -146,7 +144,7 @@ struct flags {
         value |= uint32_t(other);
         return *this;
     }
-    
+
     flags& operator|=(flags other) {
         value |= other.value;
         return *this;

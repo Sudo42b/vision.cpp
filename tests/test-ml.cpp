@@ -108,15 +108,20 @@ VISP_TEST(clip_tokenizer) {
     sam3::clip_tokenizer tokenizer = sam3::clip_tokenizer_init(file);
 
     std::string_view text = "shirt cow H7";
-    auto result = std::vector<int64_t>(16);
-    tokenizer.tokenize(text, result);
-    CHECK_EQUAL(result[0], tokenizer.bos_token_id);
-    CHECK_EQUAL(result[1], tokenizer.vocab.at("shirt</w>"));
-    CHECK_EQUAL(result[2], tokenizer.vocab.at("cow</w>"));
-    CHECK_EQUAL(result[3], tokenizer.vocab.at("h</w>"));
-    CHECK_EQUAL(result[4], tokenizer.vocab.at("7</w>"));
+    auto ids = std::vector<int64_t>(16);
+    auto mask = std::vector<int64_t>(16);
+    tokenizer.tokenize(text, ids, mask);
+    CHECK_EQUAL(ids[0], tokenizer.bos_token_id);
+    CHECK_EQUAL(ids[1], tokenizer.vocab.at("shirt</w>"));
+    CHECK_EQUAL(ids[2], tokenizer.vocab.at("cow</w>"));
+    CHECK_EQUAL(ids[3], tokenizer.vocab.at("h</w>"));
+    CHECK_EQUAL(ids[4], tokenizer.vocab.at("7</w>"));
+    for (int i = 0; i < 5; ++i) {
+        CHECK_EQUAL(mask[i], int64_t(1));
+    }
     for (int i = 5; i < 16; ++i) {
-        CHECK_EQUAL(result[i], tokenizer.pad_token_id);
+        CHECK_EQUAL(ids[i], tokenizer.pad_token_id);
+        CHECK_EQUAL(mask[i], int64_t(0));
     }
 }
 

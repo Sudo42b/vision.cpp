@@ -1,3 +1,4 @@
+#include "util/common.h"
 #include "visp/ml.h"
 #include "visp/nn.h"
 
@@ -138,10 +139,15 @@ struct clip_tokenizer {
         return tokens;
     }
 
-    void tokenize(std::string_view text, std::span<int64_t> out_token_ids) const {
+    void tokenize(
+        std::string_view text,
+        std::span<int64_t> out_token_ids,
+        std::span<int64_t> out_attn_mask) const {
+
         int n = (int)out_token_ids.size();
         int i = 0;
         out_token_ids[i++] = bos_token_id;
+        out_attn_mask[i - 1] = 1;
 
         if (!text.empty()) {
             std::string normalized = normalize_prompt(text);
@@ -157,7 +163,9 @@ struct clip_tokenizer {
             for (std::string const& w : words) {
                 for (auto const& tok : apply_bpe(split_chars(w))) {
                     auto it = vocab.find(tok.view());
-                    out_token_ids[i++] = (it != vocab.end()) ? it->second : unk_token_id;
+                    out_token_ids[i] = (it != vocab.end()) ? it->second : unk_token_id;
+                    out_attn_mask[i] = 1;
+                    i++;
                     if (i >= n - 1) {
                         break; // reserve space for eos token
                     }
@@ -165,9 +173,12 @@ struct clip_tokenizer {
             }
         }
 
-        out_token_ids[i++] = eos_token_id;
+        out_token_ids[i] = eos_token_id;
+        out_attn_mask[i] = 1;
+        i++;
         for (; i < n; i++) {
             out_token_ids[i] = pad_token_id;
+            out_attn_mask[i] = 0;
         }
     }
 };
@@ -202,13 +213,20 @@ image_data sam3_process_input(image_view img) {
     return image_u8_to_f32(resized, image_format::rgb_f32, {-0.5f}, {2.f});
 }
 
-tensor_data sam3_process_text(model_ref m, model_file const& file, std::string_view text) {
+struct clip_text_tokens {
+    std::vector<int64_t> token_ids;
+    std::vector<int64_t> attention_mask;
+};
+
+clip_text_tokens clip_tokenize(model_file const& file, std::string_view text) {
     sam3::clip_tokenizer tokenizer = sam3::clip_tokenizer_init(file);
     int max_tokens = file.get_int("sam3.tokenizer.max_length");
 
-    tensor_data x = tensor_alloc(ggml_new_tensor_2d(m, GGML_TYPE_I64, (int64_t)max_tokens, 1));
-    tokenizer.tokenize(text, std::span((int64_t*)x.data.get(), max_tokens));
-    return x;
+    clip_text_tokens result;
+    result.token_ids.resize(max_tokens);
+    result.attention_mask.resize(max_tokens);
+    tokenizer.tokenize(text, result.token_ids, result.attention_mask);
+    return result;
 }
 
 } // namespace visp
