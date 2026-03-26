@@ -284,6 +284,24 @@ DEF(sam3_text_embeds)(model_ref m, span<tensor> input, param_dict const& p) {
     return {sam3::encode_text(m["det"], ids, msk)};
 }
 
+DEF(sam3_sine_position_embedding)(model_ref m, span<tensor> input, param_dict const& p) {
+    int width = p.get("width", 8);
+    int height = p.get("height", 8);
+    int n_pos_feats = p.get("n_pos_feats", 64);
+    bool normalize = p.get("normalize", 0) != 0;
+    auto embeds = sam3::generate_sine_position_embedding(width, height, n_pos_feats, normalize);
+
+    tensor out = ggml_new_tensor_3d(m, GGML_TYPE_F32, width, height, n_pos_feats * 2);
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
+    transfer_to_backend(out, as_bytes(span(embeds)));
+    return {out};
+}
+
+DEF(sam3_vision_encoder)(model_ref m, span<tensor> input, param_dict const& p) {
+    auto output = sam3::encode_vision(m["det.ve"], input[0]);
+    return {output.fpn_hidden_states[3], output.fpn_position_encoding[3]};
+}
+
 //
 // BiRefNet
 

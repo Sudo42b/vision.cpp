@@ -287,6 +287,111 @@ tensor encode_text(model_ref m, tensor ids, tensor attention_mask) {
     return embeds;
 }
 
+//
+// Vision encoder
+
+struct vision_output {
+    static constexpr int n_layers = 4;
+
+    std::array<tensor, n_layers> fpn_hidden_states;
+    std::array<tensor, n_layers> fpn_position_encoding;
+};
+
+std::vector<float> generate_sine_position_embedding(
+    int width, int height, int n_pos_feats, bool normalize = false) {
+
+    const float temperature = 10000.f;
+    const float scale = 2.f * M_PIf;
+    const float eps = 1e-6f;
+
+    std::vector<float> dim_t(n_pos_feats);
+    for (int k = 0; k < n_pos_feats; ++k) {
+        dim_t[k] = std::pow(temperature, 2.f * (k / 2) / n_pos_feats);
+    }
+
+    auto out = std::vector<float>(width * height * n_pos_feats * 2);
+    for (int h = 0; h < height; ++h) {
+        float y = (float)(h + 1);
+        if (normalize) {
+            y = y / ((float)height + eps) * scale;
+        }
+        for (int w = 0; w < width; ++w) {
+            float x = (float)(w + 1);
+            if (normalize) {
+                x = x / ((float)width + eps) * scale;
+            }
+
+            for (int k = 0; k < n_pos_feats; ++k) {
+                float y_val = (k % 2 == 0) ? std::sin(y / dim_t[k]) : std::cos(y / dim_t[k]);
+                float x_val = (k % 2 == 0) ? std::sin(x / dim_t[k]) : std::cos(x / dim_t[k]);
+                out[k * height * width + h * width + w] = y_val;
+                out[(n_pos_feats + k) * height * width + h * width + w] = x_val;
+            }
+        }
+    }
+    return out;
+}
+
+tensor sine_position_embedding(
+    model_ref m, std::array<int64_t, 4> shape, int n_pos_feats, bool normalize) {
+
+    int width = (int)shape[0];
+    int height = (int)shape[1];
+    tensor pe = ggml_new_tensor_3d(m, GGML_TYPE_F32, width, height, n_pos_feats * 2);
+    ggml_set_input(pe);
+    ggml_format_name(
+        pe, "_sine_position_embedding_%dx%dx%d%s", width, height, n_pos_feats,
+        normalize ? "_normalized" : "");
+    return pe;
+}
+
+tensor fpn_layer(model_ref m, tensor x, int index) {
+    switch (index) {
+        case 0: // scale factor = 4
+            x = conv_transpose_2d(m["scale_layers.0"], x, 2);
+            x = ggml_gelu_inplace(m, x);
+            x = conv_transpose_2d(m["scale_layers.2"], x, 2);
+            break;
+        case 1: // scale factor = 2
+            x = conv_transpose_2d(m["scale_layers.0"], x, 2);
+            break;
+        case 2: // scale factor = 1
+            break;
+        case 3: // scale factor = 0.5
+            x = ggml_pool_2d(m, x, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
+            break;
+        default: throw except("Invalid FPN layer index {}", index);
+    }
+    x = conv_2d(m["proj1"], x, 1, 0); // 1x1 pad=0
+    x = conv_2d(m["proj2"], x, 1, 1); // 3x3 pad=1
+    return x;
+}
+
+vision_output vision_neck(model_ref m, tensor x) {
+    const auto scale_factors = std::array{4.0f, 2.0f, 1.0f, 0.5f};
+
+    vision_output out;
+    model_ref layers = m["fpn_layers"];
+    for (int i = 0; i < vision_output::n_layers; ++i) {
+        out.fpn_hidden_states[i] = fpn_layer(layers[i], x, scale_factors[i]);
+        out.fpn_position_encoding[i] = sine_position_embedding(
+            m, nelements(out.fpn_hidden_states[i]), 64, true);
+    }
+    return out;
+}
+
+vision_output encode_vision(model_ref m, tensor image) {
+    const auto [c_in, w, h, b] = nelements(image);
+    // Backbone
+    tensor x = image;
+
+    // Neck
+    const int64_t patch_size = 14;
+    x = ggml_reshape_4d(m, x, x->ne[0], w / patch_size, h / patch_size, b);
+    x = permute_cwhn_to_whcn(m, x);
+    return vision_neck(m["neck"], x);
+}
+
 } // namespace sam3
 
 using sam3::clip_text_tokens;

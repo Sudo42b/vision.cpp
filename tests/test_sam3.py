@@ -1,6 +1,8 @@
 from transformers import Sam3Config, Sam3Processor, Sam3Model
 from transformers.masking_utils import create_causal_mask
+from transformers.models.sam3.modeling_sam3 import Sam3SinePositionEmbedding
 from pathlib import Path
+import pytest
 import torch
 from PIL import Image
 
@@ -83,6 +85,17 @@ def test_processor():
     assert tensors_match(result[1], causal_mask_f16)
 
 
+@pytest.mark.parametrize("normalize", [False, True])
+def test_sine_position_embedding(normalize):
+    embedding = Sam3SinePositionEmbedding(4, normalize=normalize)
+    expected = embedding(torch.Size([1, 8, 3, 3]), "cpu", torch.float32, mask=None)
+
+    params = {"width": 3, "height": 3, "n_pos_feats": 4, "normalize": int(normalize)}
+    result = workbench.invoke_test("sam3_sine_position_embedding", [], {}, params)
+    assert isinstance(result, torch.Tensor)
+    assert tensors_match(result, expected)
+
+
 def _convert_tensor_names(state: dict[str, torch.Tensor]):
     # transformer names -> gguf names (see convert.py)
     new_state = {}
@@ -99,19 +112,44 @@ def _convert_tensor_names(state: dict[str, torch.Tensor]):
     return new_state
 
 
-def test_text_embeds():
+def test_model():
+    text = "cat"
+    image = Image.open(test_dir / "input" / "cat-and-hat.jpg")
+
     model = Sam3Model.from_pretrained(model_path)
     processor = Sam3Processor.from_pretrained(model_path)
-    text_inputs = processor(text="cat", return_tensors="pt")
-    text_features = model.get_text_features(**text_inputs)  # type: ignore
-    expected_embeds: torch.Tensor = text_features.pooler_output  # type: ignore
-    assert expected_embeds is not None
+    inputs = processor(images=image, text=text, return_tensors="pt")
+    pixel_values = inputs["pixel_values"]
+    assert isinstance(pixel_values, torch.FloatTensor)
 
     model.eval()
     state = _convert_tensor_names(model.state_dict())
 
-    result_embeds = workbench.invoke_test(
+    # Text encoder
+
+    text_features = model.get_text_features(**inputs)  # type: ignore
+    expected_text_embeds: torch.Tensor = text_features.pooler_output  # type: ignore
+    assert expected_text_embeds is not None
+
+    result_text_embeds = workbench.invoke_test(
         "sam3_text_embeds", [], state, {"text": "cat", "model": str(vocab_path)}
     )
-    assert isinstance(result_embeds, torch.Tensor)
-    assert tensors_match(result_embeds, expected_embeds, atol=1e-2)  # f16 gelu
+    assert isinstance(result_text_embeds, torch.Tensor)
+    assert tensors_match(result_text_embeds, expected_text_embeds, atol=1e-2)  # f16 gelu
+
+    # Vision encoder
+
+    vision_outputs = model.get_vision_features(pixel_values)
+    expected_vision_embeds = vision_outputs.fpn_hidden_states[:-1]
+    expected_vision_pos = vision_outputs.fpn_position_encoding[:-1]
+
+    print("Expected vision embeds shapes:")
+    print(expected_vision_embeds[-1])
+    print("Expected vision pos shapes:")
+    print(expected_vision_pos[-1])
+
+    result_vision = workbench.invoke_test("sam3_vision_encoder", [pixel_values], state)
+    assert isinstance(result_vision, list)
+
+    assert tensors_match(result_vision[0], expected_vision_embeds[-1])
+    assert tensors_match(result_vision[1], expected_vision_pos[-1])
