@@ -279,8 +279,8 @@ DEF(sam3_text_embeds)(model_ref m, span<tensor> input, param_dict const& p) {
     tensor msk = ggml_new_tensor_2d(m, GGML_TYPE_F16, n, n);
 
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
-    transfer_to_backend(ids, as_bytes(span(result.token_ids)));
-    transfer_to_backend(msk, as_bytes(span(result.attention_mask)));
+    transfer_to_backend(ids, as_bytes(result.token_ids));
+    transfer_to_backend(msk, as_bytes(result.attention_mask));
     return {sam3::encode_text(m["det"], ids, msk)};
 }
 
@@ -293,9 +293,25 @@ DEF(sam3_sine_position_embedding)(model_ref m, span<tensor> input, param_dict co
 
     tensor out = ggml_new_tensor_3d(m, GGML_TYPE_F32, width, height, n_pos_feats * 2);
     ggml_backend_alloc_ctx_tensors(m, workbench_backend());
-    transfer_to_backend(out, as_bytes(span(embeds)));
+    transfer_to_backend(out, as_bytes(embeds));
     return {out};
 }
+
+DEF(sam3_rotary_embedding)(model_ref m, span<tensor> input, param_dict const& p) {
+    // input: [head_dim, n_head, n_pos, batch] for q and k
+    float scale = p.get("scale", 1.0f);
+    int n_pos = input[0]->ne[2]; // = seq_len = number of patches = width * height
+    int height = p.get("height", 8);
+
+    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(m, n_pos, scale, "rope_pos");
+    tensor q = sam3::apply_rope_2d(m, input[0], pos);
+    tensor k = sam3::apply_rope_2d(m, input[1], pos);
+
+    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
+    sam3::init_rope_2d_positions(pos, n_pos, height);
+    return {q, k};
+}
+
 
 DEF(sam3_vision_encoder)(model_ref m, span<tensor> input, param_dict const& p) {
     auto output = sam3::encode_vision(m["det.ve"], input[0]);

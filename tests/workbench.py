@@ -279,7 +279,7 @@ def fuse_conv_2d_batch_norm(
 
 
 def print_results(result: Tensor, expected: Tensor):
-    torch.set_printoptions(precision=4, linewidth=100, sci_mode=False)
+    torch.set_printoptions(precision=3, linewidth=100, sci_mode=False)
     print("\ntorch seed:", torch.initial_seed())
     print("\nresult -----", result, sep="\n")
     print("\nexpected ---", expected, sep="\n")

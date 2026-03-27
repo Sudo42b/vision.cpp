@@ -1,6 +1,11 @@
 from transformers import Sam3Config, Sam3Processor, Sam3Model
 from transformers.masking_utils import create_causal_mask
-from transformers.models.sam3.modeling_sam3 import Sam3SinePositionEmbedding
+from transformers.models.sam3.modeling_sam3 import (
+    Sam3SinePositionEmbedding,
+    Sam3ViTRotaryEmbedding,
+    apply_rotary_pos_emb_2d,
+)
+from transformers.models.sam3.configuration_sam3 import Sam3ViTConfig
 from pathlib import Path
 import pytest
 import torch
@@ -94,6 +99,34 @@ def test_sine_position_embedding(normalize):
     result = workbench.invoke_test("sam3_sine_position_embedding", [], {}, params)
     assert isinstance(result, torch.Tensor)
     assert tensors_match(result, expected)
+
+
+def test_rotary_embedding():
+    config = Sam3ViTConfig(hidden_size=16, num_attention_heads=2)
+    head_dim = config.hidden_size // config.num_attention_heads
+    width = 3
+    height = 3
+    scale = 0.5
+    embedding = Sam3ViTRotaryEmbedding(config, end_x=width, end_y=height, scale=scale)
+    embedding.eval()
+    cos, sin = embedding()
+    q = torch.ones(1, width * height, config.num_attention_heads, head_dim)
+    k = torch.ones(1, width * height, config.num_attention_heads, head_dim)
+
+    # transformers' apply_rotary_pos_emb_2d expects [head_dim, n_head, n_pos, batch]
+    q_t = q.transpose(1, 2)
+    k_t = k.transpose(1, 2)
+    expected_q, expected_k = apply_rotary_pos_emb_2d(q_t, k_t, cos, sin)
+    expected_q = expected_q.transpose(1, 2)
+    expected_k = expected_k.transpose(1, 2)
+
+    # Compare with C++ implementation (works on non-transposed q/k)
+    params = {"scale": scale, "width": width, "height": height}
+    result = workbench.invoke_test("sam3_rotary_embedding", [q, k], {}, params)
+    assert isinstance(result, list)
+
+    assert tensors_match(result[0], expected_q)
+    assert tensors_match(result[1], expected_k)
 
 
 def _convert_tensor_names(state: dict[str, torch.Tensor]):

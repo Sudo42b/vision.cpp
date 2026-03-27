@@ -1,4 +1,5 @@
 #include "visp/arch/dino.h"
+#include "util/common.h"
 #include "util/math.h"
 #include "visp/ml.h"
 #include "visp/nn.h"
@@ -86,11 +87,6 @@ tensor layer(model_ref m, tensor x, dino_params const& p) {
     x = ggml_add(m, x, ffn);
 
     return named(m, x);
-}
-
-template <typename T>
-bool contains(std::span<const T> r, T const& value) {
-    return std::find(r.begin(), r.end(), value) != r.end();
 }
 
 std::vector<tensor> get_intermediate_layers(
