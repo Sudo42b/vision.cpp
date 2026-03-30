@@ -319,10 +319,11 @@ tensor vision_embed(model_ref m, tensor image, int patch_size) {
     tensor embed = conv_2d(m["patch_embeddings.projection"], image, patch_size);
     embed = ggml_reshape_3d(m, embed, wp * hp, embed->ne[2], b);
     embed = ggml_permute(m, embed, 1, 0, 2, 3); // -> [hidden_size, n_patches, batch]
+    embed = ggml_cont(m, embed);
 
     tensor pos_embed = m.weights("position_embeddings");
     int64_t hidden_size = pos_embed->ne[0];
-    int64_t pretrain_size = pos_embed->ne[1];
+    int64_t pretrain_size = (int64_t)(std::sqrt((float)pos_embed->ne[1]) + 0.5f);
     if (wp == pretrain_size && hp == pretrain_size) {
         pos_embed = ggml_reshape_3d(m, pos_embed, hidden_size, wp * hp, 1);
     } else {
@@ -378,8 +379,10 @@ tensor window_reverse(model_ref m, tensor x, int w, int h, int window) {
     x = ggml_reshape_4d(m, x, c * window, window, npw, nph * b);
     x = ggml_cont(m, ggml_permute(m, x, 0, 2, 1, 3));
     x = ggml_reshape_4d(m, x, c, w + px, h + py, b);
-    x = slice(m, x, {}, {0, w}, {0, h});
-    x = ggml_cont(m, x);
+    if (px > 0 || py > 0) {
+        x = slice(m, x, {}, {0, w}, {0, h});
+        x = ggml_cont(m, x);
+    }
     return x;
 }
 
@@ -388,6 +391,15 @@ rope_2d_positions build_rope_2d_positions(model_ref m, int n_pos, float scale, c
         compute_graph_input(m, GGML_TYPE_I32, {n_pos, 1, 1, 1}, format<tensor_name>("{}.x", name)),
         compute_graph_input(m, GGML_TYPE_I32, {n_pos, 1, 1, 1}, format<tensor_name>("{}.y", name)),
         scale};
+}
+
+rope_2d_positions get_rope_2d_positions(model_ref m, char const* name) {
+    tensor_name x_name = format<tensor_name>("{}.x", name);
+    tensor_name y_name = format<tensor_name>("{}.y", name);
+    tensor x_pos = ggml_get_tensor(m, x_name.c_str());
+    tensor y_pos = ggml_get_tensor(m, y_name.c_str());
+    ASSERT(x_pos && y_pos);
+    return {x_pos, y_pos, 1.0f};
 }
 
 void init_rope_2d_positions(rope_2d_positions& pos, int n_pos, int height) {
@@ -404,9 +416,9 @@ void init_rope_2d_positions(rope_2d_positions& pos, int n_pos, int height) {
     transfer_to_backend(pos.y, as_bytes(pos_data));
 }
 
-tensor apply_rope_2d(model_ref m, tensor x, rope_2d_positions pos) {
-    const float freq_base = 10000.f;
-    const int64_t dim = x->ne[0];
+tensor apply_rope_2d(model_ref m, tensor x, rope_2d_positions const& pos) {
+    float const freq_base = 10000.f;
+    int64_t const dim = x->ne[0];
     // The head_dim is split into two halves:
     //   first  half (elements 0..dim/2-1)  : apply RoPE using x positions
     //   second half (elements dim/2..dim-1): apply RoPE using y positions
@@ -431,10 +443,9 @@ tensor apply_rope_2d(model_ref m, tensor x, rope_2d_positions pos) {
     return ggml_concat(m, first, second, 0);
 }
 
-tensor rope_attention(model_ref m, tensor x, rope_2d_positions pos_embeds = {}) {
-    const int64_t n_heads = 16;
-    const int64_t head_dim = x->ne[0] / n_heads;
-    const float scale = 1.f / std::sqrt((float)head_dim);
+tensor rope_attention(model_ref m, tensor x, int n_heads, rope_2d_positions const& pos) {
+    int64_t head_dim = x->ne[0] / n_heads;
+    float scale = 1.f / std::sqrt((float)head_dim);
 
     tensor q = linear(m["q_proj"], x);
     tensor k = linear(m["k_proj"], x);
@@ -444,24 +455,29 @@ tensor rope_attention(model_ref m, tensor x, rope_2d_positions pos_embeds = {}) 
     k = ggml_reshape_4d(m, k, head_dim, n_heads, k->ne[1], k->ne[2]);
     v = ggml_reshape_4d(m, v, head_dim, n_heads, v->ne[1], v->ne[2]);
 
-    q = apply_rope_2d(m, q, pos_embeds);
-    k = apply_rope_2d(m, k, pos_embeds);
+    q = apply_rope_2d(m, q, pos);
+    k = apply_rope_2d(m, k, pos);
     return attention(m, q, k, v, nullptr, scale, m["o_proj"]);
 }
 
-tensor vision_layer(model_ref m, tensor x, int window_size) {
+tensor vision_layer(
+    model_ref m, tensor x, int window_size, int n_heads, rope_2d_positions const& rope_pos) {
+
     tensor residual = x;
     x = layer_norm(m["layer_norm1"], x);
 
     auto [c, w, h, b] = nelements(x);
     if (window_size > 0) {
         x = window_partition(m, x, window_size);
+    } else {
+        x = ggml_reshape_3d(m, x, c, w * h, b);
     }
-    // auto pos_embeds = create_rotary_embedding(m, image_size / window_size);
-    x = rope_attention(m["attention"], x);
+    x = rope_attention(m["attention"], x, n_heads, rope_pos);
 
     if (window_size > 0) {
         x = window_reverse(m, x, w, h, window_size);
+    } else {
+        x = ggml_reshape_4d(m, x, c, w, h, b);
     }
     x = ggml_add(m, x, residual);
 
@@ -472,25 +488,32 @@ tensor vision_layer(model_ref m, tensor x, int window_size) {
     return x;
 }
 
-tensor vision_transformer(model_ref m, tensor image) {
-    const int patch_size = 14;
-    tensor x = vision_embed(m["embeddings"], image, patch_size);
+tensor vision_transformer(model_ref m, tensor image, sam3_vit_params const& p) {
+    tensor x = vision_embed(m["embeddings"], image, p.patch_size);
 
-    const int64_t c = x->ne[0];
-    const int64_t w = image->ne[0] / patch_size;
-    const int64_t h = image->ne[1] / patch_size;
-    const int64_t b = image->ne[3];
+    int64_t c = x->ne[0];
+    int64_t w = image->ne[0] / p.patch_size;
+    int64_t h = image->ne[1] / p.patch_size;
+    int64_t b = image->ne[3];
     x = ggml_reshape_4d(m, x, c, w, h, b);
+
+    rope_2d_positions pos_window = build_rope_2d_positions(
+        m, sqr(p.window_size), 1.0f, "_vit_rope_pos_window");
+
+    int n_pos_global = sqr(p.image_size / p.patch_size);
+    float scale_global = float(p.window_size) / float(p.image_size / p.patch_size);
+    rope_2d_positions pos_global = build_rope_2d_positions(
+        m, n_pos_global, scale_global, "_vit_rope_pos_global");
 
     x = layer_norm(m["layer_norm"], x);
 
-    const int n_layers = 32;
-    const int window_size = 24;
-    const auto global_attn_indexes = std::array{7, 15, 23, 31};
     model_ref layers = m["layers"];
-    for (int i = 0; i < n_layers; ++i) {
-        int window = contains(span(global_attn_indexes), i) ? 0 : window_size;
-        x = vision_layer(layers[i], x, window);
+    for (int i = 0; i < p.n_layers; ++i) {
+        bool is_global = contains(span(p.global_attn_indexes), i);
+        int window_size = is_global ? 0 : p.window_size;
+        auto const& pos = is_global ? pos_global : pos_window;
+
+        x = vision_layer(layers[i], x, window_size, p.n_heads, pos);
     }
 
     x = ggml_reshape_3d(m, x, c, w * h, b);
@@ -507,9 +530,9 @@ struct vision_output {
 std::vector<float> generate_sine_position_embedding(
     int width, int height, int n_pos_feats, bool normalize = false) {
 
-    const float temperature = 10000.f;
-    const float scale = 2.f * M_PIf;
-    const float eps = 1e-6f;
+    constexpr float temperature = 10000.f;
+    constexpr float scale = 2.f * M_PIf;
+    constexpr float eps = 1e-6f;
 
     std::vector<float> dim_t(n_pos_feats);
     for (int k = 0; k < n_pos_feats; ++k) {
@@ -565,6 +588,7 @@ tensor fpn_layer(model_ref m, tensor x, int index) {
         case 2: // scale factor = 1
             break;
         case 3: // scale factor = 0.5
+            // TODO: what is this last layer used for?
             x = ggml_pool_2d(m, x, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
             break;
         default: throw except("Invalid FPN layer index {}", index);
@@ -575,27 +599,25 @@ tensor fpn_layer(model_ref m, tensor x, int index) {
 }
 
 vision_output vision_neck(model_ref m, tensor x) {
-    const auto scale_factors = std::array{4.0f, 2.0f, 1.0f, 0.5f};
-
     vision_output out;
     model_ref layers = m["fpn_layers"];
+
     for (int i = 0; i < vision_output::n_layers; ++i) {
-        out.fpn_hidden_states[i] = fpn_layer(layers[i], x, scale_factors[i]);
+        out.fpn_hidden_states[i] = fpn_layer(layers[i], x, i);
         out.fpn_position_encoding[i] = sine_position_embedding(
             m, nelements(out.fpn_hidden_states[i]), 64, true);
     }
     return out;
 }
 
-vision_output encode_vision(model_ref m, tensor image) {
-    const auto [c_in, w, h, b] = nelements(image);
+vision_output encode_vision(model_ref m, tensor image, sam3_vit_params const& p) {
+    const auto [w, h, c, b] = nelements(image);
     // Backbone
-    tensor x = image;
+    tensor x = vision_transformer(m["backbone"], image, p);
 
     // Neck
-    const int64_t patch_size = 14;
-    x = ggml_reshape_4d(m, x, x->ne[0], w / patch_size, h / patch_size, b);
-    x = permute_cwhn_to_whcn(m, x);
+    x = ggml_reshape_4d(m, x, x->ne[0], w / p.patch_size, h / p.patch_size, b);
+    x = cwhn_to_contiguous_2d(m, x);
     return vision_neck(m["neck"], x);
 }
 

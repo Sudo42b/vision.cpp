@@ -62,6 +62,7 @@ struct param_dict {
 using test_function = std::vector<tensor> (*)(model_ref, std::span<tensor>, param_dict const&);
 
 backend_device const& workbench_backend();
+compute_graph& workbench_graph();
 void workbench_add_test(char const* name, test_function func);
 
 struct test_case_def {
@@ -312,10 +313,40 @@ DEF(sam3_rotary_embedding)(model_ref m, span<tensor> input, param_dict const& p)
     return {q, k};
 }
 
+DEF(sam3_vision_embed)(model_ref m, span<tensor> input, param_dict const& p) {
+    return {sam3::vision_embed(m, input[0], p.get("patch_size", 4))};
+}
+
+DEF(sam3_vision_layer)(model_ref m, span<tensor> input, param_dict const& p) {
+    int64_t n_pos = input[0]->ne[1] * input[0]->ne[2];
+    int window_size = p.get("window_size", 4);
+    int n_heads = p.get("n_heads", 2);
+    float scale = window_size == 0 ? 1.0f : window_size / float(input[0]->ne[1]);
+
+    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(m, n_pos, 1.0f, "rope_pos");
+    auto output = sam3::vision_layer(m, input[0], window_size, n_heads, pos);
+
+    compute_graph_output(m, output);
+    compute_graph_allocate(workbench_graph(), workbench_backend());
+    sam3::init_rope_2d_positions(pos, n_pos, input[0]->ne[2]);
+    return {output};
+}
 
 DEF(sam3_vision_encoder)(model_ref m, span<tensor> input, param_dict const& p) {
-    auto output = sam3::encode_vision(m["det.ve"], input[0]);
-    return {output.fpn_hidden_states[3], output.fpn_position_encoding[3]};
+    sam3::sam3_params params;
+    auto output = sam3::encode_vision(m["det.ve"], input[0], params.vision);
+    compute_graph_output(m, output.fpn_hidden_states[3], "fpn_hidden_state_3");
+    compute_graph_allocate(workbench_graph(), workbench_backend());
+
+    int window = params.vision.window_size;
+    sam3::rope_2d_positions pos_window = sam3::get_rope_2d_positions(m, "_vit_rope_pos_window");
+    sam3::init_rope_2d_positions(pos_window, sqr(window), window);
+
+    int size_patches = params.vision.image_size / params.vision.patch_size;
+    sam3::rope_2d_positions pos_global = sam3::get_rope_2d_positions(m, "_vit_rope_pos_global");
+    sam3::init_rope_2d_positions(pos_global, sqr(size_patches), size_patches);
+
+    return {output.fpn_hidden_states[2], output.fpn_position_encoding[2]};
 }
 
 //
@@ -644,6 +675,8 @@ struct workbench {
     std::vector<raw_tensor> outputs;
     std::vector<byte> data; // for storing output tensor data
     backend_device current_backend;
+
+    compute_graph graph;
 };
 
 workbench& get_workbench() {
@@ -653,6 +686,10 @@ workbench& get_workbench() {
 
 backend_device const& workbench_backend() {
     return get_workbench().current_backend;
+}
+
+compute_graph& workbench_graph() {
+    return get_workbench().graph;
 }
 
 void workbench_add_test(char const* name, test_function func) {
@@ -680,7 +717,7 @@ void workbench_run(
     w.current_backend = backend_init(backend_type);
     model_weights weights = model_init(tensors.size() + 10);
     weights.buffer_type = backend_type;
-    compute_graph graph = compute_graph_init(1024);
+    compute_graph& graph = w.graph = compute_graph_init();
     model_ref m(weights, graph);
 
     std::vector<tensor> inputs;

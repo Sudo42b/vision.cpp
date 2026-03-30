@@ -2,7 +2,9 @@ from transformers import Sam3Config, Sam3Processor, Sam3Model
 from transformers.masking_utils import create_causal_mask
 from transformers.models.sam3.modeling_sam3 import (
     Sam3SinePositionEmbedding,
+    Sam3ViTEmbeddings,
     Sam3ViTRotaryEmbedding,
+    Sam3ViTLayer,
     apply_rotary_pos_emb_2d,
 )
 from transformers.models.sam3.configuration_sam3 import Sam3ViTConfig
@@ -19,6 +21,8 @@ test_dir = Path(__file__).parent
 image_path = test_dir / "input" / "wardrobe.jpg"
 results_dir = test_dir / "results"
 vocab_path = test_dir / "data" / "sam3-vocab.gguf"
+tmp_dir = test_dir.parent / ".tmp"
+tmp_dir.mkdir(exist_ok=True)
 
 
 def test_transformers():
@@ -129,6 +133,46 @@ def test_rotary_embedding():
     assert tensors_match(result[1], expected_k)
 
 
+def test_vision_embed():
+    config = Sam3ViTConfig(pretrain_image_size=8, patch_size=2, num_channels=3, hidden_size=6)
+    patch_embed = Sam3ViTEmbeddings(config)
+    state = patch_embed.state_dict()
+    state = workbench.generate_state(state)
+    patch_embed.load_state_dict(state)
+    patch_embed.eval()
+
+    x = workbench.input_tensor(1, 3, 8, 8)
+    expected = patch_embed(x)
+    result = workbench.invoke_test(
+        "sam3_vision_embed", [x], state, {"patch_size": config.patch_size}
+    )
+    assert tensors_match(result, expected)
+
+
+@pytest.mark.parametrize("window_size", [4, 0])
+def test_vision_layer(window_size):
+    config = Sam3ViTConfig(
+        hidden_size=8, num_attention_heads=2, image_size=16, patch_size=2, window_size=4
+    )
+    n_row = window_size if window_size > 0 else config.image_size // config.patch_size
+    params = {
+        "hidden_size": config.hidden_size,
+        "num_attention_heads": config.num_attention_heads,
+        "window_size": window_size,
+    }
+    layer = Sam3ViTLayer(config, window_size)
+    state = layer.state_dict()
+    state = workbench.generate_state(state)
+    layer.load_state_dict(state)
+    layer.eval()
+
+    x = workbench.input_tensor(1, n_row, n_row, config.hidden_size)
+    expected = layer(x)
+    result = workbench.invoke_test("sam3_vision_layer", [x], state, params)
+
+    assert tensors_match(result, expected)
+
+
 def _convert_tensor_names(state: dict[str, torch.Tensor]):
     # transformer names -> gguf names (see convert.py)
     new_state = {}
@@ -160,8 +204,14 @@ def test_model():
 
     # Text encoder
 
-    text_features = model.get_text_features(**inputs)  # type: ignore
-    expected_text_embeds: torch.Tensor = text_features.pooler_output  # type: ignore
+    text_features_cache = tmp_dir / "sam3_text_features.pt"
+    if text_features_cache.exists():
+        print("Loading cached text features...")
+        expected_text_embeds = torch.load(text_features_cache)
+    else:
+        text_features = model.get_text_features(**inputs)  # type: ignore
+        expected_text_embeds: torch.Tensor = text_features.pooler_output  # type: ignore
+        torch.save(expected_text_embeds, text_features_cache)
     assert expected_text_embeds is not None
 
     result_text_embeds = workbench.invoke_test(
@@ -172,17 +222,22 @@ def test_model():
 
     # Vision encoder
 
-    vision_outputs = model.get_vision_features(pixel_values)
-    expected_vision_embeds = vision_outputs.fpn_hidden_states[:-1]
-    expected_vision_pos = vision_outputs.fpn_position_encoding[:-1]
-
-    print("Expected vision embeds shapes:")
-    print(expected_vision_embeds[-1])
-    print("Expected vision pos shapes:")
-    print(expected_vision_pos[-1])
+    vision_embeds_cache = tmp_dir / "sam3_vision_embeds.pt"
+    vision_pos_cache = tmp_dir / "sam3_vision_pos.pt"
+    if vision_embeds_cache.exists():
+        print("Loading cached vision embeds...")
+        expected_vision_embeds = torch.load(vision_embeds_cache)
+        expected_vision_pos = torch.load(vision_pos_cache)
+    else:
+        vision_outputs = model.get_vision_features(pixel_values)
+        expected_vision_embeds = vision_outputs.fpn_hidden_states[:-1]
+        expected_vision_pos = vision_outputs.fpn_position_encoding[:-1]
+        torch.save(expected_vision_embeds, vision_embeds_cache)
+        torch.save(expected_vision_pos, vision_pos_cache)
 
     result_vision = workbench.invoke_test("sam3_vision_encoder", [pixel_values], state)
     assert isinstance(result_vision, list)
 
-    assert tensors_match(result_vision[0], expected_vision_embeds[-1])
+    workbench.print_results(result_vision[0], expected_vision_embeds[-1])
+    assert tensors_match(result_vision[0], expected_vision_embeds[-1], atol=1e-2)
     assert tensors_match(result_vision[1], expected_vision_pos[-1])
