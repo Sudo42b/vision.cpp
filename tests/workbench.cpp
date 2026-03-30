@@ -320,16 +320,22 @@ DEF(sam3_vision_embed)(model_ref m, span<tensor> input, param_dict const& p) {
 DEF(sam3_vision_layer)(model_ref m, span<tensor> input, param_dict const& p) {
     int64_t n_pos = input[0]->ne[1] * input[0]->ne[2];
     int window_size = p.get("window_size", 4);
+    int window = p.get("is_global", 0) == 1 ? 0 : window_size;
     int n_heads = p.get("n_heads", 2);
-    float scale = window_size == 0 ? 1.0f : window_size / float(input[0]->ne[1]);
+    float scale = window == 0 ? window_size / float(input[0]->ne[1]) : 1.0f;
 
-    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(m, n_pos, 1.0f, "rope_pos");
-    auto output = sam3::vision_layer(m, input[0], window_size, n_heads, pos);
+    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(m, n_pos, scale, "rope_pos");
+    auto output = sam3::vision_layer(m, input[0], window, n_heads, pos);
 
     compute_graph_output(m, output);
     compute_graph_allocate(workbench_graph(), workbench_backend());
     sam3::init_rope_2d_positions(pos, n_pos, input[0]->ne[2]);
     return {output};
+}
+
+DEF(sam3_vision_neck)(model_ref m, span<tensor> input, param_dict const& p) {
+    auto output = sam3::vision_neck(m, input[0]);
+    return std::vector(output.fpn_hidden_states.begin(), output.fpn_hidden_states.end());
 }
 
 DEF(sam3_vision_encoder)(model_ref m, span<tensor> input, param_dict const& p) {

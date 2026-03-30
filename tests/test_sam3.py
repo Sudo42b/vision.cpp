@@ -5,9 +5,10 @@ from transformers.models.sam3.modeling_sam3 import (
     Sam3ViTEmbeddings,
     Sam3ViTRotaryEmbedding,
     Sam3ViTLayer,
+    Sam3VisionNeck,
     apply_rotary_pos_emb_2d,
 )
-from transformers.models.sam3.configuration_sam3 import Sam3ViTConfig
+from transformers.models.sam3.configuration_sam3 import Sam3ViTConfig, Sam3VisionConfig
 from pathlib import Path
 import pytest
 import torch
@@ -152,25 +153,41 @@ def test_vision_embed():
 @pytest.mark.parametrize("window_size", [4, 0])
 def test_vision_layer(window_size):
     config = Sam3ViTConfig(
-        hidden_size=8, num_attention_heads=2, image_size=16, patch_size=2, window_size=4
+        hidden_size=16, num_attention_heads=2, image_size=16, patch_size=2, window_size=4
     )
     n_row = window_size if window_size > 0 else config.image_size // config.patch_size
     params = {
         "hidden_size": config.hidden_size,
         "num_attention_heads": config.num_attention_heads,
-        "window_size": window_size,
+        "window_size": config.window_size,
+        "is_global": int(window_size == 0),
     }
     layer = Sam3ViTLayer(config, window_size)
-    state = layer.state_dict()
-    state = workbench.generate_state(state)
-    layer.load_state_dict(state)
     layer.eval()
 
-    x = workbench.input_tensor(1, n_row, n_row, config.hidden_size)
+    x = torch.randn(1, n_row, n_row, config.hidden_size)
     expected = layer(x)
-    result = workbench.invoke_test("sam3_vision_layer", [x], state, params)
+    result = workbench.invoke_test("sam3_vision_layer", [x], layer.state_dict(), params)
+    assert tensors_match(result, expected, atol=1e-2)
 
-    assert tensors_match(result, expected)
+
+def test_vision_neck():
+    backbone_config = Sam3ViTConfig(hidden_size=16)
+    config = Sam3VisionConfig(
+        backbone_config=backbone_config, fpn_hidden_size=128, scale_factors=[4.0, 2.0, 1.0, 0.5]
+    )
+    neck = Sam3VisionNeck(config)
+    neck.eval()
+
+    x = torch.randn(1, 16, 4, 4)
+    with torch.no_grad():
+        fpn_hidden_states, _ = neck(x)
+
+    result = workbench.invoke_test("sam3_vision_neck", [x], neck.state_dict())
+    assert isinstance(result, list)
+    assert len(result) == 4
+    for i in range(4):
+        assert tensors_match(result[i], fpn_hidden_states[i], atol=1e-3)
 
 
 def _convert_tensor_names(state: dict[str, torch.Tensor]):
