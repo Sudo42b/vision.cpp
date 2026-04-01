@@ -311,6 +311,7 @@ struct sam3_params {
 };
 
 tensor vision_embed(model_ref m, tensor image, int patch_size) {
+    ASSERT(!(m.flags & model_build_flag::cwhn), "expecting WHCN format");
     auto [w, h, c, b] = nelements(image);
     int64_t wp = w / patch_size;
     int64_t hp = h / patch_size;
@@ -332,7 +333,8 @@ tensor vision_embed(model_ref m, tensor image, int patch_size) {
         pos_embed = ggml_repeat_4d(m, pos_embed, hidden_size, wp, hp, 1);
         pos_embed = ggml_reshape_3d(m, pos_embed, hidden_size, wp * hp, 1);
     }
-    return ggml_add(m, embed, pos_embed);
+    embed = ggml_add(m, embed, pos_embed);
+    return named(m, embed);
 }
 
 tensor mlp(model_ref m, tensor x) {

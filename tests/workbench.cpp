@@ -78,6 +78,17 @@ struct test_case_def {
 // Test entry points
 //
 
+DEF(capture)(model_ref m, span<tensor> input, param_dict const& p) {
+    tensor input_copy = ggml_cont(m, input[0]);
+    ggml_set_name(input_copy, "input_copy");
+    tensor scaled = ggml_scale(m, input_copy, 2.0f);
+    ggml_set_name(scaled, "scaled");
+    tensor added = ggml_add(m, scaled, m.weights("bias"));
+    ggml_set_name(added, "added");
+    tensor result = ggml_sum(m, added);
+    return {result};
+}
+
 DEF(conv_2d_depthwise_nchw)(model_ref m, span<tensor> input, param_dict const& p) {
     int stride = p.get("stride", 1);
     int pad = p.get("pad", 0);
@@ -323,6 +334,10 @@ DEF(sam3_vision_layer)(model_ref m, span<tensor> input, param_dict const& p) {
     int window = p.get("is_global", 0) == 1 ? 0 : window_size;
     int n_heads = p.get("n_heads", 2);
     float scale = window == 0 ? window_size / float(input[0]->ne[1]) : 1.0f;
+    bool flash_attn = p.get("attn", "default") == "flash_attn"sv;
+    if (flash_attn) {
+        m.flags = m.flags | model_build_flag::flash_attention;
+    }
 
     sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(m, n_pos, scale, "rope_pos");
     auto output = sam3::vision_layer(m, input[0], window, n_heads, pos);
@@ -339,8 +354,13 @@ DEF(sam3_vision_neck)(model_ref m, span<tensor> input, param_dict const& p) {
 }
 
 DEF(sam3_vision_encoder)(model_ref m, span<tensor> input, param_dict const& p) {
+    m.flags = m.flags | model_build_flag::flash_attention;
     sam3::sam3_params params;
-    auto output = sam3::encode_vision(m["det.ve"], input[0], params.vision);
+
+    tensor input_ex = ggml_cont(m, input[0]);
+    ggml_set_name(input_ex, "input_ex");
+
+    auto output = sam3::encode_vision(m["det.ve"], input_ex, params.vision);
     compute_graph_output(m, output.fpn_hidden_states[3], "fpn_hidden_state_3");
     compute_graph_allocate(workbench_graph(), workbench_backend());
 
@@ -750,25 +770,19 @@ void workbench_run(
 
     test_case const& test = workbench_find_test(test_name);
     std::vector<tensor> outputs = test.func(m, inputs, test_params);
+
+    for (char const* name : capture_names) {
+        if (tensor t = ggml_get_tensor(m, name)) {
+            outputs.push_back(t);
+        } else {
+            printf("WARNING: Capture tensor not found in graph: %s\n", name);
+        }
+    }
+
     for (tensor& out : outputs) {
         out = compute_graph_output(m, ggml_cont(m, out));
     }
-
     ASSERT(!outputs.empty(), "Test function must return at least one output tensor");
-
-    for (char const* name : capture_names) {
-        tensor t = ggml_graph_get_tensor(graph.graph, name);
-        if (!t) {
-            printf("WARNING: Capture tensor not found in graph: %s\n", name);
-            continue;
-        }
-        if (!ggml_is_contiguous(t)) {
-            t = ggml_cont(m, t);
-            ggml_set_name(t, name);
-        }
-        ggml_set_output(t);
-        outputs.push_back(t);
-    }
 
     compute_graph_allocate(graph, w.current_backend);
     compute(graph, w.current_backend);

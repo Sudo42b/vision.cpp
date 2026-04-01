@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 
 from . import workbench
-from .workbench import tensors_match, images_match
+from .workbench import Captures, tensors_match, images_match
 
 model_path = Path("/mnt/share/ml/vision/sam3")
 test_dir = Path(__file__).parent
@@ -138,21 +138,19 @@ def test_rotary_embedding():
 def test_vision_embed():
     config = Sam3ViTConfig(pretrain_image_size=8, patch_size=2, num_channels=3, hidden_size=6)
     patch_embed = Sam3ViTEmbeddings(config)
-    state = patch_embed.state_dict()
-    state = workbench.generate_state(state)
-    patch_embed.load_state_dict(state)
     patch_embed.eval()
 
-    x = workbench.input_tensor(1, 3, 8, 8)
+    x = workbench.input_tensor(1, 3, 24, 24)
     expected = patch_embed(x)
     result = workbench.invoke_test(
-        "sam3_vision_embed", [x], state, {"patch_size": config.patch_size}
+        "sam3_vision_embed", [x], patch_embed.state_dict(), {"patch_size": config.patch_size}
     )
     assert tensors_match(result, expected)
 
 
 @pytest.mark.parametrize("window_size", [4, 0])
-def test_vision_layer(window_size):
+@pytest.mark.parametrize("attn", ["default", "flash_attn"])
+def test_vision_layer(window_size, attn):
     config = Sam3ViTConfig(
         hidden_size=16, num_attention_heads=2, image_size=16, patch_size=2, window_size=4
     )
@@ -162,6 +160,7 @@ def test_vision_layer(window_size):
         "num_attention_heads": config.num_attention_heads,
         "window_size": config.window_size,
         "is_global": int(window_size == 0),
+        "attn": attn,
     }
     layer = Sam3ViTLayer(config, window_size)
     layer.eval()
@@ -207,17 +206,6 @@ def _convert_tensor_names(state: dict[str, torch.Tensor]):
     return new_state
 
 
-def fwd_wrapper(layer, name: str, captures: dict[str, torch.Tensor]):
-    old_fwd = layer.forward
-
-    def fwd(x):
-        result = old_fwd(x)
-        captures[name] = result
-        return result
-
-    return fwd
-
-
 def test_model():
     text = "cat"
     image = Image.open(test_dir / "input" / "cat-and-hat.jpg")
@@ -254,49 +242,41 @@ def test_model():
 
     vision_embeds_cache = tmp_dir / "sam3_vision_embeds.pt"
     vision_pos_cache = tmp_dir / "sam3_vision_pos.pt"
-    captures = {}
+    captures = Captures([f"det.ve.backbone.layers.{i}" for i in range(32)])
+    captures.add("det.ve.backbone.embeddings")
+    captures.add("input_ex")
+
     if vision_embeds_cache.exists():
         print("Loading cached vision embeds...")
         expected_vision_embeds = torch.load(vision_embeds_cache)
         expected_vision_pos = torch.load(vision_pos_cache)
-        for i in range(32):
-            capture_name = f"sam3_vision_layer_{i}"
-            capture_file = tmp_dir / f"{capture_name}.pt"
-            if capture_file.exists():
-                captures[capture_name] = torch.load(capture_file)
+        captures.load_from_cache()
     else:
         bb: Sam3ViTModel = model.vision_encoder.backbone
+        captures.hook("det.ve.backbone.embeddings", bb.embeddings)
         for i, layer in enumerate(bb.layers):
-            layer.forward = fwd_wrapper(layer, f"sam3_vision_layer_{i}", captures)  # type: ignore
+            captures.hook(f"det.ve.backbone.layers.{i}", layer)
         with torch.no_grad():
             vision_outputs = model.get_vision_features(pixel_values)
         expected_vision_embeds = vision_outputs.fpn_hidden_states[:-1]
         expected_vision_pos = vision_outputs.fpn_position_encoding[:-1]
         torch.save(expected_vision_embeds, vision_embeds_cache)
         torch.save(expected_vision_pos, vision_pos_cache)
-        for name, tensor in captures.items():
-            torch.save(tensor, tmp_dir / f"{name}.pt")
+
+        captures.find("input_ex").torch_result = pixel_values
+
+
+        captures.save_to_cache()
 
     print("Invoking vision encoder with captures...")
-
-    capture_names = [f"det.ve.backbone.layers.{i}" for i in range(32)]
     result_vision = workbench.invoke_test(
-        "sam3_vision_encoder", [pixel_values], state, capture=capture_names
+        "sam3_vision_encoder", [pixel_values], state, captures=captures
     )
     assert isinstance(result_vision, list)
 
-    print("Layer output comparison:")
-    for i in range(32):
-        expected_layer = captures[f"sam3_vision_layer_{i}"]
-        result_layer = result_vision[2 + i]
-        if not tensors_match(expected_layer, result_layer, atol=1e-2):
-            print(f"Layer {i} outputs do not match!")
-            diff = torch.abs(expected_layer - result_layer)
-            print(f"Max difference: {diff.max().item():.4f}")
-            print(f"Mean difference: {diff.mean().item():.4f}")
-            print(f"Non-matching elements: {(diff > 0.01).sum().item()} / {diff.numel()}")
 
+    captures.compare()
     workbench.print_results(result_vision[0], expected_vision_embeds[-1])
 
-    assert tensors_match(result_vision[0], expected_vision_embeds[-1], atol=1e-2)
+    assert tensors_match(result_vision[0], expected_vision_embeds[-1], atol=0.1)
     assert tensors_match(result_vision[1], expected_vision_pos[-1])

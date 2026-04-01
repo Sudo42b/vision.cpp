@@ -1,4 +1,5 @@
 import ctypes
+from dataclasses import dataclass
 import torch
 import os
 import platform
@@ -133,13 +134,87 @@ except OSError as e:
     print(f"Error loading vision-workbench library: {e}")
 
 
+@dataclass
+class Capture:
+    visp_name: str
+    visp_result: torch.Tensor | None = None
+    torch_result: torch.Tensor | None = None
+
+    @property
+    def filename(self):
+        return self.visp_name.replace(".", "_") + ".pt"
+
+    def save(self):
+        assert self.torch_result is not None
+        torch.save(self.torch_result, root_dir / ".tmp" / self.filename)
+
+    def load(self):
+        self.torch_result = torch.load(root_dir / ".tmp" / self.filename)
+
+
+class Captures:
+    def __init__(self, names: list[str] | None = None):
+        self.list: list[Capture] = []
+        if names is not None:
+            for name in names:
+                self.add(name)
+
+    def add(self, name: str):
+        capture = Capture(visp_name=name)
+        self.list.append(capture)
+        return capture
+
+    def find(self, name: str):
+        return next((c for c in self.list if c.visp_name == name), None)
+    
+    def __getitem__(self, name: str):
+        if capture := self.find(name):
+            return capture
+        raise KeyError(name)
+
+    def hook(self, name: str, module: torch.nn.Module):
+        capture = self.find(name)
+        if capture is None:
+            capture = self.add(name)
+
+        def hook(module, input, output):
+            capture.torch_result = output.detach().cpu()
+
+        module.register_forward_hook(hook)
+
+    @property
+    def names(self):
+        return [capture.visp_name for capture in self.list]
+
+    def save_to_cache(self):
+        for capture in self.list:
+            capture.save()
+
+    def load_from_cache(self):
+        for capture in self.list:
+            capture.load()
+
+    def compare(self, rtol=0.01, atol=0.001):
+        result = True
+        for capture in self.list:
+            assert capture.visp_result is not None and capture.torch_result is not None
+            if not tensors_match(capture.visp_result, capture.torch_result, rtol=rtol, atol=atol):
+                print(f"\nCapture {capture.visp_name} does not match!")
+                print(
+                    f"Max diff: {(capture.visp_result - capture.torch_result).abs().max().item()}"
+                )
+                print_results(capture.visp_result, capture.torch_result)
+                result = False
+        return result
+
+
 def invoke_test(
     test_case: str,
     input: torch.Tensor | list[torch.Tensor],
     state: dict[str, torch.Tensor],
     params: Mapping[str, str | int | float] = {},
     backend: str = "cpu",
-    capture: list[str] | None = None,
+    captures: Captures | None = None,
 ):
     input = input if isinstance(input, list) else [input]
     raw_inputs = [torch_to_raw_tensor(f"input{i}", tensor) for i, tensor in enumerate(input)]
@@ -150,7 +225,7 @@ def invoke_test(
     raw_params = encode_params(params)
     raw_output = ctypes.POINTER(RawTensor)()
     output_size = ctypes.c_int32(0)
-    capture = capture or []
+    capture = captures.names if captures else []
     raw_capture = (ctypes.c_char_p * len(capture))(*[name.encode() for name in capture])
 
     result = lib.visp_workbench(
@@ -170,8 +245,15 @@ def invoke_test(
     if output_size.value == 0:
         return None
 
-    output = [raw_to_torch_tensor(raw_output[i]) for i in range(output_size.value)]
-    output = output[0] if len(output) == 1 else output
+    outputs = [raw_to_torch_tensor(raw_output[i]) for i in range(output_size.value)]
+    if captures is not None:
+        offset = len(outputs) - len(capture)
+        assert offset >= 0, "More captures requested than outputs returned"
+        for i, name in enumerate(capture):
+            captures.list[i].visp_result = outputs[i + offset]
+        outputs = outputs[:offset]
+
+    output = outputs[0] if len(outputs) == 1 else outputs
     return output
 
 
@@ -287,7 +369,6 @@ def fuse_conv_2d_batch_norm(
 
 def print_results(result: Tensor, expected: Tensor):
     torch.set_printoptions(precision=3, linewidth=100, sci_mode=False)
-    print("\ntorch seed:", torch.initial_seed())
     print("\nresult -----", result, sep="\n")
     print("\nexpected ---", expected, sep="\n")
 

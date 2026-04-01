@@ -2,8 +2,20 @@ import pytest
 import torch
 
 from . import workbench
-from .workbench import input_tensor, to_nchw, to_nhwc, tensors_match
+from .workbench import input_tensor, to_nchw, to_nhwc, tensors_match, Captures
 
+
+def test_captures():
+    x = torch.tensor([1.0, 2.0, 3.0])
+    bias = torch.tensor([0.5, 1.0, 1.5])
+    captures = Captures(["input_copy", "scaled", "added"])
+    captures["input_copy"].torch_result = x
+    captures["scaled"].torch_result = x * 2
+    captures["added"].torch_result = x * 2 + bias
+    result = workbench.invoke_test("capture", x, {"bias": bias}, captures=captures)
+    expected = (x * 2 + bias).sum()
+    assert captures.compare()
+    assert tensors_match(result, expected)
 
 def test_linear():
     x = torch.rand(2, 5)
