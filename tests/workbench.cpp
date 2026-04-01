@@ -717,7 +717,8 @@ void workbench_run(
     std::string_view test_name,
     span<raw_tensor const> tensors,
     span<raw_param const> params,
-    backend_type backend_type) {
+    backend_type backend_type,
+    span<char const* const> capture_names) {
 
     workbench& w = get_workbench();
     w.current_backend = backend_init(backend_type);
@@ -754,6 +755,20 @@ void workbench_run(
     }
 
     ASSERT(!outputs.empty(), "Test function must return at least one output tensor");
+
+    for (char const* name : capture_names) {
+        tensor t = ggml_graph_get_tensor(graph.graph, name);
+        if (!t) {
+            printf("WARNING: Capture tensor not found in graph: %s\n", name);
+            continue;
+        }
+        if (!ggml_is_contiguous(t)) {
+            t = ggml_cont(m, t);
+            ggml_set_name(t, name);
+        }
+        ggml_set_output(t);
+        outputs.push_back(t);
+    }
 
     compute_graph_allocate(graph, w.current_backend);
     compute(graph, w.current_backend);
@@ -798,12 +813,14 @@ int32_t visp_workbench(
     int32_t n_params,
     visp::raw_tensor const** outputs,
     int32_t* n_outputs,
-    int32_t backend) {
+    int32_t backend,
+    char const** capture_names,
+    int32_t n_captures) {
 
     try {
         visp::workbench_run(
             testcase, std::span(inputs, n_inputs), std::span(params, n_params),
-            visp::backend_type(backend));
+            visp::backend_type(backend), std::span(capture_names, n_captures));
 
         *outputs = visp::get_workbench().outputs.data();
         *n_outputs = int32_t(visp::get_workbench().outputs.size());

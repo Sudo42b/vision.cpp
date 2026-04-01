@@ -248,7 +248,7 @@ tensor clip_attention(model_ref m, tensor x, tensor attention_mask) {
 
 tensor clip_mlp(model_ref m, tensor x) {
     x = linear(m["fc1"], x);
-    x = ggml_gelu_inplace(m, x);
+    x = ggml_gelu(m, x);
     x = linear(m["fc2"], x);
     return x;
 }
@@ -337,7 +337,7 @@ tensor vision_embed(model_ref m, tensor image, int patch_size) {
 
 tensor mlp(model_ref m, tensor x) {
     x = linear(m["fc1"], x);
-    x = ggml_gelu_inplace(m, x);
+    x = ggml_gelu(m, x);
     x = linear(m["fc2"], x);
     return x;
 }
@@ -463,7 +463,7 @@ tensor rope_attention(model_ref m, tensor x, int n_heads, rope_2d_positions cons
 tensor vision_layer(
     model_ref m, tensor x, int window_size, int n_heads, rope_2d_positions const& rope_pos) {
 
-    tensor residual = x;
+    tensor residual_attn = x;
     x = layer_norm(m["layer_norm1"], x);
 
     auto [c, w, h, b] = nelements(x);
@@ -479,13 +479,13 @@ tensor vision_layer(
     } else {
         x = ggml_reshape_4d(m, x, c, w, h, b);
     }
-    x = ggml_add(m, x, residual);
+    x = ggml_add(m, x, residual_attn);
 
-    residual = x;
+    tensor residual_mlp = x;
     x = layer_norm(m["layer_norm2"], x);
     x = mlp(m["mlp"], x);
-    x = ggml_add(m, x, residual);
-    return x;
+    x = ggml_add(m, x, residual_mlp);
+    return named(m, x);
 }
 
 tensor vision_transformer(model_ref m, tensor image, sam3_vit_params const& p) {
@@ -579,7 +579,7 @@ tensor fpn_layer(model_ref m, tensor x, int index) {
     switch (index) {
         case 0: // scale factor = 4
             x = conv_transpose_2d(m["scale_layers.0"], x, 2);
-            x = ggml_gelu_inplace(m, x);
+            x = ggml_gelu(m, x);
             x = conv_transpose_2d(m["scale_layers.2"], x, 2);
             break;
         case 1: // scale factor = 2

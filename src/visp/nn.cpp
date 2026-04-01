@@ -6,15 +6,15 @@ namespace visp {
 tensor linear(model_ref m, tensor x) {
     x = ggml_mul_mat(m, m.weights("weight"), x);
     if (tensor bias = m.find("bias")) {
-        x = ggml_add_inplace(m, x, bias);
+        x = ggml_add(m, x, bias);
     }
     return x;
 }
 
 tensor layer_norm(model_ref m, tensor x, float eps) {
     x = ggml_norm(m, x, eps);
-    x = ggml_mul_inplace(m, x, m.weights("weight"));
-    x = ggml_add_inplace(m, x, m.weights("bias"));
+    x = ggml_mul(m, x, m.weights("weight"));
+    x = ggml_add(m, x, m.weights("bias"));
     return named(m, x);
 }
 
@@ -64,7 +64,7 @@ tensor add_bias_2d(model_ref m, tensor x) {
         if (!(m.flags & model_build_flag::cwhn)) {
             bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
         }
-        x = ggml_add_inplace(m, x, bias);
+        x = ggml_add(m, x, bias);
     }
     return x;
 }
@@ -162,8 +162,8 @@ tensor batch_norm_2d(model_ref m, tensor x) {
         weight = ggml_reshape_4d(m, weight, 1, 1, weight->ne[0], 1);
         bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
     }
-    x = ggml_mul_inplace(m, x, weight);
-    x = ggml_add_inplace(m, x, bias);
+    x = ggml_mul(m, x, weight);
+    x = ggml_add(m, x, bias);
     return named(m, x);
 }
 

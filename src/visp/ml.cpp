@@ -664,7 +664,13 @@ void tensor_save(tensor x, char const* filepath) {
     if (!file) {
         throw except("Failed to open file for writing: {}", filepath);
     }
-    size_t written = fwrite(x->data, 1, ggml_nbytes(x), file);
+    size_t written = 0;
+    if (x->buffer) {
+        tensor_data data = transfer_from_backend(x);
+        written = fwrite(data.data.get(), 1, ggml_nbytes(x), file);
+    } else {
+        written = fwrite(x->data, 1, ggml_nbytes(x), file);
+    }
     fclose(file);
     if (written != ggml_nbytes(x)) {
         throw except("Failed to write tensor data to file: {}", filepath);

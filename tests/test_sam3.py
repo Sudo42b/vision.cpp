@@ -1,8 +1,9 @@
-from transformers import Sam3Config, Sam3Processor, Sam3Model
+from transformers import Sam3Config, Sam3Processor, Sam3Model, Sam3VisionModel
 from transformers.masking_utils import create_causal_mask
 from transformers.models.sam3.modeling_sam3 import (
     Sam3SinePositionEmbedding,
     Sam3ViTEmbeddings,
+    Sam3ViTModel,
     Sam3ViTRotaryEmbedding,
     Sam3ViTLayer,
     Sam3VisionNeck,
@@ -206,6 +207,17 @@ def _convert_tensor_names(state: dict[str, torch.Tensor]):
     return new_state
 
 
+def fwd_wrapper(layer, name: str, captures: dict[str, torch.Tensor]):
+    old_fwd = layer.forward
+
+    def fwd(x):
+        result = old_fwd(x)
+        captures[name] = result
+        return result
+
+    return fwd
+
+
 def test_model():
     text = "cat"
     image = Image.open(test_dir / "input" / "cat-and-hat.jpg")
@@ -226,7 +238,8 @@ def test_model():
         print("Loading cached text features...")
         expected_text_embeds = torch.load(text_features_cache)
     else:
-        text_features = model.get_text_features(**inputs)  # type: ignore
+        with torch.no_grad():
+            text_features = model.get_text_features(**inputs)  # type: ignore
         expected_text_embeds: torch.Tensor = text_features.pooler_output  # type: ignore
         torch.save(expected_text_embeds, text_features_cache)
     assert expected_text_embeds is not None
@@ -241,20 +254,49 @@ def test_model():
 
     vision_embeds_cache = tmp_dir / "sam3_vision_embeds.pt"
     vision_pos_cache = tmp_dir / "sam3_vision_pos.pt"
+    captures = {}
     if vision_embeds_cache.exists():
         print("Loading cached vision embeds...")
         expected_vision_embeds = torch.load(vision_embeds_cache)
         expected_vision_pos = torch.load(vision_pos_cache)
+        for i in range(32):
+            capture_name = f"sam3_vision_layer_{i}"
+            capture_file = tmp_dir / f"{capture_name}.pt"
+            if capture_file.exists():
+                captures[capture_name] = torch.load(capture_file)
     else:
-        vision_outputs = model.get_vision_features(pixel_values)
+        bb: Sam3ViTModel = model.vision_encoder.backbone
+        for i, layer in enumerate(bb.layers):
+            layer.forward = fwd_wrapper(layer, f"sam3_vision_layer_{i}", captures)  # type: ignore
+        with torch.no_grad():
+            vision_outputs = model.get_vision_features(pixel_values)
         expected_vision_embeds = vision_outputs.fpn_hidden_states[:-1]
         expected_vision_pos = vision_outputs.fpn_position_encoding[:-1]
         torch.save(expected_vision_embeds, vision_embeds_cache)
         torch.save(expected_vision_pos, vision_pos_cache)
+        for name, tensor in captures.items():
+            torch.save(tensor, tmp_dir / f"{name}.pt")
 
-    result_vision = workbench.invoke_test("sam3_vision_encoder", [pixel_values], state)
+    print("Invoking vision encoder with captures...")
+
+    capture_names = [f"det.ve.backbone.layers.{i}" for i in range(32)]
+    result_vision = workbench.invoke_test(
+        "sam3_vision_encoder", [pixel_values], state, capture=capture_names
+    )
     assert isinstance(result_vision, list)
 
+    print("Layer output comparison:")
+    for i in range(32):
+        expected_layer = captures[f"sam3_vision_layer_{i}"]
+        result_layer = result_vision[2 + i]
+        if not tensors_match(expected_layer, result_layer, atol=1e-2):
+            print(f"Layer {i} outputs do not match!")
+            diff = torch.abs(expected_layer - result_layer)
+            print(f"Max difference: {diff.max().item():.4f}")
+            print(f"Mean difference: {diff.mean().item():.4f}")
+            print(f"Non-matching elements: {(diff > 0.01).sum().item()} / {diff.numel()}")
+
     workbench.print_results(result_vision[0], expected_vision_embeds[-1])
+
     assert tensors_match(result_vision[0], expected_vision_embeds[-1], atol=1e-2)
     assert tensors_match(result_vision[1], expected_vision_pos[-1])

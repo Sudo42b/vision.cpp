@@ -125,6 +125,8 @@ try:
         ctypes.POINTER(ctypes.POINTER(RawTensor)),
         ctypes.POINTER(ctypes.c_int32),
         ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_char_p),  # capture_names
+        ctypes.c_int32,  # n_captures
     ]
     lib.visp_workbench.restype = ctypes.c_int32
 except OSError as e:
@@ -137,6 +139,7 @@ def invoke_test(
     state: dict[str, torch.Tensor],
     params: Mapping[str, str | int | float] = {},
     backend: str = "cpu",
+    capture: list[str] | None = None,
 ):
     input = input if isinstance(input, list) else [input]
     raw_inputs = [torch_to_raw_tensor(f"input{i}", tensor) for i, tensor in enumerate(input)]
@@ -147,6 +150,8 @@ def invoke_test(
     raw_params = encode_params(params)
     raw_output = ctypes.POINTER(RawTensor)()
     output_size = ctypes.c_int32(0)
+    capture = capture or []
+    raw_capture = (ctypes.c_char_p * len(capture))(*[name.encode() for name in capture])
 
     result = lib.visp_workbench(
         test_case.encode(),
@@ -157,6 +162,8 @@ def invoke_test(
         ctypes.byref(raw_output),
         ctypes.byref(output_size),
         1 if backend == "cpu" else 2,
+        raw_capture if capture else None,
+        len(capture),
     )
 
     assert result == 0, f"Test case {test_case} failed"
