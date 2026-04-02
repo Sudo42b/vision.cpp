@@ -166,7 +166,7 @@ class Captures:
 
     def find(self, name: str):
         return next((c for c in self.list if c.visp_name == name), None)
-    
+
     def __getitem__(self, name: str):
         if capture := self.find(name):
             return capture
@@ -194,16 +194,16 @@ class Captures:
         for capture in self.list:
             capture.load()
 
-    def compare(self, rtol=0.01, atol=0.001):
+    def compare(self, print_tensors=False, rtol=0.01, atol=0.001):
         result = True
         for capture in self.list:
             assert capture.visp_result is not None and capture.torch_result is not None
             if not tensors_match(capture.visp_result, capture.torch_result, rtol=rtol, atol=atol):
                 print(f"\nCapture {capture.visp_name} does not match!")
-                print(
-                    f"Max diff: {(capture.visp_result - capture.torch_result).abs().max().item()}"
-                )
-                print_results(capture.visp_result, capture.torch_result)
+                diff = (capture.visp_result - capture.torch_result).abs()
+                print(f"Diff max={diff.max().item()}, mean={diff.mean().item()}")
+                if print_tensors:
+                    print_results(capture.visp_result, capture.torch_result)
                 result = False
         return result
 
@@ -391,15 +391,19 @@ def tensors_match(
     return torch.allclose(result, expected, rtol=rtol, atol=atol)
 
 
-def images_match(result: Tensor | list[Tensor] | None, expected: Tensor | list[Tensor], tol=0.001):
+def assert_images_match(
+    result: Tensor | list[Tensor] | None, expected: Tensor | list[Tensor], tol=0.001
+):
     assert result is not None, "No result returned"
     if isinstance(expected, list):
         assert isinstance(result, list), "Result is not a list"
         assert len(result) == len(expected), f"Expected {len(expected)} tensors, got {len(result)}"
-        return all(images_match(r, e, tol) for r, e in zip(result, expected))
-    assert isinstance(result, Tensor), "Result is not a tensor"
-    rmse = torch.sqrt(torch.mean((result - expected) ** 2))
-    return rmse.item() < tol
+        for r, e in zip(result, expected):
+            assert_images_match(r, e, tol)
+    else:
+        assert isinstance(result, Tensor), "Result is not a tensor"
+        rmse = torch.sqrt(torch.mean((result - expected) ** 2))
+        assert rmse.item() < tol, f"RMSE {rmse.item()} exceeds tolerance {tol}"
 
 
 def dump_image(t: Tensor, filepath: str):

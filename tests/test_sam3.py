@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 
 from . import workbench
-from .workbench import Captures, tensors_match, images_match
+from .workbench import Captures, assert_images_match, tensors_match
 
 model_path = Path("/mnt/share/ml/vision/sam3")
 test_dir = Path(__file__).parent
@@ -86,7 +86,7 @@ def test_processor():
     assert isinstance(result_pixels, torch.Tensor)
     result_pixels = result_pixels.permute(0, 3, 1, 2)
 
-    assert images_match(result_pixels, expected_pixels, tol=0.05)
+    assert_images_match(result_pixels, expected_pixels, tol=0.05)
 
     result = workbench.invoke_test(
         "sam3_process_text", [], {}, {"text": text, "vocab": str(vocab_path)}
@@ -154,6 +154,7 @@ def test_vision_layer(window_size, attn):
     config = Sam3ViTConfig(
         hidden_size=16, num_attention_heads=2, image_size=16, patch_size=2, window_size=4
     )
+    config.hidden_act = "gelu_pytorch_tanh"
     n_row = window_size if window_size > 0 else config.image_size // config.patch_size
     params = {
         "hidden_size": config.hidden_size,
@@ -168,7 +169,7 @@ def test_vision_layer(window_size, attn):
     x = torch.randn(1, n_row, n_row, config.hidden_size)
     expected = layer(x)
     result = workbench.invoke_test("sam3_vision_layer", [x], layer.state_dict(), params)
-    assert tensors_match(result, expected, atol=1e-2)
+    assert tensors_match(result, expected, atol=1e-3) # precision loss due to GGML_GELU_FP16
 
 
 def test_vision_neck():
@@ -187,7 +188,7 @@ def test_vision_neck():
     assert isinstance(result, list)
     assert len(result) == 4
     for i in range(4):
-        assert tensors_match(result[i], fpn_hidden_states[i], atol=1e-3)
+        assert tensors_match(result[i], fpn_hidden_states[i], atol=1e-4)
 
 
 def _convert_tensor_names(state: dict[str, torch.Tensor]):
@@ -244,7 +245,6 @@ def test_model():
     vision_pos_cache = tmp_dir / "sam3_vision_pos.pt"
     captures = Captures([f"det.ve.backbone.layers.{i}" for i in range(32)])
     captures.add("det.ve.backbone.embeddings")
-    captures.add("input_ex")
 
     if vision_embeds_cache.exists():
         print("Loading cached vision embeds...")
@@ -262,10 +262,6 @@ def test_model():
         expected_vision_pos = vision_outputs.fpn_position_encoding[:-1]
         torch.save(expected_vision_embeds, vision_embeds_cache)
         torch.save(expected_vision_pos, vision_pos_cache)
-
-        captures.find("input_ex").torch_result = pixel_values
-
-
         captures.save_to_cache()
 
     print("Invoking vision encoder with captures...")
@@ -274,9 +270,6 @@ def test_model():
     )
     assert isinstance(result_vision, list)
 
-
-    captures.compare()
-    workbench.print_results(result_vision[0], expected_vision_embeds[-1])
-
-    assert tensors_match(result_vision[0], expected_vision_embeds[-1], atol=0.1)
+    captures.compare(rtol=0.1, atol=0.01)
+    assert_images_match(result_vision[0], expected_vision_embeds[-1], tol=0.05)
     assert tensors_match(result_vision[1], expected_vision_pos[-1])

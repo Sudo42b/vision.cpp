@@ -388,34 +388,26 @@ tensor window_reverse(model_ref m, tensor x, int w, int h, int window) {
     return x;
 }
 
-rope_2d_positions build_rope_2d_positions(model_ref m, int n_pos, float scale, char const* name) {
-    return {
-        compute_graph_input(m, GGML_TYPE_I32, {n_pos, 1, 1, 1}, format<tensor_name>("{}.x", name)),
-        compute_graph_input(m, GGML_TYPE_I32, {n_pos, 1, 1, 1}, format<tensor_name>("{}.y", name)),
-        scale};
-}
+rope_2d_positions build_rope_2d_positions(
+    model_ref m, int n_pos, int n_rows, float scale, char const* name) {
 
-rope_2d_positions get_rope_2d_positions(model_ref m, char const* name) {
-    tensor_name x_name = format<tensor_name>("{}.x", name);
-    tensor_name y_name = format<tensor_name>("{}.y", name);
-    tensor x_pos = ggml_get_tensor(m, x_name.c_str());
-    tensor y_pos = ggml_get_tensor(m, y_name.c_str());
-    ASSERT(x_pos && y_pos);
-    return {x_pos, y_pos, 1.0f};
-}
+    tensor pos_x = compute_graph_input(
+        m, GGML_TYPE_I32, {n_pos, 1, 1, 1}, format<tensor_name>("{}.x", name));
+    tensor pos_y = compute_graph_input(
+        m, GGML_TYPE_I32, {n_pos, 1, 1, 1}, format<tensor_name>("{}.y", name));
 
-void init_rope_2d_positions(rope_2d_positions& pos, int n_pos, int height) {
-    std::vector<int32_t> pos_data(n_pos);
-    // width dimension
+    tensor_data pos_x_data = tensor_alloc(pos_x);
+    tensor_data pos_y_data = tensor_alloc(pos_y);
+
+    span<int32_t> pos_x_indices = pos_x_data.as_i32();
+    span<int32_t> pos_y_indices = pos_y_data.as_i32();
     for (int i = 0; i < n_pos; i++) {
-        pos_data[i] = i % height;
+        pos_x_indices[i] = i % n_rows;
+        pos_y_indices[i] = i / n_rows;
     }
-    transfer_to_backend(pos.x, as_bytes(pos_data));
-    // height dimension
-    for (int i = 0; i < n_pos; i++) {
-        pos_data[i] = i / height;
-    }
-    transfer_to_backend(pos.y, as_bytes(pos_data));
+    m.add_buffer(std::move(pos_x_data));
+    m.add_buffer(std::move(pos_y_data));
+    return {pos_x, pos_y, scale};
 }
 
 tensor apply_rope_2d(model_ref m, tensor x, rope_2d_positions const& pos) {
@@ -500,12 +492,12 @@ tensor vision_transformer(model_ref m, tensor image, sam3_vit_params const& p) {
     x = ggml_reshape_4d(m, x, c, w, h, b);
 
     rope_2d_positions pos_window = build_rope_2d_positions(
-        m, sqr(p.window_size), 1.0f, "_vit_rope_pos_window");
+        m, sqr(p.window_size), p.window_size, 1.0f, "_vit_rope_pos_window");
 
-    int n_pos_global = sqr(p.image_size / p.patch_size);
-    float scale_global = float(p.window_size) / float(p.image_size / p.patch_size);
+    int n_rows_global = p.image_size / p.patch_size;
+    float scale_global = float(p.window_size) / float(n_rows_global);
     rope_2d_positions pos_global = build_rope_2d_positions(
-        m, n_pos_global, scale_global, "_vit_rope_pos_global");
+        m, sqr(n_rows_global), n_rows_global, scale_global, "_vit_rope_pos_global");
 
     x = layer_norm(m["layer_norm"], x);
 
@@ -529,19 +521,25 @@ struct vision_output {
     std::array<tensor, n_layers> fpn_position_encoding;
 };
 
-std::vector<float> generate_sine_position_embedding(
-    int width, int height, int n_pos_feats, bool normalize = false) {
+tensor sine_position_embedding(
+    model_ref m, std::array<int64_t, 4> shape, int n_pos_feats, bool normalize) {
 
     constexpr float temperature = 10000.f;
     constexpr float scale = 2.f * M_PIf;
     constexpr float eps = 1e-6f;
+
+    auto [width, height, _, _b] = shape;
+    auto name = format<tensor_name>(
+        "_sine_pos_embed_{}x{}x{}{}", width, height, n_pos_feats, normalize ? "_norm" : "");
+    tensor pe = compute_graph_input(m, GGML_TYPE_F32, {width, height, n_pos_feats * 2, 1}, name);
+    tensor_data pe_data = tensor_alloc(pe);
 
     std::vector<float> dim_t(n_pos_feats);
     for (int k = 0; k < n_pos_feats; ++k) {
         dim_t[k] = std::pow(temperature, 2.f * (k / 2) / n_pos_feats);
     }
 
-    auto out = std::vector<float>(width * height * n_pos_feats * 2);
+    span<float> pos = pe_data.as_f32();
     for (int h = 0; h < height; ++h) {
         float y = (float)(h + 1);
         if (normalize) {
@@ -556,24 +554,12 @@ std::vector<float> generate_sine_position_embedding(
             for (int k = 0; k < n_pos_feats; ++k) {
                 float y_val = (k % 2 == 0) ? std::sin(y / dim_t[k]) : std::cos(y / dim_t[k]);
                 float x_val = (k % 2 == 0) ? std::sin(x / dim_t[k]) : std::cos(x / dim_t[k]);
-                out[k * height * width + h * width + w] = y_val;
-                out[(n_pos_feats + k) * height * width + h * width + w] = x_val;
+                pos[k * height * width + h * width + w] = y_val;
+                pos[(n_pos_feats + k) * height * width + h * width + w] = x_val;
             }
         }
     }
-    return out;
-}
-
-tensor sine_position_embedding(
-    model_ref m, std::array<int64_t, 4> shape, int n_pos_feats, bool normalize) {
-
-    int width = (int)shape[0];
-    int height = (int)shape[1];
-    tensor pe = ggml_new_tensor_3d(m, GGML_TYPE_F32, width, height, n_pos_feats * 2);
-    ggml_set_input(pe);
-    ggml_format_name(
-        pe, "_sine_position_embedding_%dx%dx%d%s", width, height, n_pos_feats,
-        normalize ? "_normalized" : "");
+    m.add_buffer(std::move(pe_data));
     return pe;
 }
 
@@ -603,11 +589,14 @@ tensor fpn_layer(model_ref m, tensor x, int index) {
 vision_output vision_neck(model_ref m, tensor x) {
     vision_output out;
     model_ref layers = m["fpn_layers"];
+    tensor_name name;
 
     for (int i = 0; i < vision_output::n_layers; ++i) {
         out.fpn_hidden_states[i] = fpn_layer(layers[i], x, i);
-        out.fpn_position_encoding[i] = sine_position_embedding(
-            m, nelements(out.fpn_hidden_states[i]), 64, true);
+        auto dims = nelements(out.fpn_hidden_states[i]);
+        out.fpn_position_encoding[i] = sine_position_embedding(m, dims, dims[2] / 2, true);
+        compute_graph_output(
+            m, out.fpn_position_encoding[i], format(name, "fpn_position_encoding_{}", i));
     }
     return out;
 }

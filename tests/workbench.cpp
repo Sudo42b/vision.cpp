@@ -301,12 +301,9 @@ DEF(sam3_sine_position_embedding)(model_ref m, span<tensor> input, param_dict co
     int height = p.get("height", 8);
     int n_pos_feats = p.get("n_pos_feats", 64);
     bool normalize = p.get("normalize", 0) != 0;
-    auto embeds = sam3::generate_sine_position_embedding(width, height, n_pos_feats, normalize);
-
-    tensor out = ggml_new_tensor_3d(m, GGML_TYPE_F32, width, height, n_pos_feats * 2);
-    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
-    transfer_to_backend(out, as_bytes(embeds));
-    return {out};
+    auto embeds = sam3::sine_position_embedding(
+        m, {width, height, n_pos_feats, 1}, n_pos_feats, normalize);
+    return {embeds};
 }
 
 DEF(sam3_rotary_embedding)(model_ref m, span<tensor> input, param_dict const& p) {
@@ -315,12 +312,10 @@ DEF(sam3_rotary_embedding)(model_ref m, span<tensor> input, param_dict const& p)
     int n_pos = input[0]->ne[2]; // = seq_len = number of patches = width * height
     int height = p.get("height", 8);
 
-    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(m, n_pos, scale, "rope_pos");
+    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(
+        m, n_pos, scale, height, "rope_pos");
     tensor q = sam3::apply_rope_2d(m, input[0], pos);
     tensor k = sam3::apply_rope_2d(m, input[1], pos);
-
-    ggml_backend_alloc_ctx_tensors(m, workbench_backend());
-    sam3::init_rope_2d_positions(pos, n_pos, height);
     return {q, k};
 }
 
@@ -339,13 +334,9 @@ DEF(sam3_vision_layer)(model_ref m, span<tensor> input, param_dict const& p) {
         m.flags = m.flags | model_build_flag::flash_attention;
     }
 
-    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(m, n_pos, scale, "rope_pos");
-    auto output = sam3::vision_layer(m, input[0], window, n_heads, pos);
-
-    compute_graph_output(m, output);
-    compute_graph_allocate(workbench_graph(), workbench_backend());
-    sam3::init_rope_2d_positions(pos, n_pos, input[0]->ne[2]);
-    return {output};
+    sam3::rope_2d_positions pos = sam3::build_rope_2d_positions(
+        m, n_pos, input[0]->ne[2], scale, "rope_pos");
+    return {sam3::vision_layer(m, input[0], window, n_heads, pos)};
 }
 
 DEF(sam3_vision_neck)(model_ref m, span<tensor> input, param_dict const& p) {
@@ -354,24 +345,13 @@ DEF(sam3_vision_neck)(model_ref m, span<tensor> input, param_dict const& p) {
 }
 
 DEF(sam3_vision_encoder)(model_ref m, span<tensor> input, param_dict const& p) {
-    m.flags = m.flags | model_build_flag::flash_attention;
     sam3::sam3_params params;
+    if (p.get("attn", "default") == "flash_attn"sv) {
+        m.flags = m.flags | model_build_flag::flash_attention;
+    }
 
-    tensor input_ex = ggml_cont(m, input[0]);
-    ggml_set_name(input_ex, "input_ex");
-
-    auto output = sam3::encode_vision(m["det.ve"], input_ex, params.vision);
-    compute_graph_output(m, output.fpn_hidden_states[3], "fpn_hidden_state_3");
-    compute_graph_allocate(workbench_graph(), workbench_backend());
-
-    int window = params.vision.window_size;
-    sam3::rope_2d_positions pos_window = sam3::get_rope_2d_positions(m, "_vit_rope_pos_window");
-    sam3::init_rope_2d_positions(pos_window, sqr(window), window);
-
-    int size_patches = params.vision.image_size / params.vision.patch_size;
-    sam3::rope_2d_positions pos_global = sam3::get_rope_2d_positions(m, "_vit_rope_pos_global");
-    sam3::init_rope_2d_positions(pos_global, sqr(size_patches), size_patches);
-
+    auto output = sam3::encode_vision(m["det.ve"], input[0], params.vision);
+    compute_graph_output(m, output.fpn_hidden_states[3], "fpn_hidden_state_3");    
     return {output.fpn_hidden_states[2], output.fpn_position_encoding[2]};
 }
 
