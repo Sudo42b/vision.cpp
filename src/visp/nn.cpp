@@ -116,10 +116,6 @@ tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
 
 tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
     tensor weight = m.weights("weight");
-    if (m.flags & model_build_flag::f16_conv_transpose) {
-        // TODO: ggml_conv_transpose_2d_p0 expects fp16 weights (cpu backend)
-        weight = ggml_cast(m, weight, GGML_TYPE_F16);
-    }
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
     }

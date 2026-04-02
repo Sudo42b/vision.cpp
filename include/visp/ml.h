@@ -71,9 +71,8 @@ enum class model_build_flag {
     cwhn                = 1 << 0,
     conv_2d_direct_cwhn = 1 << 1,
     concat_n            = 1 << 2,
-    f16_conv_transpose  = 1 << 3,
-    window_partition    = 1 << 4,
-    flash_attention     = 1 << 5
+    window_partition    = 1 << 3,
+    flash_attention     = 1 << 4
 }; // clang-format on
 
 using model_build_flags = flags<model_build_flag>;
