@@ -102,7 +102,7 @@ std::vector<tensor> get_intermediate_layers(
         if (contains(layers, i)) {
             tensor out = layer_norm(m["layernorm"], x, 1e-6f);
             ggml_format_name(out, "dino_layer_%d", i);
-            ggml_build_forward_expand(m.graph, out);
+            ggml_build_forward_expand(*m.graph, out);
             outputs.push_back(out);
         }
     }

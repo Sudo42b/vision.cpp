@@ -149,75 +149,6 @@ VISP_API void model_transfer(
     span<int32_t const> conv2d_weights = {});
 
 //
-// Compute graph - wrapper for ggml_cgraph and its associated backend memory
-
-struct compute_graph {
-    ggml_context_ptr context;
-    ggml_cgraph* graph = nullptr;
-    ggml_gallocr_ptr allocr;
-
-    operator ggml_cgraph*() const { return graph; }
-};
-
-// Initializes a compute graph and associated backend allocator.
-VISP_API compute_graph compute_graph_init(size_t size = GGML_DEFAULT_GRAPH_SIZE);
-
-// Allocates memory for inputs, outputs and computations on the backend.
-VISP_API bool compute_graph_allocate(compute_graph&, backend_device const&);
-
-// Runs inference. Blocks until done.
-VISP_API void compute(compute_graph const&, backend_device const&);
-
-//
-// Model ref - represents a ML model
-//
-// * helper for building compute graphs
-// * allows access to the model's weights by name, with an optional name prefix
-//   to support nested modules
-// * pass anywhere ggml_context* is expected while building the graph
-
-struct VISP_API model_ref {
-    ggml_context* weights_context = nullptr;
-    ggml_context* graph_context = nullptr;
-    ggml_cgraph* graph = nullptr;
-    model_build_flags flags;
-    tensor_name prefix;
-
-    model_ref() = default;
-    model_ref(model_weights&);
-    model_ref(model_weights&, compute_graph&);
-
-    explicit model_ref(
-        ggml_context* weights_context,
-        ggml_context* graph_context = nullptr,
-        ggml_cgraph* graph = nullptr,
-        model_build_flags flags = {},
-        tensor_name prefix = {});
-
-    // Find weights tensor by name, prepends the current prefix.
-    tensor find(char const* name) const;    // returns null if not found
-    tensor weights(char const* name) const; // asserts if not found
-
-    model_ref with_prefix(tensor_name new_prefix) const;
-
-    // Returns a model_ref with prefix set to <current prefix>.<sub_module>
-    model_ref operator[](char const* sub_module) const;
-    model_ref operator[](tensor_name sub_module) const;
-    model_ref operator[](int sub_module) const;
-
-    operator ggml_context*() const { return graph_context; }
-};
-
-// Sets the name of a tensor to the current model prefix.
-VISP_API tensor named(model_ref const&, tensor);
-
-// Creates a new tensor as part of the model graph where input data can be stored.
-VISP_API tensor compute_graph_input(model_ref const&, ggml_type, i64x4 ne, tensor_name = "input");
-
-// Marks a tensor as an output of the compute graph.
-VISP_API tensor compute_graph_output(model_ref const&, tensor, tensor_name = "output");
-
-//
 // Tensor data and transfer to backend device
 
 struct VISP_API tensor_data {
@@ -249,6 +180,80 @@ VISP_API void transfer_to_backend(tensor x, image_view const& data);
 VISP_API tensor_data transfer_from_backend(tensor x);
 VISP_API void transfer_from_backend(tensor x, span<float> dst, size_t offset = 0);
 VISP_API void transfer_from_backend(tensor x, image_span const& dst);
+
+//
+// Compute graph - wrapper for ggml_cgraph and its associated backend memory
+
+struct compute_graph {
+    ggml_context_ptr context;
+    ggml_cgraph* graph = nullptr;
+    ggml_gallocr_ptr allocr;
+
+    // Static data created during graph construction (index tables, position embeddings, etc.)
+    std::vector<tensor_data> buffers;
+
+    operator ggml_cgraph*() const { return graph; }
+};
+
+// Initializes a compute graph and associated backend allocator.
+VISP_API compute_graph compute_graph_init(size_t size = GGML_DEFAULT_GRAPH_SIZE);
+
+// Allocates memory for inputs, outputs and computations on the backend.
+VISP_API bool compute_graph_allocate(compute_graph&, backend_device const&);
+
+// Runs inference. Blocks until done.
+VISP_API void compute(compute_graph const&, backend_device const&);
+
+//
+// Model ref - represents a ML model
+//
+// * helper for building compute graphs
+// * allows access to the model's weights by name, with an optional name prefix
+//   to support nested modules
+// * pass anywhere ggml_context* is expected while building the graph
+
+struct VISP_API model_ref {
+    ggml_context* weights_context = nullptr;
+    compute_graph* graph = nullptr;
+    model_build_flags flags;
+    tensor_name prefix;
+
+    model_ref() = default;
+    model_ref(model_weights&);
+    model_ref(model_weights&, compute_graph&);
+
+    explicit model_ref(
+        ggml_context* weights_context,
+        compute_graph* graph = nullptr,
+        model_build_flags flags = {},
+        tensor_name prefix = {});
+
+    // Find weights tensor by name, prepends the current prefix.
+    tensor find(char const* name) const;    // returns null if not found
+    tensor weights(char const* name) const; // asserts if not found
+
+    model_ref with_prefix(tensor_name new_prefix) const;
+
+    // Returns a model_ref with prefix set to <current prefix>.<sub_module>
+    model_ref operator[](char const* sub_module) const;
+    model_ref operator[](tensor_name sub_module) const;
+    model_ref operator[](int sub_module) const;
+
+    // Add a tensor that hold some pre-computed data. The data will be uploaded to the
+    // backend in `compute_graph_allocate` after the graph is fully built.
+    void add_buffer(tensor_data&& buffer) { graph->buffers.push_back(std::move(buffer)); }
+
+    operator ggml_context*() const { return graph->context.get(); }
+};
+
+// Sets the name of a tensor to the current model prefix.
+VISP_API tensor named(model_ref const&, tensor);
+
+// Creates a new tensor as part of the model graph where input data can be stored.
+VISP_API tensor compute_graph_input(model_ref const&, ggml_type, i64x4 ne, tensor_name = "input");
+
+// Marks a tensor as an output of the compute graph.
+VISP_API tensor compute_graph_output(model_ref const&, tensor, tensor_name = "output");
 
 //
 // Tensor operations

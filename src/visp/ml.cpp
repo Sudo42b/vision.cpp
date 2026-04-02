@@ -535,7 +535,11 @@ compute_graph compute_graph_init(size_t size) {
     ggml_context* ctx = ggml_init(graph_ctx_params);
     ggml_context_ptr ctx_ptr(ctx);
     ggml_cgraph* graph = ggml_new_graph_custom(ctx, size, false);
-    return compute_graph{std::move(ctx_ptr), graph, nullptr};
+
+    compute_graph result;
+    result.context = std::move(ctx_ptr);
+    result.graph = graph;
+    return result;
 }
 
 bool compute_graph_allocate(compute_graph& g, backend_device const& backend) {
@@ -546,6 +550,10 @@ bool compute_graph_allocate(compute_graph& g, backend_device const& backend) {
     if (!result) {
         throw std::runtime_error("Failed to allocate buffer for graph");
     }
+    for (tensor_data const& buf : g.buffers) {
+        transfer_to_backend(buf);
+    }
+    g.buffers.clear();
     return result;
 }
 
@@ -558,27 +566,20 @@ void compute(compute_graph const& g, backend_device const& b) {
 
 model_ref::model_ref(model_weights& m)
     : weights_context(m.context.get()),
-      graph_context(m.context.get()),
       graph(nullptr),
       flags(m.flags | backend_default_flags(m.buffer_type)) {}
 
 model_ref::model_ref(model_weights& m, compute_graph& g)
     : weights_context(m.context.get()),
-      graph_context(g.context.get()),
-      graph(g.graph),
+      graph(&g),
       flags(m.flags | backend_default_flags(m.buffer_type)) {}
 
 model_ref::model_ref(
     ggml_context* weights_context,
-    ggml_context* graph_context,
-    ggml_cgraph* graph,
+    compute_graph* graph,
     model_build_flags flags,
     tensor_name prefix)
-    : weights_context(weights_context),
-      graph_context(graph_context ? graph_context : weights_context),
-      graph(graph),
-      flags(flags),
-      prefix(prefix) {}
+    : weights_context(weights_context), graph(graph), flags(flags), prefix(prefix) {}
 
 tensor model_ref::find(char const* name) const {
     auto full_name = tensor_name();
@@ -596,7 +597,7 @@ tensor model_ref::weights(char const* name) const {
 }
 
 model_ref model_ref::with_prefix(tensor_name new_prefix) const {
-    return model_ref{weights_context, graph_context, graph, flags, new_prefix};
+    return model_ref{weights_context, graph, flags, new_prefix};
 }
 
 template <typename Stringable>
@@ -636,7 +637,7 @@ tensor compute_graph_input(model_ref const& m, ggml_type type, i64x4 shape, tens
 tensor compute_graph_output(model_ref const& m, tensor x, tensor_name name) {
     ggml_set_name(x, name.c_str());
     ggml_set_output(x);
-    ggml_build_forward_expand(m.graph, x);
+    ggml_build_forward_expand(*m.graph, x);
     return x;
 }
 

@@ -254,12 +254,12 @@ tensor embed_points(model_ref m, tensor coords) {
     // Write "not_a_point_embed" value into the last coordinate
     tensor label_end = slice(m, x, {}, count);
     label_end = ggml_cpy(m, m.weights("not_a_point_embed.weight"), label_end);
-    ggml_build_forward_expand(m.graph, label_end);
+    ggml_build_forward_expand(*m.graph, label_end);
 
     // Add point_embeddings[1] weight to all foreground points (prior coordinates)
     tensor label_one = slice(m, x, {}, {0, count});
     label_one = ggml_add_inplace(m, label_one, m.weights("point_embeddings.1.weight"));
-    ggml_build_forward_expand(m.graph, label_one);
+    ggml_build_forward_expand(*m.graph, label_one);
 
     // NOTE: background points are not handled
     return x;
@@ -273,11 +273,11 @@ tensor embed_box(model_ref m, tensor coords) {
     // Add point_embeddings[2] to the first corner and point_embeddings[3] to the second corner
     tensor corner1 = slice(m, x, {}, 0);
     corner1 = ggml_add_inplace(m, corner1, m.weights("point_embeddings.2.weight"));
-    ggml_build_forward_expand(m.graph, corner1);
+    ggml_build_forward_expand(*m.graph, corner1);
 
     tensor corner2 = slice(m, x, {}, 1);
     corner2 = ggml_add_inplace(m, corner2, m.weights("point_embeddings.3.weight"));
-    ggml_build_forward_expand(m.graph, corner2);
+    ggml_build_forward_expand(*m.graph, corner2);
 
     ggml_set_name(x, "box_embed");
     return x;
@@ -466,7 +466,7 @@ sam_prediction predict_masks(
         mask_slice = hypernetwork_mlp(mlps[i], mask_slice, 3);
         tensor dest_slice = slice(m, hyper_in, {}, i);
         dest_slice = ggml_cpy(m, mask_slice, dest_slice);
-        ggml_build_forward_expand(m.graph, dest_slice);
+        ggml_build_forward_expand(*m.graph, dest_slice);
     }
     tensor masks = ggml_mul_mat(m, upscaled_embedding, hyper_in);
     masks = ggml_reshape_4d(m, masks, w, h, masks->ne[1], b);
