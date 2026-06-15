@@ -19,6 +19,7 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 | [**Depth-Anything**](#depth-anything-v2) | Depth estimation         | CPU, Vulkan |
 | [**MI-GAN**](#mi-gan)                    | Inpainting               | CPU, Vulkan |
 | [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
+| [**YOLOv9t**](#yolov9t)                  | Object detection         | CPU         |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 **Backbones:** SWIN (v1), DINO (v2), TinyViT
@@ -125,8 +126,16 @@ vision-cli migan -m MIGAN-512-places2-F16.gguf -i image.png mask.png -o output.p
 vision-cli esrgan -m ESRGAN-4x-foolhardy_Remacri-F16.gguf -i input.png -o output.png
 ```
 
+#### YOLOv9t
 
-### Converting models
+YOLOv9t object detection (anchor-free, DFL decode). The arch is self-contained
+(`ELAN1` / `RepNCSPELAN4` / `SPPELAN` blocks + detection head with `make_anchors`
+/ `dist2bbox` / DFL) and builds into `libvisioncpp`.
+
+[Paper (arXiv)](https://arxiv.org/abs/2402.13616) | [Repository (GitHub)](https://github.com/WongKinYiu/yolov9) | License: GPL-3.0
+
+Used via the library API (`visp::yolov9t::yolov9t_forward`) — no dedicated
+`vision-cli` subcommand yet. Weights are GGUF (`general.architecture = "yolov9t"`).
 
 Models need to be converted to GGUF before they can be used. This will also
 rearrange or precompute tensors for more optimal inference.
