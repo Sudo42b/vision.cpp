@@ -87,12 +87,7 @@ tensor Conv(
     bool act,
     bool bn,
     bool debug) {
-    if (debug) {
-        printf(
-            "Conv In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)x->ne[0], (int)x->ne[1],
-            (int)x->ne[2], (int)x->ne[3]);
-    }
-    
+    (void)debug;
     int auto_pad = autopad(k, p, 1);
 
     
@@ -106,27 +101,14 @@ tensor Conv(
         weight_name += ".conv";
     }
     m.prefix = tensor_name(weight_name.c_str());
-    tensor weight = m.weights("weight");
-    
-    if (debug) {
-        printf("Weight shape: [%d,%d,%d,%d]\n", (int)weight->ne[0], (int)weight->ne[1], (int)weight->ne[2], (int)weight->ne[3]);
-        printf("Input shape: [%d,%d,%d,%d]\n", (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
-    }
-    
-    if (debug) {
-        printf(
-            "Conv: c1=%d, c2=%d, k=%d, s=%d, p=%d, g=1, d=1, act=%s\n", c1, c2, k, s, auto_pad,
-            act ? "True" : "False");
-    }
 
     if (!ggml_is_contiguous(x)) {
         x = ggml_cont(m, x);
     }
-    
-    
+
+
     x = conv_2d(m, x, s, auto_pad);
     if (bn){
-        printf("old_prefix: %s\n", name.c_str());
         std::string bn_name = name.c_str();
         if (auto pos = bn_name.rfind(".conv"); pos != std::string::npos) {
             bn_name.replace(pos, std::string(".conv").size(), ".bn");
@@ -144,12 +126,6 @@ tensor Conv(
 
     
     m.prefix = old_prefix;
-    
-    if (debug) {
-        printf(
-            "Conv Out: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", (int)x->ne[0], (int)x->ne[1],
-            (int)x->ne[2], (int)x->ne[3]);
-    }
     return x;
 }
 
@@ -187,19 +163,11 @@ tensor global_avg_pool(model_ref m, tensor x) {
     return named(m, x);
 }
 tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, bool debug) {
-    if (debug) {
-        printf("AConv In  (C,W,H,N) = [%d,%d,%d,%d]\n",
-               (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
-    }
 
     
     
-    printf("Before Pooling (C,W,H,N) = [%d,%d,%d,%d]\n",
-           (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     x = contiguous_2d_to_whcn(m, x);
     
-    printf("After Permute (W,H,C,N) = [%d,%d,%d,%d]\n",
-           (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
     tensor pooled = ggml_pool_2d(
         m, x,
         GGML_OP_POOL_AVG,
@@ -208,24 +176,11 @@ tensor AConv(model_ref m, tensor x, std::string const& name, int c1, int c2, boo
         /*pW*/ 0, /*pH*/ 0
     );
     
-    printf("After Pooling (C,W,H,N) = [%d,%d,%d,%d]\n",
-           (int)pooled->ne[0], (int)pooled->ne[1], (int)pooled->ne[2], (int)pooled->ne[3]);
            pooled = whcn_to_contiguous_2d(m, pooled);
-    printf("After Permute (C,W,H,N) = [%d,%d,%d,%d]\n",
-                  (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
-    if (debug) {
-        printf("AConv Pool (C,W,H,N) = [%d,%d,%d,%d]\n",
-               (int)pooled->ne[0], (int)pooled->ne[1], (int)pooled->ne[2], (int)pooled->ne[3]);
-    }
 
     
     
     tensor out = Conv(m, pooled, name + ".cv1.conv", c1, c2, /*k=*/3, /*stride=*/2, /*pad=*/1, /*act=*/true);
-    printf("%ld, %ld, %ld, %ld\n", x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
-    if (debug) {
-        printf("AConv Out  (C,W,H,N) = [%d,%d,%d,%d]\n",
-               (int)out->ne[0], (int)out->ne[1], (int)out->ne[2], (int)out->ne[3]);
-    }
     return out;
 }
 
@@ -240,10 +195,6 @@ tensor ELAN1(
     bool debug
 ) {
     
-    if (debug) {
-        printf("ELAN1 %s: x (C,W,H,N) = [%d,%d,%d,%d]\n",
-               name.c_str(), (int)x->ne[0], (int)x->ne[1], (int)x->ne[2], (int)x->ne[3]);
-    }
 
     
     GGML_ASSERT(c3 % 2 == 0 && "ELAN1: c3 must be even for chunk(2)");
@@ -274,19 +225,11 @@ tensor ELAN1(
     tensor cat123  = Concat(m, cat12,  cv2_out, /*dim=*/0);
     tensor cat1234 = Concat(m, cat123, cv3_out, /*dim=*/0);
 
-    if (debug) {
-        printf("ELAN1 %s: cat (C,W,H,N) = [%d,%d,%d,%d]\n",
-               name.c_str(), (int)cat1234->ne[0], (int)cat1234->ne[1], (int)cat1234->ne[2], (int)cat1234->ne[3]);
-    }
 
     
     tensor out = Conv(m, cat1234, name + ".cv4.conv", c3 + (2 * c4), c2, 1, 1, -1, true);
 
     
-    if (debug) {
-        printf("ELAN1 %s: out (C,W,H,N) = [%d,%d,%d,%d]\n",
-               name.c_str(), (int)out->ne[0], (int)out->ne[1], (int)out->ne[2], (int)out->ne[3]);
-    }
     return out;
 }
 
@@ -300,11 +243,6 @@ tensor Bottleneck(
     int g,
     float e,
     bool debug) {
-    if (debug) {
-        printf(
-            "Bottleneck %s: In shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3], (int)x->ne[2],
-            (int)x->ne[1], (int)x->ne[0]);
-    }
     int c_ = (int)(c2 * e); 
 
     
@@ -312,11 +250,6 @@ tensor Bottleneck(
     tensor cv2_out = Conv(m, cv1_out, name + ".cv2.conv", c_, c2, 3, 1, -1, true);
 
     
-    if (debug) {
-        printf(
-            "Bottleneck %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)cv2_out->ne[3],
-            (int)cv2_out->ne[2], (int)cv2_out->ne[1], (int)cv2_out->ne[0]);
-    }
     return cv2_out;
 }
 
@@ -335,11 +268,6 @@ tensor RepConv(
     bool bn,
     bool deploy,
     bool debug) {
-    if (debug) {
-        printf(
-            "RepConv %s In: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", name.c_str(), (int)x->ne[0], (int)x->ne[1],
-            (int)x->ne[2], (int)x->ne[3]);
-    }
     
     
     if (k != 3 || p != 1) {
@@ -357,12 +285,8 @@ tensor RepConv(
         std::string cv11_name = name;
         
         tensor conv1_out = Conv(m, x, cv11_name + ".conv1.conv", c1, c2, k, s, p, false, debug);
-        tensor conv2_out = Conv(m, x, cv11_name + ".conv2.conv", c1, c2, 1, s, (p-k)/2, false, debug);  
+        tensor conv2_out = Conv(m, x, cv11_name + ".conv2.conv", c1, c2, 1, s, (p-k)/2, false, debug);
 
-        if (bn){
-            printf("batchnorm 처리해야함\n");
-        }
-        
         output = ggml_add(m, conv1_out, conv2_out);
         
         
@@ -371,11 +295,6 @@ tensor RepConv(
         }
     }
     
-    if (debug) {
-        printf(
-            "RepConv %s Out: ne[0]=%d, ne[1]=%d, ne[2]=%d, ne[3]=%d\n", name.c_str(), 
-            (int)output->ne[0], (int)output->ne[1], (int)output->ne[2], (int)output->ne[3]);
-    }
     
     return output;
 }
@@ -393,11 +312,6 @@ tensor RepBottleneck(
     int k,
     float e,
     bool debug) {
-    if (debug) {
-        printf(
-            "RepBottleneck %s: In shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3],
-            (int)x->ne[2], (int)x->ne[1], (int)x->ne[0]);
-    }
     
     int c_ = (int)(c2 * e); 
     
@@ -410,19 +324,9 @@ tensor RepBottleneck(
     
     if (shortcut && c1 == c2) {
         tensor result = ggml_add(m, x, cv2_out);
-        if (debug) {
-            printf(
-                "RepBottleneck %s: Out shape with shortcut [%d,%d,%d,%d]\n", name.c_str(), 
-                (int)result->ne[3], (int)result->ne[2], (int)result->ne[1], (int)result->ne[0]);
-        }
         return result;
     }
     
-    if (debug) {
-        printf(
-            "RepBottleneck %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)cv2_out->ne[3],
-            (int)cv2_out->ne[2], (int)cv2_out->ne[1], (int)cv2_out->ne[0]);
-    }
     
     return cv2_out;
 }
@@ -438,11 +342,6 @@ tensor C3(
     int g,
     float e,
     bool debug) {
-    if (debug) {
-        printf(
-            "C3 %s: In shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3], (int)x->ne[2],
-            (int)x->ne[1], (int)x->ne[0]);
-    }
     int c_ = (int)(c2 * e); 
     
     
@@ -464,11 +363,6 @@ tensor C3(
     
     tensor output = Conv(m, concat, name + ".cv3", 2 * c_, c2, 1, 1, -1, true);
     
-    if (debug) {
-        printf(
-            "C3 %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)output->ne[3],
-            (int)output->ne[2], (int)output->ne[1], (int)output->ne[0]);
-    }
     return output;
 }
 
@@ -484,11 +378,6 @@ tensor RepCSP(
     int g,
     float e,
     bool debug) {
-    if (debug) {
-        printf(
-            "RepCSP %s: In shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3], (int)x->ne[2],
-            (int)x->ne[1], (int)x->ne[0]);
-    }
     
     int c_ = (int)(c2 * e); 
     
@@ -509,11 +398,6 @@ tensor RepCSP(
     
     tensor output = Conv(m, concat, name + ".cv3", 2 * c_, c2, 1, 1, -1, true);
     
-    if (debug) {
-        printf(
-            "RepCSP %s: Out shape [%d,%d,%d,%d]\n", name.c_str(), (int)output->ne[3],
-            (int)output->ne[2], (int)output->ne[1], (int)output->ne[0]);
-    }
     return output;
 }
 
@@ -522,13 +406,7 @@ tensor RepCSP(
 tensor RepNCSPELAN4(
     model_ref m, tensor x, std::string const& name, int c1, int c2, int c3, int c4, int n, bool debug) {
     
-    if (debug) {
-        printf(
-            "RepNCSPELAN4 %s In : x shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3],
-            (int)x->ne[2], (int)x->ne[1], (int)x->ne[0]);
-    }
     int c = c3 / 2;
-    printf("Name: %s, c1=%d, c2=%d, c3=%d, c4=%d, n=%d\n", name.c_str(), c1, c2, c3, c4, n);
     
     tensor cv1_out = Conv(m, x, name + ".cv1", c1, c3, /*k=*/1, /*stride=*/1, /*pad=*/0, /*bias=*/true);
 
@@ -557,17 +435,11 @@ tensor RepNCSPELAN4(
     tensor cat = yolo_concat(m, {cv1_out_h0, cv1_out_h1, cv2, cv3}, 0);
     if (!ggml_is_contiguous(cat))
     {
-        printf("Making concatenated tensor contiguous for RepNCSPELAN4 %s\n", name.c_str());
         cat = ggml_cont(m, cat); 
     }
     
     
     tensor output = Conv(m, cat, name + ".cv4", c3 + (2 * c4), c2, 1, 1, -1, true);
-    if (debug) {
-        printf(
-            "RepNCSPELAN4 %s: output shape [%d,%d,%d,%d]\n", name.c_str(), (int)output->ne[3],
-            (int)output->ne[2], (int)output->ne[1], (int)output->ne[0]);
-    }
 
     return output;
 }
@@ -575,18 +447,9 @@ tensor RepNCSPELAN4(
 
 
 tensor SPPELAN(model_ref m, tensor x, std::string const& name, int c1, int c2, int c3, int k, bool debug) {
-    if (debug) {
-        printf(
-            "SPPELAN %s: x shape [%d,%d,%d,%d]\n", name.c_str(), (int)x->ne[3],
-            (int)x->ne[2], (int)x->ne[1], (int)x->ne[0]);
-    }
     
     tensor cv1 = Conv(m, x, name + ".cv1", c1, c3, 1, 1, -1, true);
     
-    if (debug) {
-        printf("cv1: [%ld, %ld, %ld, %ld]\n", 
-               cv1->ne[0], cv1->ne[1], cv1->ne[2], cv1->ne[3]);
-    }
     
     int pad = k / 2;
     
@@ -767,13 +630,9 @@ std::map<int, tensor> yolov9t_backbone(model_ref m, tensor x) {
 
 tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, tensor stride_tensor, bool xywh) {
     
-    printf("distance shape before permute: [%ld,%ld,%ld,%ld]\n",
-        distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
     
     distance = ggml_cont(m, distance);
     distance = ggml_permute(m, distance, 2, 0, 1, 3);
-    printf("distance shape after permute: [%ld,%ld,%ld,%ld]\n",
-        distance->ne[0], distance->ne[1], distance->ne[2], distance->ne[3]);
     distance = ggml_cont(m, distance);
     GGML_ASSERT(distance->ne[0] == 4);
     GGML_ASSERT(anchor_points->ne[0] == 2);
@@ -797,10 +656,6 @@ tensor dist2bbox(model_ref m, tensor distance, tensor anchor_points, tensor stri
 
 tensor dfl_forward(model_ref m, tensor proj_tensor, tensor x, int reg_max, bool debug) {
     
-    if (debug) {
-        printf("dfl_forward: x shape: [%ld,%ld,%ld,%ld] reg_max=%d\n",
-               x->ne[0], x->ne[1], x->ne[2], x->ne[3], reg_max);
-    }
 
     
     if (!ggml_is_contiguous(x)) x = ggml_cont(m, x);
@@ -844,7 +699,6 @@ DetectOutput inference(model_ref m,
     std::vector<tensor> reshaped_outputs;
     
     tensor x_cat = yolo_concat(m, out.features, 1); 
-    printf("x_cat shape: [%ld,%ld,%ld, %ld]\n", x_cat->ne[0], x_cat->ne[1], x_cat->ne[2], x_cat->ne[3]);
 
     
     int64_t total_channels = x_cat->ne[0];
@@ -886,27 +740,22 @@ DetectOutput inference(model_ref m,
     out.dfl_proj_host_data.resize(reg_max);
     for (int i = 0; i < reg_max; ++i) out.dfl_proj_host_data[i] = float(i);
     out.reg_max = reg_max;
-    printf("proj shape: [%ld,%ld,%ld,%ld]\n", proj->ne[0], proj->ne[1], proj->ne[2], proj->ne[3]);
     
     
     tensor dfl_output = dfl_forward(m, proj, box, reg_max, false);
-    printf("dfl_output shape: [%ld,%ld,%ld,%ld]\n", dfl_output->ne[0], dfl_output->ne[1], dfl_output->ne[2], dfl_output->ne[3]);
     
     
     tensor dbox = dist2bbox(m, dfl_output, anchor_points, stride_tensor, false);
 
-    printf("dbox shape: [%ld,%ld,%ld,%ld]\n", dbox->ne[0], dbox->ne[1], dbox->ne[2], dbox->ne[3]);
     
     tensor strides_bc = ggml_reshape_4d(m, stride_tensor, 1, total_anchors, 1, 1);
 
     dbox = ggml_mul(m, dbox, strides_bc);
 
-    printf("strides_bc shape: [%ld,%ld,%ld,%ld]\n", strides_bc->ne[0], strides_bc->ne[1], strides_bc->ne[2], strides_bc->ne[3]);
 
     
     cls = ggml_sigmoid(m, cls);
     ggml_set_name(cls, "cls_prob");
-    printf("cls shape: [%ld,%ld,%ld,%ld]\n", cls->ne[0], cls->ne[1], cls->ne[2], cls->ne[3]);
     
 
     out.predictions_bbox = std::move(dbox);
@@ -979,7 +828,6 @@ DetectOutput yolov9t_forward(model_ref m, tensor x) {
     
     std::map<int, tensor> features = yolov9t_backbone(m, x);
     
-    printf("features size: [%d]\n", (int)features.size());
     
     std::vector<int> channels = {64, 96, 128};
     
@@ -987,7 +835,6 @@ DetectOutput yolov9t_forward(model_ref m, tensor x) {
     DetectOutput d = detect_forward(m, features_vector, channels, 80, false);
     
     d.features_map = features; 
-    printf("detect_forward complete\n");
     
     return d;
 }
@@ -1073,8 +920,6 @@ std::pair<tensor, tensor> make_anchors(
 
     stride_host = std::move(stride_data);
     
-    printf("anchor_points shape: [%ld,%ld]\n", anchor_points->ne[0], anchor_points->ne[1]);
-    printf("stride_tensor shape: [%ld,%ld]\n", stride_tensor->ne[0], stride_tensor->ne[1]);
     
     return std::make_pair(anchor_points, stride_tensor);
 }
@@ -1190,8 +1035,6 @@ LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
     if (new_shape[0] == 0)
         new_shape = {new_shape[1], new_shape[1]};
 
-    printf("[LB] extent: width=%d, height=%d, target=(%d,%d)\n",
-           orig_w, orig_h, new_shape[0], new_shape[1]);
 
     
     float r = std::min(
@@ -1230,9 +1073,6 @@ LetterboxResult letterbox(image_data im, i32x2 new_shape, u8x3 color,
     int bottom = std::round(dh + 0.1f);
     im = image_add_border(std::move(im), top, bottom, left, right, color);
 
-    printf("[LB] orig=[%d,%d] -> scaled=[%d,%d] -> new=[%d,%d], pad=[l=%d r=%d t=%d b=%d]\n",
-           orig_w, orig_h, new_unpad_w, new_unpad_h,
-           new_shape[0], new_shape[1], left, right, top, bottom);
 
     LetterboxResult out;
     out.img = std::move(im);
@@ -1438,7 +1278,6 @@ void scale_boxes(
         det.y2 = std::clamp(det.y2, 0.0f, (float)img_shape[1]);
     }
 
-    printf("[DBG] scale_boxes: gain=%.4f, pad=(%.1f,%.1f)\n", gain, pad_w, pad_h);
 }
 
 void draw_line(uint8_t* img, int width, int height, int channels,
@@ -1720,7 +1559,6 @@ i32x2 scale_extent(i32x2 extent, float scale) {
     return i32x2{scale_coord(extent[0], scale), scale_coord(extent[1], scale)};
 }
 image_data yolov9t_process_input2(image_view image, yolov9t_params const& p) {
-    printf("extent[0]=%d, extent[1]=%d\n", image.extent[0], image.extent[1]);
     
     image_data resized;
     if (image.extent[0] != p.input_size || image.extent[1] != p.input_size) {
@@ -1734,7 +1572,6 @@ image_data yolov9t_process_input2(image_view image, yolov9t_params const& p) {
 }
 
 LetterboxResult yolov9t_process_input(image_data image, yolov9t_params const& p) {
-    printf("[DBG] before letterbox: format=%d (0=rgb_u8, 1=bgr_u8?, 2=rgba_u8, 3=rgb_f32)\n", (int)image.format);
 
     
     LetterboxResult lb = letterbox(
@@ -1759,8 +1596,6 @@ LetterboxResult yolov9t_process_input(image_data image, yolov9t_params const& p)
     out.pad_w = lb.pad_w;
     out.pad_h = lb.pad_h;
 
-    printf("[DBG] after yolov9t_process_input: format=%d, extent=(%d,%d)\n",
-           (int)out.img.format, out.img.extent[0], out.img.extent[1]);
 
     return out;
 }
@@ -1876,3 +1711,5 @@ void save_input_to_txt(tensor input, char const* filepath) {
 }
 
 } 
+
+#pragma GCC diagnostic pop
