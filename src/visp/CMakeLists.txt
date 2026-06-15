@@ -8,6 +8,7 @@ target_sources(visioncpp PRIVATE
   arch/migan.cpp
   arch/mobile-sam.cpp
   arch/swin.cpp
+  arch/yolov9t.cpp
   c-api.cpp
   image.cpp
   ml.cpp
