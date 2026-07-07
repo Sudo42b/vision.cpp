@@ -211,3 +211,8 @@ if(PROJECT_IS_TOP_LEVEL)
   set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
   include(CPack)
 endif()
+
+option(VISP_DEMO "Build demo examples" OFF)
+if (VISP_DEMO)
+  add_subdirectory(demo/cpp)
+endif()
