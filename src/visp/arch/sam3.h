@@ -525,7 +525,8 @@ tensor sine_position_embedding(
     model_ref m, std::array<int64_t, 4> shape, int n_pos_feats, bool normalize) {
 
     constexpr float temperature = 10000.f;
-    constexpr float scale = 2.f * M_PIf;
+    // M_PIf 는 glibc 확장이라 macOS/MSVC 에 없음 → 이식성 위해 리터럴 사용
+    constexpr float scale = 2.f * 3.14159265358979323846f;
     constexpr float eps = 1e-6f;
 
     auto [width, height, _, _b] = shape;

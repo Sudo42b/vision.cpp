@@ -2,6 +2,7 @@
 
 #include "util/string.h"
 
+#include <algorithm>
 #include <span>
 #include <vector>
 

@@ -1166,15 +1166,13 @@ std::vector<detected_obj> non_max_suppression(
     float max_conf = -1.0f;
     float min_conf = 2.0f;
     int max_conf_anchor = -1;
-    int max_conf_class = -1;
-    
+
     for (int64_t j = 0; j < na; ++j) {
         for (int64_t c = 0; c < nc; ++c) {
             float conf = cls_ptr[c + j*nc];
             if (conf > max_conf) {
                 max_conf = conf;
                 max_conf_anchor = j;
-                max_conf_class = c;
             }
             min_conf = std::min(min_conf, conf);
         }
