@@ -1,11 +1,17 @@
 #include "util/math.h"
 #include "util/string.h"
+#include "visp/nn.h"
 #include "visp/vision.h"
+
+#include <ggml.h>
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -13,7 +19,7 @@
 namespace visp {
 using std::filesystem::path;
 
-enum class cli_command { none, sam, birefnet, depth_anything, migan, esrgan };
+enum class cli_command { none, sam, birefnet, depth_anything, migan, esrgan, graph };
 
 struct cli_args {
     cli_command command = cli_command::none;
@@ -126,6 +132,8 @@ cli_args cli_parse(int argc, char** argv) {
         r.command = cli_command::migan;
     } else if (arg1 == "esrgan") {
         r.command = cli_command::esrgan;
+    } else if (arg1 == "graph") {
+        r.command = cli_command::graph;
     } else if (arg1 == "-h" || arg1 == "--help") {
         print_usage();
     } else {
@@ -168,6 +176,7 @@ void run_birefnet(cli_args const&);
 void run_depth_anything(cli_args const&);
 void run_migan(cli_args const&);
 void run_esrgan(cli_args const&);
+void run_graph(cli_args const&);
 
 } // namespace visp
 
@@ -186,6 +195,7 @@ int main(int argc, char** argv) {
             case cli_command::depth_anything: run_depth_anything(args); break;
             case cli_command::migan: run_migan(args); break;
             case cli_command::esrgan: run_esrgan(args); break;
+            case cli_command::graph: run_graph(args); break;
             case cli_command::none: break;
         }
 
@@ -612,6 +622,191 @@ void run_esrgan(cli_args const& args) {
     image_data output_u8 = image_f32_to_u8(output_image, image_format::rgba_u8);
     image_save(output_u8, args.output);
     printf("-> output image saved to %s\n", args.output);
+}
+
+// ============================================================================
+// graph — 범용 그래프 인터프리터
+//   g2c 가 뱉은 그래프-데이터(gguf: KV graph.nodes/inputs/outputs + fp16 weights)를
+//   런타임에 ggml 그래프로 조립·실행한다. per-model .cpp 생성/재빌드 없음.
+//   직렬화기 = tools/graph_export/serialize.py. upstream nn 헬퍼만 사용.
+//   (dilation/grouped conv 는 현재 미지원 — plain conv 로 폴백, 확장은 nn 헬퍼 추가 필요.)
+// ============================================================================
+namespace {
+
+std::vector<std::string> g_split(std::string_view s, char d) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (true) {
+        size_t p = s.find(d, start);
+        size_t len = (p == std::string_view::npos) ? std::string_view::npos : p - start;
+        out.emplace_back(std::string(s.substr(start, len)));
+        if (p == std::string_view::npos) break;
+        start = p + 1;
+    }
+    return out;
+}
+
+std::vector<int> g_ids(std::string_view s) {
+    std::vector<int> v;
+    for (auto& x : g_split(s, ',')) if (!x.empty()) v.push_back(std::atoi(x.c_str()));
+    return v;
+}
+
+struct g_node {
+    int id = 0;
+    std::string op;
+    std::vector<int> inputs;
+    std::string weight;
+    std::map<std::string, float> attrs;
+    std::vector<int64_t> out_shape;
+};
+
+struct g_spec {
+    std::vector<g_node> nodes;
+    std::vector<int> inputs, outputs;
+};
+
+g_spec g_parse(model_file const& file) {
+    g_spec g;
+    for (auto& line : g_split(file.get_string("graph.nodes"), '\n')) {
+        if (line.empty()) continue;
+        auto f = g_split(line, '|');   // id|op|inputs|weight|attrs|out_shape
+        if (f.size() < 2) continue;
+        g_node n;
+        n.id = std::atoi(f[0].c_str());
+        n.op = f[1];
+        if (f.size() > 2) n.inputs = g_ids(f[2]);
+        if (f.size() > 3) n.weight = f[3];
+        if (f.size() > 4 && !f[4].empty())
+            for (auto& kv : g_split(f[4], ';')) {
+                auto e = kv.find('=');
+                if (e != std::string::npos)
+                    n.attrs[kv.substr(0, e)] = (float) std::atof(kv.c_str() + e + 1);
+            }
+        if (f.size() > 5 && !f[5].empty())
+            for (auto& x : g_split(f[5], ',')) n.out_shape.push_back(std::atoll(x.c_str()));
+        g.nodes.push_back(std::move(n));
+    }
+    g.inputs = g_ids(file.get_string("graph.inputs"));
+    g.outputs = g_ids(file.get_string("graph.outputs"));
+    return g;
+}
+
+int g_iattr(g_node const& n, char const* k, int def) {
+    auto it = n.attrs.find(k);
+    return it == n.attrs.end() ? def : (int) it->second;
+}
+
+// 그래프 데이터 → ggml 그래프 조립. out_0..N 등록, 마지막 출력 반환.
+tensor graph_interpret(model_ref m, tensor input, g_spec const& g) {
+    std::map<int, tensor> t;
+    tensor x0 = cwhn_to_contiguous_2d(m, input);
+    for (int id : g.inputs) t[id] = x0;
+
+    for (auto& n : g.nodes) {
+        if (n.op == "input") continue;
+        auto in = [&](int i) -> tensor { return t.at(n.inputs[(size_t) i]); };
+        model_ref mw = n.weight.empty() ? m : m[n.weight.c_str()];
+        tensor y = nullptr;
+
+        if (n.op == "conv2d") {
+            int s = g_iattr(n, "stride", 1), p = g_iattr(n, "padding", 0);
+            int d = g_iattr(n, "dilation", 1), grp = g_iattr(n, "groups", 1);
+            if (d > 1 || grp > 1)
+                fprintf(stderr,
+                    "[graph] conv2d n%d: dilation=%d groups=%d 미지원(현재) → plain conv\n",
+                    n.id, d, grp);
+            y = conv_2d(mw, in(0), s, p);   // upstream nn.h conv_2d (dilation/groups=1)
+        } else if (n.op == "batch_norm") {
+            y = batch_norm_2d(mw, in(0));
+        } else if (n.op == "relu") {
+            y = ggml_relu(m, in(0));
+        } else if (n.op == "elemwise_add") {
+            y = ggml_add(m, in(0), in(1));
+        } else if (n.op == "maxpool") {
+            int k = g_iattr(n, "kernel_size", 2), s = g_iattr(n, "stride", k),
+                p = g_iattr(n, "padding", 0);
+            y = ggml_pool_2d(m, in(0), GGML_OP_POOL_MAX, k, k, s, s, p, p);
+        } else if (n.op == "adaptive_avg_pool2d") {
+            tensor a = in(0);
+            y = ggml_pool_2d(m, a, GGML_OP_POOL_AVG, a->ne[0], a->ne[1], a->ne[0], a->ne[1], 0, 0);
+        } else if (n.op == "flatten") {
+            tensor a = ggml_cont(m, in(0));
+            y = ggml_reshape_2d(m, a, a->ne[0] * a->ne[1] * a->ne[2], a->ne[3]);
+        } else if (n.op == "dense" || n.op == "linear") {
+            y = linear(mw, in(0));
+        } else if (n.op == "resize") {
+            int64_t ne[4] = {1, 1, 1, 1};
+            int k = 0;
+            for (int i = (int) n.out_shape.size() - 1; i >= 0 && k < 4; --i)
+                ne[k++] = n.out_shape[(size_t) i];
+            y = ggml_interpolate(m, in(0), ne[0], ne[1], ne[2], ne[3], GGML_SCALE_MODE_NEAREST);
+        } else {
+            fprintf(stderr, "[graph] 미지원 op '%s' (n%d) — passthrough\n", n.op.c_str(), n.id);
+            y = in(0);
+        }
+        ggml_format_name(y, "n%d_%s", n.id, n.op.c_str());
+        t[n.id] = y;
+    }
+
+    tensor last = nullptr;
+    int oi = 0;
+    for (int oid : g.outputs) {
+        tensor out = contiguous_2d_to_cwhn(m, t.at(oid));
+        char nm[32];
+        snprintf(nm, sizeof(nm), "out_%d", oi++);
+        last = compute_graph_output(m, out, tensor_name(nm));
+    }
+    return last;
+}
+
+} // anonymous namespace
+
+// graph 서브커맨드: vision-cli graph -m model.gguf -i input.bin -o out.bin [-b cpu|gpu]
+//   input.bin = float32 [3,S,S] (CWHN contiguous). 출력 out_0..N → <out>.i.bin.
+void run_graph(cli_args const& args) {
+    ASSERT(args.model, "graph: -m <model.gguf> 필요");
+    ASSERT(!args.inputs.empty(), "graph: -i <input.bin> 필요");
+    char const* outpath = args.output ? args.output : "out.bin";
+
+    backend_device backend = backend_init(args.bknd_type.value_or(backend_type::cpu));
+    model_file file = model_load(args.model);
+    model_weights weights = model_init(file.n_tensors());
+    model_transfer(file, weights, backend, GGML_TYPE_F32, file.tensor_layout());
+
+    g_spec g = g_parse(file);
+
+    // 입력 크기 S: input.bin 바이트수(3*S*S*4)에서 역산.
+    std::ifstream ifs(args.inputs[0], std::ios::binary | std::ios::ate);
+    ASSERT(bool(ifs), "graph: 입력 파일 열기 실패");
+    size_t bytes = (size_t) ifs.tellg();
+    int size = (int) std::llround(std::sqrt((double) (bytes / (3 * sizeof(float)))));
+
+    compute_graph graph = compute_graph_init(131072);
+    model_ref m(weights, graph);
+    tensor x = compute_graph_input(m, GGML_TYPE_F32, {3, size, size, 1}, "input");
+    graph_interpret(m, x, g);
+    compute_graph_allocate(graph, backend);
+
+    std::vector<float> in((size_t) 3 * size * size);
+    ifs.seekg(0);
+    ifs.read((char*) in.data(), (std::streamsize) (in.size() * sizeof(float)));
+    transfer_to_backend(x, span<float const>(in.data(), in.size()));
+    compute(graph, backend);
+
+    for (int i = 0;; ++i) {
+        char nm[32];
+        snprintf(nm, sizeof(nm), "out_%d", i);
+        tensor out = ggml_graph_get_tensor(graph.graph, nm);
+        if (!out) break;
+        tensor_data d = transfer_from_backend(out);
+        auto v = d.as_f32();
+        char path[512];
+        snprintf(path, sizeof(path), "%s.%d.bin", outpath, i);
+        std::ofstream(path, std::ios::binary)
+            .write((char const*) v.data(), (std::streamsize) (v.size() * sizeof(float)));
+        printf("[graph] out_%d nelements=%lld -> %s\n", i, (long long) ggml_nelements(out), path);
+    }
 }
 
 } // namespace visp
