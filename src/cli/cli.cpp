@@ -4,6 +4,7 @@
 #include "visp/vision.h"
 
 #include <ggml.h>
+#include <ggml-backend.h>
 
 #include <algorithm>
 #include <charconv>
@@ -863,13 +864,44 @@ void run_graph(cli_args const& args) {
     model_ref m(weights, graph);
     tensor x = compute_graph_input(m, GGML_TYPE_F32, {3, size, size, 1}, "input");
     graph_interpret(m, x, g);
-    compute_graph_allocate(graph, backend);
 
     std::vector<float> in((size_t) 3 * size * size);
     ifs.seekg(0);
     ifs.read((char*) in.data(), (std::streamsize) (in.size() * sizeof(float)));
-    transfer_to_backend(x, span<float const>(in.data(), in.size()));
-    compute(graph, backend);
+
+    bool use_gpu = args.bknd_type.value_or(backend_type::cpu) == backend_type::gpu;
+    if (use_gpu) {
+        // NPU: ggml_backend_sched([GTX, CPU]) — 지원 op(conv/mul_mat/add/relu…)은 GTX(NPU),
+        // 미지원(POOL_2D/IM2COL/SOFT_MAX)은 CPU 자동 폴백. broadcast MUL/ADD(batch_norm)는
+        // 기본 CPU 핀(G2C_NPU_NOPIN_BCAST=1 로 GTX). (gtx_classify 라우팅과 동일.)
+        ggml_cgraph* cg = graph.graph;
+        ggml_backend_t b_gtx = (ggml_backend_t) backend;
+        ggml_backend_t b_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+        ggml_backend_t backs[2] = {b_gtx, b_cpu};
+        ggml_backend_sched_t sched =
+            ggml_backend_sched_new(backs, nullptr, 2, ggml_graph_size(cg), false, true);
+        bool no_pin = std::getenv("G2C_NPU_NOPIN_BCAST") != nullptr;
+        for (int i = 0; i < ggml_graph_n_nodes(cg); ++i) {
+            ggml_tensor* node = ggml_graph_node(cg, i);
+            bool cpu = node->op == GGML_OP_SOFT_MAX ||
+                       (!no_pin && (node->op == GGML_OP_MUL || node->op == GGML_OP_ADD) &&
+                        node->src[1] && ggml_nelements(node->src[1]) < ggml_nelements(node->src[0]));
+            if (cpu) ggml_backend_sched_set_tensor_backend(sched, node, b_cpu);
+        }
+        if (!ggml_backend_sched_alloc_graph(sched, cg))
+            throw except("graph: sched alloc 실패");
+        int n_gtx = 0, n_cpu = 0, nn = ggml_graph_n_nodes(cg);
+        for (int i = 0; i < nn; ++i)
+            (ggml_backend_sched_get_tensor_backend(sched, ggml_graph_node(cg, i)) == b_gtx
+                 ? n_gtx : n_cpu)++;
+        printf("[graph] sched routing: GTX(NPU)=%d, CPU=%d / %d nodes\n", n_gtx, n_cpu, nn);
+        transfer_to_backend(x, span<float const>(in.data(), in.size()));
+        ggml_backend_sched_graph_compute(sched, cg);
+    } else {
+        compute_graph_allocate(graph, backend);
+        transfer_to_backend(x, span<float const>(in.data(), in.size()));
+        compute(graph, backend);
+    }
 
     for (int i = 0;; ++i) {
         char nm[32];
