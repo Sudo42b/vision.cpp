@@ -39,6 +39,8 @@ _WEIGHTED = {"conv2d", "batch_norm", "dense", "linear", "group_norm", "layer_nor
 # 직렬화할 정규 attr (스칼라화). attr() 가 alias 처리(padding→pad, groups→group, kernel_size→kernel).
 _ATTR_KEYS = ["stride", "padding", "dilation", "groups", "kernel_size",
              "dim", "output_size", "start_dim", "num_groups", "negative_slope", "scale"]
+# 리스트 그대로 실어보낼 attr (decode: strided_slice begin/dims, permute order).
+_LIST_KEYS = ["begin", "slice_dims", "order"]
 
 
 def _attrs_str(n):
@@ -54,6 +56,15 @@ def _attrs_str(n):
         if isinstance(v, float) and v.is_integer():
             v = int(v)
         out[k] = v
+    for k in _LIST_KEYS:
+        v = attr(n, k, None)
+        if v is None:
+            continue
+        if not isinstance(v, (list, tuple)):
+            v = [v]
+        vals = [int(x) for x in v if x is not None]
+        if vals:
+            out[k] = ",".join(str(x) for x in vals)   # 리스트는 콤마 join
     return ";".join(f"{k}={v}" for k, v in out.items())
 
 
@@ -66,6 +77,17 @@ def serialize(graph):
             if t is not None:
                 tid2nid[id(t)] = i
 
+    # 스칼라 const 노드(예: 0.5) 값 수집 → 참조를 #val 로 인라인(별도 노드 불필요).
+    const_val = {}
+    for i, n in enumerate(nodes):
+        if op_value(n) == "const":
+            outs = n.out_tensors or []
+            d = getattr(outs[0], "data", None) if outs and outs[0] is not None else None
+            if d is not None:
+                arr = np.asarray(d)
+                if arr.size == 1:
+                    const_val[i] = float(arr.reshape(-1)[0])
+
     lines, input_ids = [], []
     for i, n in enumerate(nodes):
         op = op_value(n)
@@ -75,14 +97,28 @@ def serialize(graph):
             input_ids.append(i)
             lines.append(f"{i}|input||||" + ",".join(str(d) for d in (out_shape(n) or [])))
             continue
-        # 활성 입력 = producer 노드가 있는 in_tensor (PARAM/자유파라미터는 제외)
+        # 입력: producer 노드=id / 자유파라미터(anchor buffer 등)=@key / 스칼라 const=#val.
+        # (_WEIGHTED op 의 가중치는 아래 wkey 로 별도 처리하므로 @ 참조 안 함.)
         ins = []
         for t in (n.in_tensors or []):
             if t is None:
                 continue
             pid = tid2nid.get(id(t))
             if pid is not None:
-                ins.append(str(pid))
+                ins.append("#" + repr(const_val[pid]) if pid in const_val else str(pid))
+                continue
+            if op in _WEIGHTED:
+                continue
+            data = getattr(t, "data", None)
+            if data is None:
+                continue
+            arr = np.asarray(data)
+            if arr.size == 1:
+                ins.append("#" + repr(float(arr.reshape(-1)[0])))     # 스칼라 const
+            else:
+                key = str(getattr(t, "name", "") or "").split("::")[-1]
+                if key:
+                    ins.append("@" + key)                            # 자유파라미터(gguf 텐서)
         wkey = weight_key(n) if op in _WEIGHTED else ""
         osh = out_shape(n) or []
         lines.append(
@@ -159,21 +195,62 @@ def _defrost_bn(model):
 
 
 class _MMDetStatic(torch.nn.Module):
-    """mmdet 검출기의 '정적 forward'만 노출 (backbone→neck→head raw, NMS 前).
-    backbone/neck/bbox_head 를 직접 속성으로 둬 state_dict 키가 그대로(det. prefix 없음)."""
-    def __init__(self, det):
+    """mmdet 검출기 → **decode 까지 포함**한 정적 forward (NMS 前 박스좌표+점수).
+
+    anchor 를 center 형(px,py,pw,ph)으로 미리 풀어 buffer(→gguf const)로 둔다(whole-tensor →
+    그래프에서 anchor 슬라이스 불필요). forward 는 delta2bbox 를 exp/mul/add/sub/slice/cat 로
+    전개 → 전부 그래프 op 이라 인터프리터가 실행(decode-in-graph, host postproc.cpp 불필요).
+    anchor 헤드(DeltaXYWHBBoxCoder)만 decode, 그 외(distance/rpn)는 raw 폴백. means=0/stds=1 가정."""
+    def __init__(self, det, input_size=512):
         super().__init__()
         self.backbone = det.backbone
         self.neck = det.neck if getattr(det, "with_neck", False) else None
-        self.bbox_head = det.bbox_head
+        bh = det.bbox_head
+        self.bbox_head = bh
+        self.decode = False
+        bc = getattr(bh, "bbox_coder", None)
+        pg = getattr(bh, "prior_generator", None)
+        if bc is not None and pg is not None and "Delta" in type(bc).__name__:
+            self.decode = True
+            self.ncls = int(bh.cls_out_channels)
+            strides = [s[0] if isinstance(s, (tuple, list)) else int(s) for s in pg.strides]
+            feats = [(int(input_size // st), int(input_size // st)) for st in strides]
+            anchors = pg.grid_priors(feats, device="cpu")
+            self.n_levels = len(anchors)
+            for i, a in enumerate(anchors):                       # a: (N,4) x1y1x2y2
+                pw = (a[:, 2] - a[:, 0]).reshape(-1, 1)
+                ph = (a[:, 3] - a[:, 1]).reshape(-1, 1)
+                px = (a[:, 0] + 0.5 * pw.flatten()).reshape(-1, 1)
+                py = (a[:, 1] + 0.5 * ph.flatten()).reshape(-1, 1)
+                self.register_buffer(f"px_{i}", px)               # (N,1) whole-tensor const
+                self.register_buffer(f"py_{i}", py)
+                self.register_buffer(f"pw_{i}", pw)
+                self.register_buffer(f"ph_{i}", ph)
 
     def forward(self, x):
         f = self.backbone(x)
         if self.neck is not None:
             f = self.neck(f)
-        outs = self.bbox_head(f)  # RetinaHead → (cls_scores[levels], bbox_preds[levels])
-        cls, box = outs[0], outs[1]
-        return tuple(cls) + tuple(box)  # level별 cls + box (다출력)
+        outs = self.bbox_head(f)
+        cls_scores, bbox_preds = outs[0], outs[1]
+        if not self.decode:
+            return tuple(cls_scores) + tuple(bbox_preds)          # raw 폴백
+        out = []
+        for i in range(self.n_levels):
+            box = bbox_preds[i].permute(0, 2, 3, 1).reshape(-1, 4)   # (N,4) 델타
+            dx = box[:, 0:1]; dy = box[:, 1:2]; dw = box[:, 2:3]; dh = box[:, 3:4]  # (N,1) slice
+            px = getattr(self, f"px_{i}"); py = getattr(self, f"py_{i}")
+            pw = getattr(self, f"pw_{i}"); ph = getattr(self, f"ph_{i}")
+            gx = px + pw * dx                                     # (mul, add)
+            gy = py + ph * dy
+            gw = pw * torch.exp(dw)                               # (exp, mul)
+            gh = ph * torch.exp(dh)
+            x1 = gx - 0.5 * gw; y1 = gy - 0.5 * gh                # (scale, sub)
+            x2 = gx + 0.5 * gw; y2 = gy + 0.5 * gh
+            boxes = torch.cat([x1, y1, x2, y2], dim=1)           # (N,4) cat (stack 아님)
+            out.append(boxes.reshape(1, -1, 4))
+            out.append(cls_scores[i].permute(0, 2, 3, 1).reshape(1, -1, self.ncls).sigmoid())
+        return tuple(out)
 
 
 def load_model(name, size):
@@ -183,7 +260,7 @@ def load_model(name, size):
     if name.startswith("mmdet:"):                 # mmdet config → 정적 forward
         from mmdet.apis import init_detector      # mmdet 은 g2c 아님, import 만
         det = init_detector(name[len("mmdet:"):], None, device="cpu").eval()
-        m = _MMDetStatic(det)
+        m = _MMDetStatic(det, input_size=size)
         _defrost_bn(m)  # 혹 FrozenBN 있으면 표준 BN 으로 (mmdet 은 대개 BN(norm_eval), no-op)
         return m, x
     if name == "retinanet_bb":  # torchvision ResNet50 + FPN 백본

@@ -655,9 +655,9 @@ std::vector<int> g_ids(std::string_view s) {
 struct g_node {
     int id = 0;
     std::string op;
-    std::vector<int> inputs;
+    std::vector<std::string> inputs;   // 토큰: "N"(노드) / "@key"(파라미터) / "#val"(스칼라)
     std::string weight;
-    std::map<std::string, float> attrs;
+    std::map<std::string, std::string> attrs;   // raw (리스트 attr 지원 위해 문자열)
     std::vector<int64_t> out_shape;
 };
 
@@ -675,13 +675,13 @@ g_spec g_parse(model_file const& file) {
         g_node n;
         n.id = std::atoi(f[0].c_str());
         n.op = f[1];
-        if (f.size() > 2) n.inputs = g_ids(f[2]);
+        if (f.size() > 2)
+            for (auto& x : g_split(f[2], ',')) if (!x.empty()) n.inputs.push_back(x);
         if (f.size() > 3) n.weight = f[3];
         if (f.size() > 4 && !f[4].empty())
             for (auto& kv : g_split(f[4], ';')) {
                 auto e = kv.find('=');
-                if (e != std::string::npos)
-                    n.attrs[kv.substr(0, e)] = (float) std::atof(kv.c_str() + e + 1);
+                if (e != std::string::npos) n.attrs[kv.substr(0, e)] = kv.substr(e + 1);
             }
         if (f.size() > 5 && !f[5].empty())
             for (auto& x : g_split(f[5], ',')) n.out_shape.push_back(std::atoll(x.c_str()));
@@ -694,7 +694,25 @@ g_spec g_parse(model_file const& file) {
 
 int g_iattr(g_node const& n, char const* k, int def) {
     auto it = n.attrs.find(k);
-    return it == n.attrs.end() ? def : (int) it->second;
+    return it == n.attrs.end() ? def : std::atoi(it->second.c_str());
+}
+
+std::vector<int> g_list(g_node const& n, char const* k) {
+    std::vector<int> v;
+    auto it = n.attrs.find(k);
+    if (it == n.attrs.end()) return v;
+    for (auto& x : g_split(it->second, ',')) if (!x.empty()) v.push_back(std::atoi(x.c_str()));
+    return v;
+}
+
+// torch permute order → ggml_permute(p0..p3) 인자 (head_render._perm_args 포팅).
+void g_perm(std::vector<int> const& order, int nd, int p[4]) {
+    p[0] = 0; p[1] = 1; p[2] = 2; p[3] = 3;
+    for (int i = 0; i < nd && i < (int) order.size(); i++) {
+        int src = nd - 1 - order[i];   // in ggml 축
+        int dst = nd - 1 - i;          // out ggml 축
+        if (src >= 0 && src < 4) p[src] = dst;
+    }
 }
 
 // 그래프 데이터 → ggml 그래프 조립. out_0..N 등록, 마지막 출력 반환.
@@ -704,8 +722,16 @@ tensor graph_interpret(model_ref m, tensor input, g_spec const& g) {
     for (int id : g.inputs) t[id] = x0;
 
     for (auto& n : g.nodes) {
-        if (n.op == "input") continue;
-        auto in = [&](int i) -> tensor { return t.at(n.inputs[(size_t) i]); };
+        if (n.op == "input" || n.op == "const" || n.op == "shape") continue;   // 메타/무참조
+        // 입력 토큰 해석: "@key"=gguf 파라미터, "#val"=스칼라(값), 숫자=producer 노드.
+        auto in = [&](int i) -> tensor {
+            std::string const& tok = n.inputs[(size_t) i];
+            if (tok[0] == '@') return m.find(tok.c_str() + 1);
+            if (tok[0] == '#') return nullptr;   // 스칼라는 op 에서 값으로 직접 처리
+            return t.at(std::atoi(tok.c_str()));
+        };
+        auto is_sc = [&](int i) { return i < (int) n.inputs.size() && n.inputs[i][0] == '#'; };
+        auto sc = [&](int i) { return (float) std::atof(n.inputs[i].c_str() + 1); };
         model_ref mw = n.weight.empty() ? m : m[n.weight.c_str()];
         tensor y = nullptr;
 
@@ -713,16 +739,25 @@ tensor graph_interpret(model_ref m, tensor input, g_spec const& g) {
             int s = g_iattr(n, "stride", 1), p = g_iattr(n, "padding", 0);
             int d = g_iattr(n, "dilation", 1), grp = g_iattr(n, "groups", 1);
             if (d > 1 || grp > 1)
-                fprintf(stderr,
-                    "[graph] conv2d n%d: dilation=%d groups=%d 미지원(현재) → plain conv\n",
-                    n.id, d, grp);
-            y = conv_2d(mw, in(0), s, p);   // upstream nn.h conv_2d (dilation/groups=1)
+                fprintf(stderr, "[graph] conv2d n%d: dilation=%d groups=%d 미지원 → plain\n",
+                        n.id, d, grp);
+            y = conv_2d(mw, in(0), s, p);
         } else if (n.op == "batch_norm") {
             y = batch_norm_2d(mw, in(0));
         } else if (n.op == "relu") {
             y = ggml_relu(m, in(0));
+        } else if (n.op == "sigmoid") {
+            y = ggml_sigmoid(m, in(0));
+        } else if (n.op == "elemwise_exp") {
+            y = ggml_exp(m, in(0));
         } else if (n.op == "elemwise_add") {
             y = ggml_add(m, in(0), in(1));
+        } else if (n.op == "elementwise_sub") {
+            y = ggml_sub(m, in(0), in(1));
+        } else if (n.op == "elemwise_mul") {
+            y = is_sc(1) ? ggml_scale(m, in(0), sc(1))
+              : is_sc(0) ? ggml_scale(m, in(1), sc(0))
+                         : ggml_mul(m, in(0), in(1));
         } else if (n.op == "maxpool") {
             int k = g_iattr(n, "kernel_size", 2), s = g_iattr(n, "stride", k),
                 p = g_iattr(n, "padding", 0);
@@ -735,6 +770,45 @@ tensor graph_interpret(model_ref m, tensor input, g_spec const& g) {
             y = ggml_reshape_2d(m, a, a->ne[0] * a->ne[1] * a->ne[2], a->ne[3]);
         } else if (n.op == "dense" || n.op == "linear") {
             y = linear(mw, in(0));
+        } else if (n.op == "permute") {
+            int nd = (int) n.out_shape.size();
+            int p[4];
+            g_perm(g_list(n, "order"), nd, p);
+            y = ggml_cont(m, ggml_permute(m, in(0), p[0], p[1], p[2], p[3]));
+        } else if (n.op == "reshape") {
+            int nd = (int) n.out_shape.size();
+            int64_t ne[4] = {1, 1, 1, 1};
+            for (int k = 0; k < nd && k < 4; k++) ne[k] = n.out_shape[nd - 1 - k];
+            tensor a = ggml_cont(m, in(0));
+            y = nd <= 1 ? ggml_reshape_1d(m, a, ne[0])
+              : nd == 2 ? ggml_reshape_2d(m, a, ne[0], ne[1])
+              : nd == 3 ? ggml_reshape_3d(m, a, ne[0], ne[1], ne[2])
+                        : ggml_reshape_4d(m, a, ne[0], ne[1], ne[2], ne[3]);
+        } else if (n.op == "strided_slice") {
+            int nd = (int) n.out_shape.size();
+            int64_t ne[4] = {1, 1, 1, 1};
+            for (int k = 0; k < nd && k < 4; k++) ne[k] = n.out_shape[nd - 1 - k];
+            tensor a = in(0);
+            auto begin = g_list(n, "begin"), dims = g_list(n, "slice_dims");
+            size_t off = 0;
+            for (size_t j = 0; j < dims.size() && j < begin.size(); j++)
+                if (begin[j] > 0) {
+                    int gax = nd - 1 - dims[j];
+                    if (gax >= 0 && gax < 4) off += (size_t) begin[j] * a->nb[gax];
+                }
+            tensor v = nd == 2 ? ggml_view_2d(m, a, ne[0], ne[1], a->nb[1], off)
+                     : nd == 3 ? ggml_view_3d(m, a, ne[0], ne[1], ne[2], a->nb[1], a->nb[2], off)
+                     : nd == 4 ? ggml_view_4d(m, a, ne[0], ne[1], ne[2], ne[3],
+                                              a->nb[1], a->nb[2], a->nb[3], off)
+                               : a;
+            y = ggml_cont(m, v);
+        } else if (n.op == "concat" || n.op == "cat") {
+            int nd = (int) n.out_shape.size();
+            int ax = nd - 1 - g_iattr(n, "dim", 0);
+            tensor acc = ggml_cont(m, in(0));
+            for (size_t j = 1; j < n.inputs.size(); j++)
+                acc = ggml_concat(m, acc, ggml_cont(m, in((int) j)), ax);
+            y = acc;
         } else if (n.op == "resize") {
             int64_t ne[4] = {1, 1, 1, 1};
             int k = 0;
@@ -745,6 +819,7 @@ tensor graph_interpret(model_ref m, tensor input, g_spec const& g) {
             fprintf(stderr, "[graph] 미지원 op '%s' (n%d) — passthrough\n", n.op.c_str(), n.id);
             y = in(0);
         }
+        if (!y) continue;
         ggml_format_name(y, "n%d_%s", n.id, n.op.c_str());
         t[n.id] = y;
     }
@@ -752,7 +827,9 @@ tensor graph_interpret(model_ref m, tensor input, g_spec const& g) {
     tensor last = nullptr;
     int oi = 0;
     for (int oid : g.outputs) {
-        tensor out = contiguous_2d_to_cwhn(m, t.at(oid));
+        tensor o = t.at(oid);
+        // 4D 피처맵 → CWHN 복원, 그 외(decode 박스 (1,N,4) 등) → 그대로 cont.
+        tensor out = (ggml_n_dims(o) == 4) ? contiguous_2d_to_cwhn(m, o) : ggml_cont(m, o);
         char nm[32];
         snprintf(nm, sizeof(nm), "out_%d", oi++);
         last = compute_graph_output(m, out, tensor_name(nm));
