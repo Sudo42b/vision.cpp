@@ -9,11 +9,13 @@ target_sources(visioncpp PRIVATE
   arch/mobile-sam.cpp
   arch/swin.cpp
   arch/yolov9t.cpp
+  arch/mmdet/head.cpp   # mmdet 검출 head C++ 부품 (run_mmdet 러너용)
   c-api.cpp
   image.cpp
   ml.cpp
   nn.cpp
   platform.cpp
+  postproc.cpp          # mmdet decode + NMS (detect_anchor 등)
   vision.cpp
 )
 target_compile_features(visioncpp PUBLIC cxx_std_20)

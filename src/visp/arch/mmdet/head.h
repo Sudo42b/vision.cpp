@@ -1,0 +1,35 @@
+// mmdet 검출 head 를 **손코딩 C++ 부품**으로 조립한다. g2c 는 backbone/neck 만 그래프
+// 데이터(gguf graph.nodes)로 내보내고, head(공유 conv 타워 + 최종 cls/reg conv)는 여기서
+// 조립한다 — 교수님 지시("backbone 만 g2c, head 는 vision.cpp 부품"). decode+NMS 는
+// postproc.cpp(detect_anchor)가 담당하므로, 이 부품은 raw cls_score/bbox_pred 까지만 낸다.
+#pragma once
+
+#include "visp/ml.h"
+
+#include <string>
+#include <vector>
+
+namespace visp {
+
+// anchor head(RetinaNet/ATSS 등) 의 head-conv 구조. 값은 <name>.postproc.json 에서 읽는다.
+struct anchor_head_cfg {
+    int stacked_convs = 4;      // 공유 cls/reg conv 타워 깊이
+    int feat_channels = 256;
+    int num_base = 9;           // location 당 anchor 수
+    int num_classes = 80;       // cls_out_channels
+    std::string cls_convs_prefix = "bbox_head.cls_convs";  // ModuleList prefix
+    std::string reg_convs_prefix = "bbox_head.reg_convs";
+    std::string cls_head = "bbox_head.retina_cls";         // 최종 cls conv
+    std::string reg_head = "bbox_head.retina_reg";         // 최종 reg conv
+    bool head_has_norm = false;  // 타워에 norm(GN 등) — 이번 PoC(RetinaNet)=false
+};
+
+// FPN features(레벨별, cwhn) → 레벨별 raw cls_score / bbox_pred(cwhn).
+//  · cls_out[l] : ne={num_base*num_classes, feat_w, feat_h, 1}
+//  · box_out[l] : ne={num_base*4,           feat_w, feat_h, 1}
+// conv 가중치는 모든 레벨이 공유(RetinaHead). detect_anchor 가 기대하는 CWHN flat 레이아웃으로 낸다.
+void anchor_head_forward(model_ref m, std::vector<tensor> const& feats,
+                         anchor_head_cfg const& c,
+                         std::vector<tensor>& cls_out, std::vector<tensor>& box_out);
+
+}  // namespace visp
