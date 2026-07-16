@@ -14,6 +14,7 @@ target_sources(visioncpp PRIVATE
   ml.cpp
   nn.cpp
   platform.cpp
+  postproc.cpp
   vision.cpp
 )
 target_compile_features(visioncpp PUBLIC cxx_std_20)
