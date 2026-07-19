@@ -112,6 +112,29 @@ output/FRCNN_SubA/run_frcnn output/FRCNN_SubA/FRCNN_SubA.gguf output/FRCNN_SubB/
 - RPN proposals : torch `RPNHead.predict_by_feat` 대비 **1000/1000 IoU>0.99**
 - E2E 박스 : torch 풀 two-stage 대비 **score>0.3 20/20 매칭(IoU>0.95), score>0.05 48/49**
 
+## Instance segmentation (Mask R-CNN)
+
+Faster R-CNN + mask 분기. 최종 박스에 **2nd RoIAlign(out=14)** → g2c SubC(mask_head FCN:
+4×conv + deconv + conv_logits) → `paste_mask`(host).
+
+```
+Faster R-CNN → 최종 박스
+  │ roi_align(out=14, host)   박스 → mask_feat (M,256,14,14)
+  │ g2c SubC (mask_head)      → mask_logits (M,80,28,28)     [frcnn_wrap.MaskRCNN_SubC]
+  │ paste_mask (host)         label mask → sigmoid+resize+threshold → 인스턴스 마스크
+  ▼
+```
+
+파일: `frcnn_wrap.MaskRCNN_SubC`, `run_maskrcnn.cpp`, `build_maskrcnn_cpp.sh`. host op 은
+`postproc.cpp` 의 `roi_align`/`paste_mask`.
+
+> ⚠️ **ggml `conv_transpose_2d_p0` 는 batch(N>1) 미지원** → run_maskrcnn 은 SubC 를 **roi 별
+> (batch=1)** 로 실행한다. (배치로 돌리면 첫 roi 만 정확: batch0 cos 1.0, batch1+ 깨짐.)
+
+**검증 (Mask R-CNN r50, 800, trained, demo.jpg):** torch 풀 Mask R-CNN 대비
+- 박스 20/20 매칭, **mask IoU 평균 0.984, IoU>0.9 20/20** (score>0.3);
+- score>0.05: mask IoU 평균 0.975, IoU>0.9 42/43.
+
 ## 확장 (다른 head)
 
 - **anchor**(RetinaNet/ATSS, DeltaXYWHBBoxCoder): `anchor_head_forward` 그대로(cls/reg conv 이름 자동 탐지).

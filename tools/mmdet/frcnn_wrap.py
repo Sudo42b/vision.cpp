@@ -35,6 +35,16 @@ class FRCNN_SubB(nn.Module):
         return self.bbox_head(roi_feat)
 
 
+class MaskRCNN_SubC(nn.Module):
+    """mask RoIAlign feat (M,256,14,14) → mask_logits (M, num_classes, 28, 28). (Mask R-CNN)."""
+    def __init__(self, det):
+        super().__init__()
+        self.mask_head = det.roi_head.mask_head
+
+    def forward(self, mask_feat):
+        return self.mask_head(mask_feat)
+
+
 def frcnn_cfg(det, size=800):
     """host 부품(rpn_proposals/roi_align/detect_roi)용 config 추출 → .frcnn.json."""
     rh = det.rpn_head
@@ -45,7 +55,17 @@ def frcnn_cfg(det, size=800):
     rpn_c, rcnn_c = det.test_cfg.rpn, det.test_cfg.rcnn
     strides = [s[0] if isinstance(s, (tuple, list)) else int(s) for s in pg.strides]
     scales = pg.scales.tolist() if hasattr(pg.scales, "tolist") else list(pg.scales)
-    return {
+    mask = {}
+    if getattr(det.roi_head, "with_mask", False):
+        mext = det.roi_head.mask_roi_extractor
+        mask = {
+            "has_mask": True,
+            "mask_roi_out": int(mext.roi_layers[0].output_size[0]),   # 14
+            "mask_strides": [int(s) for s in mext.featmap_strides],
+            "mask_finest_scale": int(mext.finest_scale),
+            "mask_thr_binary": float(rcnn_c.mask_thr_binary),
+        }
+    return {**mask,
         "img_size": int(size),
         # RPN
         "rpn_strides": [float(s) for s in strides],

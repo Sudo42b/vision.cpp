@@ -331,20 +331,24 @@ std::vector<detection> detect_detr(float const* cls, float const* bbox, detr_par
 // ── mask (Mask RCNN): mask logit → 박스 영역 이진 mask ───────────────────────
 std::vector<uint8_t> paste_mask(float const* mask_logit, int mh, int mw,
                                 detection const& box, float thr, int* out_h, int* out_w) {
-    int bw = std::max(1, (int)std::round(box.x2 - box.x1));
-    int bh = std::max(1, (int)std::round(box.y2 - box.y1));
+    // mmdet _do_paste_mask: 박스 정수 bounding [floor(x1),ceil(x2)) 의 각 이미지 픽셀(center=+0.5)에서
+    // 박스의 float 좌표로 mask 를 grid_sample(align_corners=False, zero-pad) → sigmoid → threshold.
+    // 반환은 그 영역(bw×bh); 배치 원점은 (floor(x1),floor(y1)) (caller 가 캔버스에 놓는다).
+    int x0 = (int)std::floor(box.x1), y0 = (int)std::floor(box.y1);
+    int bw = std::max(1, (int)std::ceil(box.x2) - x0), bh = std::max(1, (int)std::ceil(box.y2) - y0);
     if (out_w) *out_w = bw;
     if (out_h) *out_h = bh;
-    std::vector<uint8_t> out((size_t)bh * bw);
-    // mask logit(mh×mw) → 박스크기(bh×bw) bilinear → sigmoid → threshold
+    float rw = box.x2 - box.x1, rh = box.y2 - box.y1;
+    auto get = [&](int yy, int xx) { return (yy >= 0 && yy < mh && xx >= 0 && xx < mw) ? mask_logit[yy * mw + xx] : 0.0f; };
+    std::vector<uint8_t> out((size_t)bh * bw, 0);
     for (int y = 0; y < bh; ++y) {
-        float fy = (y + 0.5f) * mh / bh - 0.5f; int y0 = (int)std::floor(fy); float wy = fy - y0;
-        int y0c = std::min(std::max(y0, 0), mh-1), y1c = std::min(y0+1, mh-1);
+        float sy = ((y0 + y + 0.5f) - box.y1) / rh * mh - 0.5f;
+        int yf = (int)std::floor(sy); float wy = sy - yf;
         for (int x = 0; x < bw; ++x) {
-            float fx = (x + 0.5f) * mw / bw - 0.5f; int x0 = (int)std::floor(fx); float wx = fx - x0;
-            int x0c = std::min(std::max(x0, 0), mw-1), x1c = std::min(x0+1, mw-1);
-            float v = mask_logit[y0c*mw+x0c]*(1-wy)*(1-wx) + mask_logit[y0c*mw+x1c]*(1-wy)*wx +
-                      mask_logit[y1c*mw+x0c]*wy*(1-wx) + mask_logit[y1c*mw+x1c]*wy*wx;
+            float sx = ((x0 + x + 0.5f) - box.x1) / rw * mw - 0.5f;
+            int xf = (int)std::floor(sx); float wx = sx - xf;
+            float v = get(yf, xf) * (1 - wy) * (1 - wx) + get(yf, xf + 1) * (1 - wy) * wx +
+                      get(yf + 1, xf) * wy * (1 - wx) + get(yf + 1, xf + 1) * wy * wx;
             out[(size_t)y * bw + x] = sigmoidf(v) > thr ? 1 : 0;
         }
     }

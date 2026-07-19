@@ -19,7 +19,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from frcnn_wrap import FRCNN_SubA, FRCNN_SubB, frcnn_cfg   # noqa: E402,F401 (피클: frcnn_wrap)
+from frcnn_wrap import FRCNN_SubA, FRCNN_SubB, MaskRCNN_SubC, frcnn_cfg  # noqa: E402,F401 (피클: frcnn_wrap)
 
 
 def main(argv=None):
@@ -36,6 +36,8 @@ def main(argv=None):
     torch.save(FRCNN_SubA(det).eval(), f"{a.out}/FRCNN_SubA.pt")   # 이미지 → 14 출력
     torch.save(FRCNN_SubB(det).eval(), f"{a.out}/FRCNN_SubB.pt")   # roi_feat → cls/bbox
     cfg = frcnn_cfg(det, a.size)
+    if cfg.get("has_mask"):
+        torch.save(MaskRCNN_SubC(det).eval(), f"{a.out}/MaskRCNN_SubC.pt")   # mask_feat → mask_logits
     # feat_hw (P2-P6) — 러너 CWHN flat 해석용. dummy forward 로 크기 취득.
     with torch.no_grad():
         feats = det.neck(det.backbone(torch.zeros(1, 3, a.size, a.size)))
