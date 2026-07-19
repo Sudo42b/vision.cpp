@@ -75,6 +75,43 @@ to_rgb` 자동 추출 → postproc.json.
   `conv_2d_deform`) 를 torch head 와 비교 → 5레벨 cls/box **cos 0.999998~1.0** (격리 검증
   `run_vfnet_head`). DCN offset 계산이 자동변환 안 되는 부분을 손코딩으로 해결한 사례.
 
+## Two-stage (Faster R-CNN)
+
+RPN proposal·RoIAlign 은 데이터 의존(proposal 개수 가변)이라 단일 그래프에 안 들어감 → g2c 로
+**두 subgraph**(SubA/SubB)만 뽑고, 그 사이는 host C++ op 으로 오케스트레이션.
+
+```
+이미지
+  │ g2c SubA (backbone+neck+RPN)                    [frcnn_wrap.FRCNN_SubA → 14 출력]
+  ▼ P2-P5 + rpn_cls×5 + rpn_bbox×5
+  │ rpn_proposals (host)   RPN decode + level NMS → 1000 proposals
+  │ roi_align (host)       proposal + P2-P5 → roi_feat (N,256,7,7)
+  ▼
+  │ g2c SubB (bbox_head Shared2FC)                  [frcnn_wrap.FRCNN_SubB → cls,bbox]
+  ▼ cls_score(N,81) + bbox_pred(N,320)
+  │ detect_roi (host)      softmax + delta decode + per-class NMS → 박스
+  ▼ 최종 박스
+```
+
+파일: `frcnn_wrap.py`(SubA/SubB + config), `frcnn_to_pt.py`(→ .pt×2 + frcnn.json),
+`run_frcnn.cpp`(오케스트레이션 러너), `build_frcnn_cpp.sh`. host op 은 `postproc.cpp` 의
+`rpn_proposals`/`roi_align`/`detect_roi` (라이브러리). 검증 harness: `run_roi_verify.cpp`,
+`run_rpn_verify.cpp`.
+
+```bash
+python frcnn_to_pt.py --config faster-rcnn_r50_fpn_1x_coco.py --checkpoint frcnn.pth --out /tmp/frcnn
+g2c --model /tmp/frcnn/FRCNN_SubA.pt --name FRCNN_SubA --input-shape 1,3,800,800 --output output/FRCNN_SubA
+g2c --model /tmp/frcnn/FRCNN_SubB.pt --name FRCNN_SubB --input-shape 4,256,7,7 --output output/FRCNN_SubB
+bash build_frcnn_cpp.sh output/FRCNN_SubA output/FRCNN_SubB
+output/FRCNN_SubA/run_frcnn output/FRCNN_SubA/FRCNN_SubA.gguf output/FRCNN_SubB/FRCNN_SubB.gguf \
+    /tmp/frcnn/frcnn.json input.bin 800
+```
+
+**검증 (Faster R-CNN r50, 800, trained, demo.jpg):**
+- RoIAlign : torch `bbox_roi_extractor` 대비 **cos 1.0, max|Δ|=7e-07** (1000 proposals)
+- RPN proposals : torch `RPNHead.predict_by_feat` 대비 **1000/1000 IoU>0.99**
+- E2E 박스 : torch 풀 two-stage 대비 **score>0.3 20/20 매칭(IoU>0.95), score>0.05 48/49**
+
 ## 확장 (다른 head)
 
 - **anchor**(RetinaNet/ATSS, DeltaXYWHBBoxCoder): `anchor_head_forward` 그대로(cls/reg conv 이름 자동 탐지).

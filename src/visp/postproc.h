@@ -132,6 +132,46 @@ struct roi_params {
 std::vector<detection> detect_roi(float const* scores, float const* bbox_deltas,
                                   float const* proposals, int n, roi_params const& p);
 
+// ── RPN proposal 생성 (mmdet RPNHead.predict_by_feat) ────────────────────────
+// rpn_cls/bbox(레벨별) → anchor decode → 레벨별 nms_pre topk → 전체 NMS → max_per_img.
+// objectness 단일채널(sigmoid). detect_anchor 와 달리 클래스 없이 박스+점수만.
+struct rpn_params {
+    std::vector<float> strides;         // [4,8,16,32,64] (P2-P6)
+    float octave_base_scale = 8.0f;     // RPN anchor scale (base_size = stride*scale)
+    std::vector<float> octave_scales{1.0f};
+    std::vector<float> ratios{0.5f, 1.0f, 2.0f};
+    float means[4] = {0, 0, 0, 0};
+    float stds[4] = {1, 1, 1, 1};
+    int nms_pre = 2000;                 // 레벨별 pre-NMS topk
+    float nms_thr = 0.7f;
+    int max_per_img = 1000;             // 최종 proposal 수
+    int input_w = 0, input_h = 0;
+};
+// rpn_cls[l] = [num_base*1, W, H] objectness(CWHN flat), rpn_bbox[l] = [num_base*4, W, H].
+// 반환 proposals [M*4] (x1,y1,x2,y2), M ≤ max_per_img.
+std::vector<float> rpn_proposals(
+    std::vector<std::vector<float>> const& rpn_cls,
+    std::vector<std::vector<float>> const& rpn_bbox,
+    std::vector<std::pair<int, int>> const& feat_hw, rpn_params const& p);
+
+// ── RoIAlign (mmcv RoIAlign, aligned=True, sampling_ratio=0) ─────────────────
+// FPN feats(레벨별 CWHN flat: idx=(y*W+x)*C+c) + rois(이미지좌표) → roi_feat.
+// 레벨 배정 = clamp(floor(log2(sqrt(w*h)/finest_scale + 1e-6)), 0, L-1).
+struct roi_align_params {
+    int output_size = 7;
+    int channels = 256;
+    std::vector<float> strides{4, 8, 16, 32};  // featmap_strides
+    float finest_scale = 56.0f;
+    bool aligned = true;
+    int sampling_ratio = 0;             // 0 → ceil(roi/out) 적응
+};
+// feats[l] = [C, W, H] CWHN flat · rois[M*4] 이미지좌표.
+// 반환 roi_feat [M*C*out*out] = NCHW flat(idx=((m*C+c)*out+ph)*out+pw). (SubB 입력용으로 permute 는 러너가)
+std::vector<float> roi_align(
+    std::vector<std::vector<float>> const& feats,
+    std::vector<std::pair<int, int>> const& feat_hw,
+    float const* rois, int m, roi_align_params const& p);
+
 // ── 전처리: 이미지(HWC u8) → 모델 입력 텐서(CWHN f32) ───────────────────────
 // resize(size×size) + normalize((v-mean)/std). BGR/RGB·mean/std 는 인자.
 std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,

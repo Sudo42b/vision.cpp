@@ -396,6 +396,117 @@ std::vector<detection> detect_roi(float const* scores, float const* bbox_deltas,
     return out;
 }
 
+// ── RPN proposal 생성 (mmdet RPNHead.predict_by_feat) ────────────────────────
+std::vector<float> rpn_proposals(
+    std::vector<std::vector<float>> const& rpn_cls,
+    std::vector<std::vector<float>> const& rpn_bbox,
+    std::vector<std::pair<int, int>> const& feat_hw, rpn_params const& p) {
+
+    int num_base = (int)(p.octave_scales.size() * p.ratios.size());
+    std::vector<detection> cand;  // label = level id (mmdet batched_nms level_ids → 레벨별 NMS)
+    int nlev = (int)feat_hw.size();
+    for (int l = 0; l < nlev; ++l) {
+        int fh = feat_hw[l].first, fw = feat_hw[l].second;
+        float stride = p.strides[l];
+        float base_size = stride * p.octave_base_scale;
+        std::vector<float> anchors = gen_anchors(fh, fw, stride, base_size, p.octave_scales, p.ratios);
+        int C_cls = num_base * 1, C_box = num_base * 4;
+        float const* cls = rpn_cls[l].data();   // CWHN: (h*fw+w)*num_base + b
+        float const* box = rpn_bbox[l].data();  // CWHN: (h*fw+w)*C_box + b*4 + k
+        int npos = fh * fw;
+        std::vector<std::pair<float, int>> lvl;  // (objectness, anchor_idx)
+        lvl.reserve((size_t)npos * num_base);
+        for (int pos = 0; pos < npos; ++pos)
+            for (int b = 0; b < num_base; ++b)
+                lvl.emplace_back(sigmoidf(cls[(size_t)pos * C_cls + b]), pos * num_base + b);
+        // 레벨별 nms_pre topk (RPN 은 pre-NMS score_thr 없음)
+        if (p.nms_pre > 0 && (int)lvl.size() > p.nms_pre) {
+            std::nth_element(lvl.begin(), lvl.begin() + p.nms_pre, lvl.end(),
+                             [](auto const& a, auto const& c) { return a.first > c.first; });
+            lvl.resize(p.nms_pre);
+        }
+        for (auto const& t : lvl) {
+            int aidx = t.second, b = aidx % num_base, pos = aidx / num_base;
+            float const* bp = box + (size_t)pos * C_box + (size_t)b * 4;
+            float delta[4] = {bp[0], bp[1], bp[2], bp[3]};
+            float outb[4];
+            delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
+                       p.means, p.stds, p.input_w, p.input_h);
+            cand.push_back({outb[0], outb[1], outb[2], outb[3], t.first, l});
+        }
+    }
+    // 레벨별 NMS (batched_nms level_ids) → 전체 topk max_per_img
+    std::vector<detection> kept;
+    for (int l = 0; l < nlev; ++l) {
+        std::vector<detection> per;
+        for (auto const& c : cand) if (c.label == l) per.push_back(c);
+        if (per.empty()) continue;
+        for (int k : nms(per, p.nms_thr)) kept.push_back(per[k]);
+    }
+    std::sort(kept.begin(), kept.end(), [](detection const& a, detection const& b) { return a.score > b.score; });
+    if (p.max_per_img > 0 && (int)kept.size() > p.max_per_img) kept.resize(p.max_per_img);
+    std::vector<float> out;
+    out.reserve(kept.size() * 4);
+    for (auto const& d : kept) { out.push_back(d.x1); out.push_back(d.y1); out.push_back(d.x2); out.push_back(d.y2); }
+    return out;
+}
+
+// ── RoIAlign (mmcv RoIAlign, aligned=True) ──────────────────────────────────
+// CWHN-flat 단일채널 bilinear 샘플 (mmcv bilinear_interpolate: 범위밖=0, 경계 clamp).
+static float bilinear_cwhn(float const* feat, int C, int W, int H, int c, float y, float x) {
+    if (y < -1.0f || y > (float)H || x < -1.0f || x > (float)W) return 0.0f;
+    if (y <= 0) y = 0;
+    if (x <= 0) x = 0;
+    int y0 = (int)y, x0 = (int)x, y1, x1;
+    if (y0 >= H - 1) { y1 = y0 = H - 1; y = (float)y0; } else y1 = y0 + 1;
+    if (x0 >= W - 1) { x1 = x0 = W - 1; x = (float)x0; } else x1 = x0 + 1;
+    float ly = y - y0, lx = x - x0, hy = 1.0f - ly, hx = 1.0f - lx;
+    auto at = [&](int yy, int xx) { return feat[((size_t)yy * W + xx) * C + c]; };
+    return hy * (hx * at(y0, x0) + lx * at(y0, x1)) + ly * (hx * at(y1, x0) + lx * at(y1, x1));
+}
+
+std::vector<float> roi_align(
+    std::vector<std::vector<float>> const& feats,
+    std::vector<std::pair<int, int>> const& feat_hw,
+    float const* rois, int m, roi_align_params const& p) {
+
+    int C = p.channels, out = p.output_size, L = (int)feats.size();
+    std::vector<float> res((size_t)m * C * out * out, 0.0f);
+    for (int i = 0; i < m; ++i) {
+        float const* roi = rois + (size_t)i * 4;
+        float rw = roi[2] - roi[0], rh = roi[3] - roi[1];
+        float scale = std::sqrt(std::max(rw, 0.0f) * std::max(rh, 0.0f));
+        int lvl = (int)std::floor(std::log2(scale / p.finest_scale + 1e-6f));
+        if (lvl < 0) lvl = 0;
+        if (lvl > L - 1) lvl = L - 1;
+        float ss = 1.0f / p.strides[lvl];
+        int H = feat_hw[lvl].first, W = feat_hw[lvl].second;
+        float const* feat = feats[lvl].data();
+        float off = p.aligned ? 0.5f : 0.0f;
+        float rsw = roi[0] * ss - off, rsh = roi[1] * ss - off;
+        float roi_w = (roi[2] * ss - off) - rsw, roi_h = (roi[3] * ss - off) - rsh;
+        if (!p.aligned) { roi_w = std::max(roi_w, 1.0f); roi_h = std::max(roi_h, 1.0f); }
+        float bin_w = roi_w / out, bin_h = roi_h / out;
+        int gh = p.sampling_ratio > 0 ? p.sampling_ratio : (int)std::ceil(roi_h / out);
+        int gw = p.sampling_ratio > 0 ? p.sampling_ratio : (int)std::ceil(roi_w / out);
+        float count = (float)std::max(gh * gw, 1);
+        for (int c = 0; c < C; ++c)
+            for (int ph = 0; ph < out; ++ph)
+                for (int pw = 0; pw < out; ++pw) {
+                    float acc = 0.0f;
+                    for (int iy = 0; iy < gh; ++iy) {
+                        float yy = rsh + ph * bin_h + (iy + 0.5f) * bin_h / gh;
+                        for (int ix = 0; ix < gw; ++ix) {
+                            float xx = rsw + pw * bin_w + (ix + 0.5f) * bin_w / gw;
+                            acc += bilinear_cwhn(feat, C, W, H, c, yy, xx);
+                        }
+                    }
+                    res[(((size_t)i * C + c) * out + ph) * out + pw] = acc / count;
+                }
+    }
+    return res;
+}
+
 // ── 전처리: 이미지(HWC u8) → 모델 입력(CWHN f32) ─────────────────────────────
 std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
                               int out_size, float const mean[3], float const std[3],
