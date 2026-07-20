@@ -135,6 +135,25 @@ Faster R-CNN → 최종 박스
 - 박스 20/20 매칭, **mask IoU 평균 0.984, IoU>0.9 20/20** (score>0.3);
 - score>0.05: mask IoU 평균 0.975, IoU>0.9 42/43.
 
+## Tracking (MOT — ByteTrack)
+
+검출(그래프)은 그대로 쓰고, 프레임 간 **association**만 host 부품으로 한다. tracking 은 신경망이
+아니라 상태추적 로직 → g2c 변환 대상 없음. 상태 유지 class `ByteTracker`(라이브러리 `tracker.{h,cpp}`).
+
+```
+프레임별 검출 (위 검출기 그대로)
+  → ByteTracker.track(dets, frame_id)
+       ① Kalman 예측 (SORT 8-state cxcyah)
+       ② IoU 2단계 매칭 (high-score 먼저 → low-score) + tentative/confirmed
+       ③ track 생성/유지/삭제 (num_frames_retain)
+  → track ID (프레임 간 유지)
+```
+
+`ByteTracker` 는 검출기 무관(generic). 검증 harness: `run_bytetrack_verify.cpp`.
+
+**검증:** 합성 검출 시퀀스(10 프레임, 5 물체: 등속 이동 + 등장/소멸)를 mmdet `ByteTracker` 와
+동일 입력으로 비교 → **track ID 44/44 완전 일치, 충돌 0** (Kalman·2단계 매칭 복제).
+
 ## 확장 (다른 head)
 
 - **anchor**(RetinaNet/ATSS, DeltaXYWHBBoxCoder): `anchor_head_forward` 그대로(cls/reg conv 이름 자동 탐지).
