@@ -11,6 +11,8 @@
 set -e
 SELF="$(cd "$(dirname "$0")" && pwd)"
 V="$(cd "$SELF/../.." && pwd)"
+DETECT="$V/tools/detect"                  # head.h (run_frcnn 이 include)
+RUN="$V/tools/verify"                     # E2E 검증 러너
 GA="$(cd "${1:?usage: build_frcnn_cpp.sh <SubA_dir> <SubB_dir>}" && pwd)"
 GB="$(cd "${2:?SubB_dir 필요}" && pwd)"
 BUILD="${VISP_BUILD:-$V/build}"; LIB="$BUILD/lib"
@@ -20,9 +22,9 @@ FMT_INC="$BUILD/_deps/fmt-src/include"; FMT_FLAGS=""
 
 echo "SubA=$GA SubB=$GB build=$BUILD"
 g++ -std=c++20 -O2 $FMT_FLAGS \
-  -I"$GA" -I"$GB" -I"$SELF" -I"$V/include" -I"$V/src" \
+  -I"$GA" -I"$GB" -I"$DETECT" -I"$V/include" -I"$V/src" \
   -I"$V/depend/llama/ggml/include" -I"$V/depend/llama/vendor" \
-  "$SELF/run_frcnn.cpp" "$GA/FRCNN_SubA.cpp" "$GB/FRCNN_SubB.cpp" \
+  "$RUN/roi/run_frcnn.cpp" "$GA/FRCNN_SubA.cpp" "$GB/FRCNN_SubB.cpp" \
   -L"$LIB" -lvisioncpp -lggml -lggml-base -lggml-cpu -Wl,-rpath,"$LIB" \
   -o "$GA/run_frcnn"
 echo "built: $GA/run_frcnn"

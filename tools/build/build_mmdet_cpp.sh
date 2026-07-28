@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# build_mmdet_cpp.sh — g2c 가 생성한 mmdet 백본(output/<ARCH>.cpp)을 mmdet 러너·head 부품과
-# 함께 컴파일해 libvisioncpp 에 링크한다. 모든 mmdet 조각(frontend/runner/head)은 이 폴더
-# (vision.cpp/tools/mmdet) 에 자족(self-contained). head.cpp 는 라이브러리가 아니라 여기서 러너와
-# 함께 컴파일된다 → g2c output/.cpp 를 직접 컴파일(arch/ 복사·cli REG 없음).
+# build_mmdet_cpp.sh — g2c 가 생성한 mmdet 백본(output/<ARCH>.cpp)을 러너(verify/backbone/run_mmdet)·
+# head 부품(detect/head.cpp)과 함께 컴파일해 libvisioncpp 에 링크한다.
+# head.cpp 는 라이브러리가 아니라 여기서 러너와 함께 컴파일된다 → g2c output/.cpp 를 직접
+# 컴파일(arch/ 복사·cli REG 없음).
 #
 # 사용:  build_mmdet_cpp.sh <gen_dir> [arch_name]
 #   gen_dir  = g2c --output 디렉토리 (예: output/MMDetBackbone) — <ARCH>.cpp/.h/.gguf 있음
@@ -11,8 +11,10 @@
 # env:  VISP_BUILD = libvisioncpp 빌드 디렉토리 (기본: <vision.cpp>/build)
 #
 set -e
-SELF="$(cd "$(dirname "$0")" && pwd)"     # vision.cpp/tools/mmdet (mmdet 조각 전부 여기)
+SELF="$(cd "$(dirname "$0")" && pwd)"     # vision.cpp/tools/build (빌드 스크립트)
 V="$(cd "$SELF/../.." && pwd)"            # vision.cpp (libvisioncpp 소스)
+DETECT="$V/tools/detect"                  # 공용 head/decode 부품 (head.cpp/head.h)
+RUN="$V/tools/verify"                     # E2E 검증 러너
 GEN="${1:?usage: build_mmdet_cpp.sh <gen_dir> [arch_name]}"
 GEN="$(cd "$GEN" && pwd)"
 ARCH="${2:-}"
@@ -37,9 +39,9 @@ cp "$GEN/$ARCH.h" "$INC/visp/arch/$ARCH.h"
 # run_mmdet.cpp + head.cpp(러너와 함께 컴파일, 라이브러리 아님) + g2c 백본 output/.cpp
 g++ -std=c++20 -O2 $FMT_FLAGS \
   -DARCH="$ARCH" -DVISP_ARCH_HEADER="\"visp/arch/$ARCH.h\"" \
-  -I"$SELF" -I"$INC" -I"$V/include" -I"$V/src" \
+  -I"$DETECT" -I"$INC" -I"$V/include" -I"$V/src" \
   -I"$V/depend/llama/ggml/include" -I"$V/depend/llama/vendor" \
-  "$SELF/run_mmdet.cpp" "$SELF/head.cpp" "$GEN/$ARCH.cpp" \
+  "$RUN/backbone/run_mmdet.cpp" "$DETECT/head.cpp" "$GEN/$ARCH.cpp" \
   -L"$LIB" -lvisioncpp -lggml -lggml-base -lggml-cpu \
   -Wl,-rpath,"$LIB" \
   -o "$GEN/run_mmdet"

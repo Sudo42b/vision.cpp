@@ -10,6 +10,8 @@
 set -e
 SELF="$(cd "$(dirname "$0")" && pwd)"
 V="$(cd "$SELF/../.." && pwd)"
+DETECT="$V/tools/detect"                  # head.h (run_maskrcnn 이 include)
+RUN="$V/tools/verify"                     # E2E 검증 러너
 GA="$(cd "${1:?usage: build_maskrcnn_cpp.sh <SubA> <SubB> <SubC>}" && pwd)"
 GB="$(cd "${2:?SubB 필요}" && pwd)"
 GC="$(cd "${3:?SubC 필요}" && pwd)"
@@ -26,9 +28,9 @@ done
 
 echo "SubA=$GA SubB=$GB SubC=$GC"
 g++ -std=c++20 -O2 $FMT_FLAGS \
-  -I"$GA" -I"$GB" -I"$GC" -I"$GA/inc" -I"$GB/inc" -I"$GC/inc" -I"$SELF" \
+  -I"$GA" -I"$GB" -I"$GC" -I"$GA/inc" -I"$GB/inc" -I"$GC/inc" -I"$DETECT" \
   -I"$V/include" -I"$V/src" -I"$V/depend/llama/ggml/include" -I"$V/depend/llama/vendor" \
-  "$SELF/run_maskrcnn.cpp" "$GA/FRCNN_SubA.cpp" "$GB/FRCNN_SubB.cpp" "$GC/MaskRCNN_SubC.cpp" \
+  "$RUN/seg/run_maskrcnn.cpp" "$GA/FRCNN_SubA.cpp" "$GB/FRCNN_SubB.cpp" "$GC/MaskRCNN_SubC.cpp" \
   -L"$LIB" -lvisioncpp -lggml -lggml-base -lggml-cpu -Wl,-rpath,"$LIB" \
   -o "$GA/run_maskrcnn"
 echo "built: $GA/run_maskrcnn"

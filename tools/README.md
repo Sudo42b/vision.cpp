@@ -1,12 +1,32 @@
-# vision.cpp / tools/mmdet
+# vision.cpp / tools — 검출 frontend & 검증
 
-mmdet 검출기를 vision.cpp 에서 실행하기 위한 **자족(self-contained) 부품 모음**. mmdet 관련
-전부(전처리·러너·head·빌드)가 이 한 폴더에 있고, **g2c 코어와 vision.cpp 코어(libvisioncpp)는
-건드리지 않는다.** 구조는 **backbone/neck = g2c 생성(그대로) + head = 여기 C++ 부품** 하이브리드.
+검출기를 vision.cpp 에서 실행하기 위한 부품을 **기능(function)별로 분리**한다. 프레임워크(mmdet 등)
+지식은 `frontend/<framework>/` 에만 격리하고, 검출 head/decode 부품(`detect/`)과 검증 러너(`verify/`)는
+**프레임워크 중립**으로 둔다 — mmdet 외 프레임워크도 여기 붙일 수 있게. **g2c 코어·libvisioncpp
+코어는 건드리지 않는다.** 구조는 **backbone/neck = g2c 생성(그대로) + head = `detect/` C++ 부품** 하이브리드.
 검출 head 는 trace 가 안 되므로(NMS·동적 offset 등) ggml 로 억지 변환하지 않고 손코딩 C++ 로 조립한다.
 
-- **head.cpp 는 라이브러리가 아니라 러너와 함께 컴파일**된다(`build_mmdet_cpp.sh`). libvisioncpp 에
-  넣지 않는다 = mmdet 지식이 코어로 새지 않음.
+## 폴더 구조 (기능별)
+
+```
+tools/
+  detect/                # 검출 공통 C++ 부품 (프레임워크 무관) — head/decode
+      head.h  head.cpp   #   anchor_head_forward · vfnet_head_forward …
+  frontend/
+      mmdet/             # mmdet 전용: 검출기 → traceable .pt + postproc.json (torch-side)
+          mmdet_wrap.py  mmdet_to_pt.py  frcnn_wrap.py  frcnn_to_pt.py
+      #                  # (다른 프레임워크는 frontend/<name>/ 로 추가)
+  verify/                # E2E 검증 러너 (task별)
+      dense_head/  run_vfnet_head.cpp
+      roi/         run_frcnn.cpp  run_roi_verify.cpp  run_rpn_verify.cpp
+      seg/         run_maskrcnn.cpp
+      tracking/    run_bytetrack_verify.cpp
+      backbone/    run_dump.cpp  run_mmdet.cpp
+  build/                 # 빌드 스크립트  build_{mmdet,frcnn,maskrcnn}_cpp.sh
+```
+
+- **`detect/head.cpp` 는 라이브러리가 아니라 러너와 함께 컴파일**된다(`build/build_mmdet_cpp.sh`).
+  libvisioncpp 에 넣지 않는다 = 프레임워크 지식이 코어로 새지 않음.
 - head 가 쓰는 `conv_2d`/`group_norm`/`conv_2d_deform` 등은 vision.cpp 라이브러리 프리미티브(무수정).
 
 ## 흐름 (main 의 run_yolo_cpp 러너 패턴)
@@ -28,7 +48,7 @@ output/<Model>/run_mmdet
    └─ detect_anchor …   : decode + NMS → 박스
 ```
 
-## 파일 (전부 이 폴더)
+## 파일 (기능별 위치)
 
 | 파일 | 역할 |
 |---|---|
@@ -45,18 +65,20 @@ decode+NMS·전처리는 vision.cpp 라이브러리(`src/visp/postproc.{h,cpp}` 
 ## 사용 예 (RetinaNet r18)
 
 ```bash
-PY=<g2c venv python>;  G2C=<GTX_Compiler>;  V=$G2C/vision.cpp;  M=$V/tools/mmdet
+PY=<g2c venv python>;  G2C=<GTX_Compiler>;  V=$G2C/vision.cpp
+FE=$V/tools/frontend/mmdet   # mmdet frontend (torch-side, mmdet 지식 유일 지점)
+BUILD=$V/tools/build         # 빌드 스크립트
 CFG=<mmdetection>/configs/retinanet/retinanet_r18_fpn_1x_coco.py
 
-# ① mmdet → backbone.pt + postproc.json  (이 폴더 = mmdet 지식 유일 지점)
-PYTHONPATH=$M $PY $M/mmdet_to_pt.py --config $CFG --out /tmp/rn.pt --size 512
+# ① mmdet → backbone.pt + postproc.json  (frontend/mmdet = mmdet 지식 유일 지점)
+PYTHONPATH=$FE $PY $FE/mmdet_to_pt.py --config $CFG --out /tmp/rn.pt --size 512
 
 # ② g2c 정식 CLI → output/MMDetBackbone/{cpp,h,gguf}  (g2c 코어 무수정, .pt 는 generic torch 모듈)
-PYTHONPATH=$G2C:$M $PY -m shared.compile.pipeline --model /tmp/rn.pt --name MMDetBackbone \
+PYTHONPATH=$G2C:$FE $PY -m shared.compile.pipeline --model /tmp/rn.pt --name MMDetBackbone \
     --input-shape 1,3,512,512 --output output/MMDetBackbone
 
-# ③ 러너 컴파일 (output/.cpp + run_mmdet + head.cpp + libvisioncpp)
-VISP_BUILD=$V/build bash $M/build_mmdet_cpp.sh output/MMDetBackbone
+# ③ 러너 컴파일 (output/.cpp + verify/backbone/run_mmdet + detect/head.cpp + libvisioncpp)
+VISP_BUILD=$V/build bash $BUILD/build_mmdet_cpp.sh output/MMDetBackbone
 
 # ④ 실행 (백본 + C++ head + detect_anchor → 박스). 입력이 이미지면 preprocess() 자동 전처리.
 output/MMDetBackbone/run_mmdet output/MMDetBackbone/MMDetBackbone.gguf \
@@ -99,10 +121,10 @@ RPN proposal·RoIAlign 은 데이터 의존(proposal 개수 가변)이라 단일
 `run_rpn_verify.cpp`.
 
 ```bash
-python frcnn_to_pt.py --config faster-rcnn_r50_fpn_1x_coco.py --checkpoint frcnn.pth --out /tmp/frcnn
+python tools/frontend/mmdet/frcnn_to_pt.py --config faster-rcnn_r50_fpn_1x_coco.py --checkpoint frcnn.pth --out /tmp/frcnn
 g2c --model /tmp/frcnn/FRCNN_SubA.pt --name FRCNN_SubA --input-shape 1,3,800,800 --output output/FRCNN_SubA
 g2c --model /tmp/frcnn/FRCNN_SubB.pt --name FRCNN_SubB --input-shape 4,256,7,7 --output output/FRCNN_SubB
-bash build_frcnn_cpp.sh output/FRCNN_SubA output/FRCNN_SubB
+bash tools/build/build_frcnn_cpp.sh output/FRCNN_SubA output/FRCNN_SubB
 output/FRCNN_SubA/run_frcnn output/FRCNN_SubA/FRCNN_SubA.gguf output/FRCNN_SubB/FRCNN_SubB.gguf \
     /tmp/frcnn/frcnn.json input.bin 800
 ```

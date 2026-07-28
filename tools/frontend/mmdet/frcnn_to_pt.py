@@ -4,7 +4,7 @@
 two-stage 를 g2c 컴파일 가능한 두 subgraph 로 분해해 저장한다(mmdet 지식은 여기만).
 이후 g2c 로 각각 컴파일 → run_frcnn 러너가 host op(rpn_proposals/roi_align/detect_roi)과 조립.
 
-사용 (이 폴더 = vision.cpp/tools/mmdet 을 PYTHONPATH 에):
+사용 (이 폴더 = vision.cpp/tools/frontend/mmdet 을 PYTHONPATH 에):
   python frcnn_to_pt.py --config faster-rcnn_r50_fpn_1x_coco.py --checkpoint frcnn.pth --out /tmp/frcnn
   # → /tmp/frcnn/FRCNN_SubA.pt, FRCNN_SubB.pt, frcnn.json
   # 이후:

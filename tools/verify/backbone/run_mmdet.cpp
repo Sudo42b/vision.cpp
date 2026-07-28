@@ -1,9 +1,9 @@
 // run_mmdet.cpp — mmdet 검출기 러너 (main 의 run_yolo_cpp.cpp 패턴).
 //
 //   백본  = g2c 가 생성한 output/<ARCH>.cpp (그대로 컴파일) → <ARCH>_forward
-//   head  = tools/mmdet/head.cpp 부품 (러너와 함께 컴파일, 라이브러리 아님)
+//   head  = tools/detect/head.cpp 부품 (러너와 함께 컴파일, 라이브러리 아님)
 //   decode+NMS = src/visp/postproc.cpp detect_anchor (라이브러리)
-//   cfg   = <name>.postproc.json (tools/mmdet/mmdet_to_pt.py 가 생성)
+//   cfg   = <name>.postproc.json (tools/frontend/mmdet/mmdet_to_pt.py 가 생성)
 //
 // 백본을 arch/ 로 복사하거나 cli REG 에 등록하지 않는다 — output/.cpp 를 직접 컴파일해
 // libvisioncpp 와 링크(build_mmdet_cpp.sh). run_yolo_cpp 와 동일한 -DARCH 매크로 방식.
