@@ -136,6 +136,14 @@ if(VISP_CI)
     endforeach()
   endif()
 endif()
+# ggml 기본 텐서명 한도 64자는 state_dict 키를 그대로 gguf 텐서명으로 쓰는 모델에 부족하다
+# (mmdet HourglassNet: 68자). 넘으면 로드가 `tensor name is too long: 65 >= 64` 로 거부한다.
+# ★ **ggml 자체 컴파일에도 닿아야 한다** — `ggml_tensor.name[GGML_MAX_NAME]` 이 구조체
+#   레이아웃이라 라이브러리와 헤더의 값이 다르면 ABI 가 갈린다. 그래서 여기(서브디렉터리
+#   추가 **전**)와 `visp/ml.h` 양쪽에 둔다. ml.h 쪽은 CMake 를 안 쓰는 소비자(손수 짠 g++)용.
+#   upstream ggml.h 는 `#ifndef` 가드라 이 정의가 우선한다 — llama 포크 수정 불필요.
+add_compile_definitions(GGML_MAX_NAME=128)
+
 add_subdirectory(depend/llama/ggml)
 set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
 

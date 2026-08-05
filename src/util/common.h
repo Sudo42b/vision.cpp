@@ -2,6 +2,7 @@
 
 #include "util/string.h"
 
+#include <algorithm> // std::find (contains<>) — 없으면 tests/ 빌드가 깨진다
 #include <span>
 #include <vector>
 
