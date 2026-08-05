@@ -59,6 +59,21 @@ tensor contiguous_2d_to_whcn(model_ref m, tensor x) {
     return x;
 }
 
+tensor space_to_depth_quad(model_ref m, tensor x, int sw, int sh) {
+    int64_t W = x->ne[0], H = x->ne[1], C = x->ne[2];
+    GGML_ASSERT(x->ne[3] == 1 && W % 2 == 0 && H % 2 == 0);
+    // W(ne0) 짝/홀: [W,H,C,1] → [2, W/2, H, C] 후 ne0=1@sw 선택 → [W/2,H,C,1]
+    tensor r = ggml_reshape_4d(m, ggml_cont(m, x), 2, W / 2, H, C);
+    tensor v = ggml_view_4d(m, r, 1, W / 2, H, C, r->nb[1], r->nb[2], r->nb[3],
+                            (size_t) sw * r->nb[0]);
+    v = ggml_reshape_4d(m, ggml_cont(m, v), W / 2, H, C, 1);
+    // H(ne1) 짝/홀: [W/2,H,C,1] → [W/2, 2, H/2, C] 후 ne1=1@sh 선택 → [W/2,H/2,C,1]
+    tensor r2 = ggml_reshape_4d(m, v, W / 2, 2, H / 2, C);
+    tensor v2 = ggml_view_4d(m, r2, W / 2, 1, H / 2, C, r2->nb[1], r2->nb[2], r2->nb[3],
+                             (size_t) sh * r2->nb[1]);
+    return ggml_reshape_4d(m, ggml_cont(m, v2), W / 2, H / 2, C, 1);
+}
+
 tensor add_bias_2d(model_ref m, tensor x) {
     if (tensor bias = m.find("bias")) {
         if (!(m.flags & model_build_flag::cwhn)) {
@@ -69,11 +84,12 @@ tensor add_bias_2d(model_ref m, tensor x) {
     return x;
 }
 
-tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
-    tensor weight = m.weights("weight");
-
+// conv_2d 의 본체 — weight 를 인자로 받고 bias 는 붙이지 않는다.
+// conv_2d / conv_2d_wt 가 공유한다. dilation 기본값 1 은 기존 동작과 동일하다.
+static tensor conv_2d_impl(model_ref m, tensor x, tensor weight, int stride, int pad,
+                           int dilation) {
     if (m.flags & model_build_flag::cwhn) {
-        if (weight->ne[1] == 1 && weight->ne[2] == 1 && stride == 1) {
+        if (weight->ne[1] == 1 && weight->ne[2] == 1 && stride == 1 && dilation == 1) {
             auto [c, w, h, b] = nelements(x);
             weight = ggml_reshape_2d(m, weight, weight->ne[0], weight->ne[3]);
             x = ggml_reshape_2d(m, x, x->ne[0], w * h * b);
@@ -83,20 +99,73 @@ tensor conv_2d(model_ref m, tensor x, int stride, int pad) {
         } else if (m.flags & model_build_flag::conv_2d_direct_cwhn) {
             weight = permute_cwhn_to_whcn(m, weight);
             x = permute_cwhn_to_whcn(m, x);
-            x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
+            x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
             x = permute_whcn_to_cwhn(m, x);
 
         } else {
             weight = ggml_cont(m, permute_cwhn_to_whcn(m, weight));
             x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
-            x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, 1, 1);
+            x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, dilation, dilation);
             x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
         }
     } else { // WHCN layout
-        x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
+        x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
     }
-    x = add_bias_2d(m, x);
     return x;
+}
+
+tensor conv_2d(model_ref m, tensor x, int stride, int pad, int dilation) {
+    x = conv_2d_impl(m, x, m.weights("weight"), stride, pad, dilation);
+    return add_bias_2d(m, x);
+}
+
+tensor conv_2d_wt(model_ref m, tensor x, tensor weight, tensor bias, int stride, int pad,
+                  int dilation) {
+    x = conv_2d_impl(m, x, weight, stride, pad, dilation);
+    if (bias) {
+        // WHCN 은 채널이 ne[2] 라 broadcast 를 위해 [1,1,C,1] 로 편다 (add_bias_2d 와 같은 규칙).
+        if (!(m.flags & model_build_flag::cwhn)) {
+            bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
+        }
+        x = ggml_add_inplace(m, x, bias);
+    }
+    return x;
+}
+
+tensor conv_2d_grouped(model_ref m, tensor x, int stride, int pad, int dilation, int groups) {
+    if (groups <= 1) {
+        return conv_2d(m, x, stride, pad, dilation);
+    }
+    tensor weight = m.weights("weight");
+    bool cwhn = bool(m.flags & model_build_flag::cwhn);
+    if (cwhn) {
+        weight = ggml_cont(m, permute_cwhn_to_whcn(m, weight));
+        x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
+    } else {
+        x = ggml_cont(m, x);
+    }
+    // whcn: weight[kw,kh,Cin/g,Cout], x[W,H,Cin,N]
+    int64_t cin_g = weight->ne[2];
+    int64_t cout = weight->ne[3];
+    int64_t cout_g = cout / groups;
+    int64_t n = x->ne[3];
+    tensor y = nullptr;
+    for (int g = 0; g < groups; g++) {
+        tensor wg = ggml_cont(m, ggml_view_4d(m, weight,
+            weight->ne[0], weight->ne[1], cin_g, cout_g,
+            weight->nb[1], weight->nb[2], weight->nb[3],
+            (size_t) g * cout_g * weight->nb[3]));
+        tensor xg = ggml_cont(m, ggml_view_4d(m, x,
+            x->ne[0], x->ne[1], cin_g, n,
+            x->nb[1], x->nb[2], x->nb[3],
+            (size_t) g * cin_g * x->nb[2]));
+        tensor yg = ggml_conv_2d(m, wg, xg, stride, stride, pad, pad, dilation, dilation);
+        y = y ? ggml_concat(m, y, yg, 2) : yg;  // 채널축(ne2) concat
+    }
+    if (cwhn) {
+        y = ggml_cont(m, permute_whcn_to_cwhn(m, y));
+    }
+    return add_bias_2d(m, y);
 }
 
 tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
