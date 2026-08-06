@@ -108,10 +108,15 @@ struct model_file {
     VISP_API tensor_data_layout tensor_layout() const;
 
     VISP_API int64_t key(char const* name) const;
+    VISP_API bool has_key(char const* name) const;
     VISP_API int get_int(char const* name) const;
     VISP_API uint32_t get_uint32(char const* name) const;
+    VISP_API float get_float(char const* name) const;
+    VISP_API bool get_bool(char const* name) const;
     VISP_API std::string_view get_string(char const* name) const;
+    VISP_API size_t get_array_size(char const* name) const;
     VISP_API void get_array(char const* name, span<int> out_values) const;
+    VISP_API void get_array(char const* name, span<float> out_values) const;
 };
 
 // Opens a .gguf file and reads its contents into memory.
