@@ -33,9 +33,6 @@ def _arr(name, values):
 
 def emit_params(cfg, config_name):
     """decode/anchor config → `mmdet_params()` 를 담은 C++ 헤더.
-
-    JSON 사이드카를 대신한다. 값이 실행 파일 안으로 들어가므로 배포물이 하나 줄고,
-    gguf 와 설정이 서로 다른 export 에서 나와 짝이 어긋나는 사고가 원천적으로 사라진다.
     """
     h = cfg.get("head_type", "raw")
     out = [
