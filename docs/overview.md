@@ -63,23 +63,37 @@ Two front-ends are built on top:
 - **Python bindings** — `bindings/python`, for scripting and comparison against reference
   implementations.
 
-## Getting a model in
+## Running a model
 
-Because structure is code, there are two ways to add a model.
+Most of the time there is nothing to add. The models in the
+[README](../README.md#features) are already implemented, so running one means downloading its
+weights and pointing at them:
 
-**Write it.** Follow the [model implementation guide](model-implementation-guide.md). You
-describe the network with the `nn.h` primitives and provide a conversion script that turns the
-original checkpoint into GGUF. This is how the built-in models are implemented, and it gives
-the most control over layout and precision.
+```sh
+vision-cli birefnet -m BiRefNet-lite-F16.gguf -i photo.jpg -o mask.png
+```
 
-**Generate it.** A PyTorch-to-ggml compiler can emit the same kind of C++ from a traced module.
-This is the practical route for large model families where hand-writing every variant is not
-realistic. The [MMDetection guide](mmdet-detectors.md) describes that path, including the
-interface generated code has to satisfy, and shows how to handle the parts that tracing cannot
-capture — detection heads with data-dependent control flow, which stay hand-written C++.
+Or from your own program, in three calls — pick a device, load the weights, compute. See
+[using the command line](using-the-cli.md) and [using the library](using-the-library.md).
 
-Both routes converge on the same thing: a `<Arch>_forward` function that builds a graph, plus a
+If you have your own checkpoint for one of those architectures, convert it with
+`scripts/convert.py`. The structure is already in the library; only the weights change.
+
+## Adding a model
+
+When the architecture is not implemented yet, it has to be written. The
+[model implementation guide](model-implementation-guide.md) walks through it: describe the
+network with the `nn.h` primitives, and provide a conversion function that turns the original
+checkpoint into GGUF. Every built-in model was added this way, and it gives the most control
+over layout and precision.
+
+The result is what the library loads: a `<Arch>_forward` function that builds a graph, plus a
 GGUF file of weights.
+
+For model families with hundreds of variants, hand-writing each one is not realistic and the
+C++ can be generated from a traced PyTorch module instead. The
+[MMDetection guide](mmdet-detectors.md) covers that case — the interface generated code must
+satisfy, and how to handle what tracing cannot capture.
 
 ## Scope
 
@@ -92,6 +106,8 @@ list in the [README](../README.md#features) is finite and why growing it is a co
 ## Next
 
 - [Getting started](getting-started.md) — run a model end to end in five minutes.
+- [Using the command line](using-the-cli.md) — every built-in model, no code.
+- [Using the library](using-the-library.md) — the same models from C++ or Python.
 - [README](../README.md) — install, build, supported models, performance.
 - [Model implementation guide](model-implementation-guide.md) — write a model by hand.
 - [MMDetection detectors](mmdet-detectors.md) — run detectors from a compiled backbone.

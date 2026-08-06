@@ -93,6 +93,8 @@ vision-cli esrgan -m RealESRGAN-x4plus_anime-6B-F16.gguf -i input.jpg -o upscale
 ## 다음
 
 - [개요](overview.ko.md) — 이 라이브러리가 무엇이고, 왜 구조와 가중치를 갈라놨는지.
+- [커맨드라인으로 쓰기](using-the-cli.ko.md) — 옵션 전부, 내장 모델 전부.
+- [라이브러리로 쓰기](using-the-library.ko.md) — 같은 모델을 내 코드에서.
 - [README](../README.md#features) — 나머지 내장 모델과 각각이 하는 일.
 - [모델 구현 가이드](model-implementation-guide.md) — 원하는 모델이 목록에 없어서 직접 넣어야 할 때.
 - [MMDetection 검출기](mmdet-detectors.ko.md) — 구조를 손으로 쓰지 않고 생성해서 쓰는 검출기.

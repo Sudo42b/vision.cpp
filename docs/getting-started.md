@@ -94,6 +94,8 @@ see it count them off.
 ## Where to go next
 
 - [Overview](overview.md) — what the library is and why weights and structure are separate.
+- [Using the command line](using-the-cli.md) — every option, every built-in model.
+- [Using the library](using-the-library.md) — the same models from your own code.
 - [README](../README.md#features) — the other built-in models, and what each one does.
 - [Model implementation guide](model-implementation-guide.md) — when the model you want is not
   in the list, and you want to add it.

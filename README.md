@@ -10,7 +10,9 @@ Computer Vision ML inference in C++
 
 Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](https://github.com/ggml-org/llama.cpp) project.
 
-New here? [**Getting Started**](docs/getting-started.md) walks through a first run in five minutes, and [**Overview**](docs/overview.md) explains what the library is and how models get in.
+New here? [**Getting started**](docs/getting-started.md) walks through a first run in five minutes.
+
+**Docs:** [Getting started](docs/getting-started.md) · [Overview](docs/overview.md) · [Command line](docs/using-the-cli.md) · [Library API](docs/using-the-library.md) · [Implementing a model](docs/model-implementation-guide.md) · [MMDetection detectors](docs/mmdet-detectors.md)
 
 ### Features
 

@@ -58,21 +58,33 @@ _vision_.cpp 는 모델을 둘로 쪼갠다.
   (`vision-cli sam -m MobileSAM-F16.gguf -i image.jpg -p 100 200 -o mask.png`).
 - **Python 바인딩** — `bindings/python`. 스크립팅과 레퍼런스 구현 대조용.
 
-## 모델을 넣는 방법
+## 모델 실행하기
 
-구조가 코드이므로, 모델을 추가하는 길은 둘이다.
+대개는 새로 넣을 게 없다. [README](../README.md#features) 의 모델들은 이미 구현돼 있어서,
+쓰려면 가중치를 받아 가리키기만 하면 된다.
 
-**직접 쓴다.** [모델 구현 가이드](model-implementation-guide.md) 를 따른다. `nn.h` 프리미티브로
-망을 기술하고, 원본 체크포인트를 GGUF 로 바꾸는 변환 스크립트를 함께 만든다. 내장 모델들이 이
-방식으로 구현돼 있고, 레이아웃과 정밀도를 가장 세밀하게 통제할 수 있다.
+```sh
+vision-cli birefnet -m BiRefNet-lite-F16.gguf -i photo.jpg -o mask.png
+```
 
-**생성한다.** PyTorch→ggml 컴파일러가 traced 모듈에서 같은 형태의 C++ 를 뽑아낼 수 있다. 변종이
-많은 모델 계열은 전부 손으로 쓰는 게 현실적이지 않으므로 이쪽이 실용적이다.
-[MMDetection 가이드](mmdet-detectors.ko.md) 가 그 경로를 다룬다 — 생성된 코드가 지켜야 할
-인터페이스, 그리고 trace 로 잡히지 않는 부분(데이터에 따라 흐름이 갈리는 검출 head)을 손으로 쓴
-C++ 로 남기는 방법까지.
+내 프로그램 안에서 쓸 때도 세 번의 호출이다 — 장치를 고르고, 가중치를 읽고, 계산한다.
+[커맨드라인으로 쓰기](using-the-cli.ko.md) 와 [라이브러리로 쓰기](using-the-library.ko.md) 참조.
 
-두 길은 결국 같은 곳에서 만난다. 그래프를 만드는 `<Arch>_forward` 함수 하나와, 가중치 GGUF 하나.
+그 아키텍처의 체크포인트를 직접 갖고 있다면 `scripts/convert.py` 로 변환한다. 구조는 이미
+라이브러리에 있고 가중치만 바뀐다.
+
+## 모델 추가하기
+
+아키텍처가 아직 구현돼 있지 않으면 써야 한다. [모델 구현 가이드](model-implementation-guide.md)
+가 그 절차다 — `nn.h` 프리미티브로 망을 기술하고, 원본 체크포인트를 GGUF 로 바꾸는 변환 함수를
+함께 만든다. 내장 모델은 전부 이렇게 추가됐고, 레이아웃과 정밀도를 가장 세밀하게 통제할 수 있다.
+
+결과물이 곧 라이브러리가 읽는 것이다. 그래프를 만드는 `<Arch>_forward` 함수 하나와, 가중치
+GGUF 하나.
+
+변종이 수백 개인 모델 계열은 하나씩 손으로 쓰는 게 현실적이지 않아서, traced PyTorch 모듈에서
+C++ 를 생성하기도 한다. [MMDetection 가이드](mmdet-detectors.ko.md) 가 그 경우를 다룬다 —
+생성된 코드가 지켜야 할 인터페이스와, trace 로 잡히지 않는 부분을 다루는 방법.
 
 ## 범위
 
@@ -85,6 +97,8 @@ _vision_.cpp 는 추론 라이브러리다. 학습도, autograd 도, optimizer �
 ## 다음
 
 - [시작하기](getting-started.ko.md) — 5분 안에 모델 하나를 끝까지 돌려보기.
+- [커맨드라인으로 쓰기](using-the-cli.ko.md) — 내장 모델 전부, 코드 없이.
+- [라이브러리로 쓰기](using-the-library.ko.md) — 같은 모델을 C++·Python 에서.
 - [README](../README.md) — 설치·빌드·지원 모델·성능.
 - [모델 구현 가이드](model-implementation-guide.md) — 모델을 손으로 구현하기.
 - [MMDetection 검출기](mmdet-detectors.ko.md) — 컴파일된 백본으로 검출기 실행하기.
