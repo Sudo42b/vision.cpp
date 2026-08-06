@@ -91,6 +91,7 @@ list in the [README](../README.md#features) is finite and why growing it is a co
 
 ## Next
 
+- [Getting started](getting-started.md) — run a model end to end in five minutes.
 - [README](../README.md) — install, build, supported models, performance.
 - [Model implementation guide](model-implementation-guide.md) — write a model by hand.
 - [MMDetection detectors](mmdet-detectors.md) — run detectors from a compiled backbone.

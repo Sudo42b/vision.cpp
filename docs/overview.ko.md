@@ -84,6 +84,7 @@ _vision_.cpp 는 추론 라이브러리다. 학습도, autograd 도, optimizer �
 
 ## 다음
 
+- [시작하기](getting-started.ko.md) — 5분 안에 모델 하나를 끝까지 돌려보기.
 - [README](../README.md) — 설치·빌드·지원 모델·성능.
 - [모델 구현 가이드](model-implementation-guide.md) — 모델을 손으로 구현하기.
 - [MMDetection 검출기](mmdet-detectors.ko.md) — 컴파일된 백본으로 검출기 실행하기.
