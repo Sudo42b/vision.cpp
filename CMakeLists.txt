@@ -22,6 +22,13 @@ if(VISP_INSTALL_MODELS)
   set(VISP_MODEL_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/visioncpp" CACHE PATH "Directory to install default models to")
 endif()
 
+# 설치본의 libvisioncpp.so 는 libggml.so.0 을 DT_NEEDED 로 물고 있다. RUNPATH 가 없으면
+# SDK 사용자가 링크에는 성공하고 **실행에서** `libggml.so.0: cannot open shared object file`
+# 로 죽는다 — 링커는 CMake 가 알려준 경로로 찾지만, 로더는 실행 시점에 다시 찾기 때문이다.
+# `$ORIGIN` = 그 .so 가 놓인 디렉터리. ggml 도 같은 lib/ 에 깔리므로 이 한 줄로 해결된다.
+# (사용자가 LD_LIBRARY_PATH 를 잡지 않아도 되게 하는 게 목적이다.)
+set(CMAKE_INSTALL_RPATH "$ORIGIN")
+
 if(PROJECT_IS_TOP_LEVEL)
   set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
