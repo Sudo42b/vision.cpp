@@ -36,7 +36,13 @@ int main(int argc, char** argv) {
     std::string pref = argv[3];
     const int SZ = argc > 4 ? atoi(argv[4]) : 512;
 
-    backend_device backend = backend_init();
+    // backend_init() picks the best device it can find. When a build includes an
+    // accelerator backend that is not actually present, that choice fails late and
+    // unhelpfully, and numeric comparison wants the CPU anyway.
+    const char* backend_env = std::getenv("VISP_BACKEND");
+    backend_device backend = (backend_env && std::string(backend_env) == "cpu")
+                                 ? backend_init(backend_type::cpu)
+                                 : backend_init();
     model_file file = model_load(gguf);
     model_weights weights = model_init(file.n_tensors());
     model_transfer(file, weights, backend, backend.preferred_float_type(), file.tensor_layout());
@@ -49,6 +55,15 @@ int main(int argc, char** argv) {
     ggml_build_forward_expand(graph, input);
     tensor last = FWD(m, input, p);   // 내부에서 compute_graph_output 이 out_i 를 그래프에 등록
     ggml_build_forward_expand(graph, last);
+
+    // VISP_DUMP_NODES=<dir> writes every named intermediate as <name>.bin. Comparing only
+    // the final output says that something diverged, not where.
+    const char* dump_dir = std::getenv("VISP_DUMP_NODES");
+    if (dump_dir) {
+        for (int i = 0; i < ggml_graph_n_nodes(graph.graph); ++i) {
+            ggml_set_output(ggml_graph_node(graph.graph, i));
+        }
+    }
 
     compute_graph_allocate(graph, backend);
     auto in = load_bin(inb, (size_t)3 * SZ * SZ);
@@ -71,5 +86,22 @@ int main(int argc, char** argv) {
                (long long)t->ne[0], (long long)t->ne[1], (long long)t->ne[2], (long long)t->ne[3]);
     }
     printf("dumped %d outputs → %s.out.*.bin\n", n, pref.c_str());
+
+    if (dump_dir) {
+        int written = 0;
+        for (int i = 0; i < ggml_graph_n_nodes(graph.graph); ++i) {
+            tensor t = ggml_graph_node(graph.graph, i);
+            const char* nm = ggml_get_name(t);
+            if (!nm || !nm[0] || t->type != GGML_TYPE_F32) {
+                continue;
+            }
+            std::vector<float> d(ggml_nelements(t));
+            transfer_from_backend(t, std::span<float>(d.data(), d.size()));
+            std::ofstream of(std::string(dump_dir) + "/" + nm + ".bin", std::ios::binary);
+            of.write(reinterpret_cast<char const*>(d.data()), d.size() * sizeof(float));
+            ++written;
+        }
+        printf("- VISP_DUMP_NODES: %d intermediates → %s\n", written, dump_dir);
+    }
     return 0;
 }

@@ -2,6 +2,11 @@
 
 set_and_check(VISP_INCLUDE_DIR "@PACKAGE_VISP_INCLUDE_INSTALL_DIR@")
 set_and_check(VISP_LIB_DIR "@PACKAGE_VISP_LIB_INSTALL_DIR@")
+set_and_check(VISP_SHARE_DIR "@PACKAGE_VISP_SHARE_INSTALL_DIR@")
+
+# Generic runner source for generated models. For example:
+#   add_executable(run ${VISP_RUNNER} ${GEN}/${ARCH}.cpp)
+set(VISP_RUNNER "${VISP_SHARE_DIR}/run_dump.cpp")
 
 include(CMakeFindDependencyMacro)
 find_dependency(ggml)

@@ -17,9 +17,18 @@ include(GNUInstallDirs)
 set(VISP_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header files")
 set(VISP_LIB_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR} CACHE PATH "Location of library files")
 set(VISP_BIN_INSTALL_DIR ${CMAKE_INSTALL_BINDIR} CACHE PATH "Location of binary files")
+set(VISP_SHARE_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/visioncpp" CACHE PATH "Location of SDK data (generic runner source)")
 if(VISP_INSTALL_MODELS)
   set(VISP_MODEL_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/visioncpp" CACHE PATH "Directory to install default models to")
 endif()
+
+# The installed libvisioncpp.so records libggml.so.0 in DT_NEEDED. Without a RUNPATH a
+# consumer links successfully and then fails at startup with
+# "libggml.so.0: cannot open shared object file" -- the linker resolves the path CMake gives
+# it, and the loader searches again at run time with nothing to go on.
+# $ORIGIN is the directory holding the .so itself; ggml installs into the same lib/, so this
+# one line removes the need for LD_LIBRARY_PATH.
+set(CMAKE_INSTALL_RPATH "$ORIGIN")
 
 if(PROJECT_IS_TOP_LEVEL)
   set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -169,6 +178,13 @@ install(TARGETS visioncpp
   LIBRARY DESTINATION ${VISP_LIB_INSTALL_DIR}
   ARCHIVE DESTINATION ${VISP_LIB_INSTALL_DIR})
 install(DIRECTORY include/ DESTINATION ${VISP_INCLUDE_INSTALL_DIR})
+# Internal headers that generated code includes; consumers of the install tree need them.
+install(FILES src/visp/nn.h DESTINATION ${VISP_INCLUDE_INSTALL_DIR}/visp)
+install(DIRECTORY src/util/ DESTINATION ${VISP_INCLUDE_INSTALL_DIR}/util
+        FILES_MATCHING PATTERN "*.h")
+
+# Generic runner source. Consumers compile it together with their generated <Arch>.cpp.
+install(FILES tools/verify/backbone/run_dump.cpp DESTINATION ${VISP_SHARE_INSTALL_DIR})
 if(PROJECT_IS_TOP_LEVEL)
   install(FILES README.md LICENSE DESTINATION .)
 endif()
@@ -190,7 +206,7 @@ configure_package_config_file(
   scripts/cmake/visioncpp-config.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-config.cmake
   INSTALL_DESTINATION ${VISP_LIB_INSTALL_DIR}/cmake/visioncpp
-  PATH_VARS VISP_INCLUDE_INSTALL_DIR VISP_LIB_INSTALL_DIR VISP_BIN_INSTALL_DIR
+  PATH_VARS VISP_INCLUDE_INSTALL_DIR VISP_LIB_INSTALL_DIR VISP_BIN_INSTALL_DIR VISP_SHARE_INSTALL_DIR
 )
 write_basic_package_version_file(
   visioncpp-version.cmake
