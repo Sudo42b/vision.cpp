@@ -17,6 +17,7 @@ include(GNUInstallDirs)
 set(VISP_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header files")
 set(VISP_LIB_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR} CACHE PATH "Location of library files")
 set(VISP_BIN_INSTALL_DIR ${CMAKE_INSTALL_BINDIR} CACHE PATH "Location of binary files")
+set(VISP_SHARE_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/visioncpp" CACHE PATH "Location of SDK data (generic runner source)")
 if(VISP_INSTALL_MODELS)
   set(VISP_MODEL_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/visioncpp" CACHE PATH "Directory to install default models to")
 endif()
@@ -169,6 +170,13 @@ install(TARGETS visioncpp
   LIBRARY DESTINATION ${VISP_LIB_INSTALL_DIR}
   ARCHIVE DESTINATION ${VISP_LIB_INSTALL_DIR})
 install(DIRECTORY include/ DESTINATION ${VISP_INCLUDE_INSTALL_DIR})
+# 생성 코드가 include 하는 내부 헤더 — SDK 사용자도 필요하다.
+install(FILES src/visp/nn.h DESTINATION ${VISP_INCLUDE_INSTALL_DIR}/visp)
+install(DIRECTORY src/util/ DESTINATION ${VISP_INCLUDE_INSTALL_DIR}/util
+        FILES_MATCHING PATTERN "*.h")
+
+# 생성 모델을 실행하는 제네릭 러너 소스. SDK 사용자는 이걸 자기 <Arch>.cpp 와 함께 컴파일한다.
+install(FILES tools/mmdet/run_dump.cpp DESTINATION ${VISP_SHARE_INSTALL_DIR})
 if(PROJECT_IS_TOP_LEVEL)
   install(FILES README.md LICENSE DESTINATION .)
 endif()
@@ -190,7 +198,7 @@ configure_package_config_file(
   scripts/cmake/visioncpp-config.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/visioncpp-config.cmake
   INSTALL_DESTINATION ${VISP_LIB_INSTALL_DIR}/cmake/visioncpp
-  PATH_VARS VISP_INCLUDE_INSTALL_DIR VISP_LIB_INSTALL_DIR VISP_BIN_INSTALL_DIR
+  PATH_VARS VISP_INCLUDE_INSTALL_DIR VISP_LIB_INSTALL_DIR VISP_BIN_INSTALL_DIR VISP_SHARE_INSTALL_DIR
 )
 write_basic_package_version_file(
   visioncpp-version.cmake
