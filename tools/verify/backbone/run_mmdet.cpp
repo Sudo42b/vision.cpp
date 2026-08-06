@@ -20,7 +20,9 @@
 
 #include <ggml.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <string>
@@ -155,5 +157,25 @@ int main(int argc, char** argv) {
     }
     fclose(f);
     printf("- detect(anchor): %zu boxes → %s (x1,y1,x2,y2,score,label f32*6)\n", dets.size(), outp);
+
+    // 파일은 대조용 raw f32 다. 사람이 결과를 눈으로 확인할 수 있게 상위 몇 개는 표로도 찍는다
+    // (개수는 VISP_PRINT_DETS 로 조절, 0 이면 끄기).
+    int n_print = 10;
+    if (const char* e = std::getenv("VISP_PRINT_DETS")) {
+        n_print = atoi(e);
+    }
+    n_print = std::min<int>(n_print, (int)dets.size());
+    if (n_print > 0) {
+        printf("\n  %5s %8s %8s %8s %8s %8s %6s\n", "#", "x1", "y1", "x2", "y2", "score", "label");
+        for (int i = 0; i < n_print; ++i) {
+            detection const& d = dets[i];
+            printf("  %5d %8.1f %8.1f %8.1f %8.1f %8.3f %6d\n",
+                i, d.x1, d.y1, d.x2, d.y2, d.score, d.label);
+        }
+        if ((int)dets.size() > n_print) {
+            printf("  %5s  (%zu more)\n", "...", dets.size() - n_print);
+        }
+        printf("\n");
+    }
     return 0;
 }
