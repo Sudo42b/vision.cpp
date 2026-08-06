@@ -31,6 +31,7 @@ objects.
 
 - [Prerequisites](#prerequisites)
 - [Pipeline](#pipeline)
+- [Output](#output)
 - [Detection heads](#detection-heads)
 - [Post-processing API](#post-processing-api)
 - [Two-stage detectors](#two-stage-detectors)
@@ -164,12 +165,12 @@ The result is `<gen_dir>/run_mmdet`.
 output/MMDetBackbone/run_mmdet \
     output/MMDetBackbone/MMDetBackbone.gguf \
     image.jpg \
-    boxes.bin \
+    detected.png \
     512
 ```
 
 ```
-run_mmdet <gguf> <input> <out.bin> [size=512]
+run_mmdet <gguf> <input> <output> [size=512]
 ```
 
 `<gguf>`
@@ -181,13 +182,62 @@ run_mmdet <gguf> <input> <out.bin> [size=512]
     deviation and channel order are compiled in. A `.bin` file is taken as-is and must
     contain `3 × size × size` `float32` values in CWHN order.
 
-`<out.bin>`
-:   Output path. Each detection is written as six `float32` values:
-    `x1, y1, x2, y2, score, label`. Coordinates are in input-image pixels.
+`<output>`
+:   Where to write the result. The extension decides what is written: `.bin` gives raw
+    detections, anything else gives the input image with the boxes drawn on it.
 
 `[size]`
 :   Input resolution. Must match the value passed to `--size` in step 1 and the shape the graph
     was compiled for.
+
+### Output
+
+The extension of the output path decides what is written.
+
+```sh
+run_mmdet model.gguf image.jpg detected.png 512   # the image, boxes drawn on it
+run_mmdet model.gguf image.jpg boxes.bin     512   # raw float32, six numbers per box
+```
+
+An image is the default, which is what the rest of the command-line tools produce and what a
+person looking at a result wants. Raw `float32` is what comparing against a reference
+implementation needs, so it stays one extension away rather than being the only option.
+
+Either way the highest-scoring detections are printed:
+
+```
+- detect(anchor): 100 boxes, 12 drawn at score >= 0.30 → detected.png
+
+      #       x1       y1       x2       y2    score  label
+      0    459.3    241.1    512.0    263.3    0.837     63
+      1    306.4     69.4    361.2     84.5    0.835     63
+    ...  (98 more)
+```
+
+The image carries where, the table carries what. Class is drawn as colour rather than text,
+which keeps a font out of the runner.
+
+| Variable | Effect |
+| :--- | :--- |
+| `VISP_DRAW_THRESHOLD` | Minimum score to draw. Default `0.3` |
+| `VISP_PRINT_DETS` | How many rows to print. `0` turns the table off |
+
+In the raw form each detection is six `float32` values written back to back:
+
+```
+x1  y1  x2  y2  score  label
+```
+
+Coordinates are pixels in the square input the detector ran on. There is no header and no
+count — the number of detections is the file size divided by 24 bytes.
+
+```python
+import numpy as np
+d = np.fromfile("boxes.bin", dtype="float32").reshape(-1, 6)
+```
+
+`tools/verify/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
+
 
 ## Detection heads
 

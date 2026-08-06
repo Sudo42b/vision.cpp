@@ -55,7 +55,7 @@ python tools/frontend/mmdet/mmdet_to_pt.py \
 bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
 
 # 4. Run.
-output/MMDetBackbone/run_mmdet output/MMDetBackbone/MMDetBackbone.gguf image.jpg boxes.bin 512
+output/MMDetBackbone/run_mmdet output/MMDetBackbone/MMDetBackbone.gguf image.jpg detected.png 512
 ```
 
 `backbone.postproc.h` holds a generated `mmdet_params()` — anchor scales, head convolution
@@ -69,32 +69,40 @@ library's `preprocess()` driven by extracted values rather than anything hand-wr
 
 ## Looking at the output
 
-`run_mmdet` writes detections as raw `float32` — six numbers per box, `x1 y1 x2 y2 score label`
-— because that is what comparing against a reference implementation needs. It also prints the
-highest-scoring ones:
+The extension of the output path decides what `run_mmdet` writes.
+
+```sh
+run_mmdet model.gguf image.jpg detected.png 512   # the image, boxes drawn on it
+run_mmdet model.gguf image.jpg boxes.bin     512   # raw float32, six numbers per box
+```
+
+An image is the default because that is what the rest of `vision-cli` produces and what a person
+looking at a result wants. Raw `float32` — `x1 y1 x2 y2 score label` — is what comparing against
+a reference implementation needs, so it stays one extension away.
+
+Either way the highest-scoring detections are printed:
 
 ```
-- detect(anchor): 100 boxes → boxes.bin (x1,y1,x2,y2,score,label f32*6)
-
       #       x1       y1       x2       y2    score  label
       0    459.3    241.1    512.0    263.3    0.837     63
       1    306.4     69.4    361.2     84.5    0.835     63
     ...  (98 more)
 ```
 
-`VISP_PRINT_DETS` changes how many are printed, or turns the table off with `0`.
+The image carries where, the table carries what. No text is drawn into the image; class is
+encoded as colour, which keeps a font out of the runner.
 
-To see the boxes on the image:
+| Variable | Effect |
+| :--- | :--- |
+| `VISP_DRAW_THRESHOLD` | Minimum score to draw. Default `0.3` |
+| `VISP_PRINT_DETS` | How many rows to print. `0` turns the table off |
 
-```sh
-python tools/verify/draw_boxes.py image.jpg boxes.bin -o annotated.png -t 0.3
-```
+`tools/verify/draw_boxes.py` draws a `.bin` that was written earlier, which is the way to look
+at a file kept for comparison. It adds class names and scores as text, which the C++ path does
+not.
 
-`--size` if the detector ran at something other than 512, `--labels` for a class list other than
-COCO 80.
-
-`run_dump` does the same for any generated graph — it prints each output tensor's shape and
-writes it as raw `float32`, which is the way to inspect a backbone that has no head attached.
+`run_dump` covers any generated graph — it prints each output tensor's shape and writes it as
+raw `float32`, which is how to inspect a backbone with no head attached.
 
 ## Heads
 

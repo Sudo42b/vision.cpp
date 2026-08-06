@@ -9,10 +9,12 @@
 // libvisioncpp 와 링크(build_mmdet_cpp.sh). run_yolo_cpp 와 동일한 -DARCH 매크로 방식.
 //
 // 컴파일: -DARCH=<클래스명> -DVISP_ARCH_HEADER='"<gen>/<ARCH>.h"'
-// 실행:  run_mmdet <gguf> <input> <out.bin> [size=512]
+// 실행:  run_mmdet <gguf> <input> <out.png> [size=512]
+//        출력 확장자가 .bin 이면 원시 f32(레퍼런스 대조용), 그 외에는 박스를 그린 이미지.
 
 #include VISP_ARCH_HEADER                 // 백본: <ARCH>_forward / <ARCH>_params / <ARCH>_detect_params
 #include "head.h"                          // head 부품: anchor_head_forward (같은 폴더)
+#include "draw.h"                          // 검출 결과를 이미지에 그린다 (같은 폴더)
 #include MMDET_PARAMS_HEADER              // 생성된 mmdet_params() — 값이 실행 파일 안에 있다
 #include "visp/image.h"                   // image_load (이미지 입력 pre)
 #include "visp/ml.h"
@@ -55,13 +57,20 @@ static std::vector<float> to_vec(tensor t) {
 
 // 입력이 이미지(.jpg/.png…)면 preprocess()(resize+normalize+to_rgb, 생성된 상수)로 텐서 생성.
 // .bin 이면 이미 전처리된 CWHN f32 텐서로 간주. → yolo run_yolo_cpp 는 .bin(외부 전처리)만, 여기선 둘 다.
-static std::vector<float> load_input(const char* path, int SZ, mmdet_cfg const& c) {
+static bool has_ext(std::string const& s, const char* e) {
+    size_t n = std::strlen(e);
+    return s.size() >= n && s.compare(s.size() - n, n, e) == 0;
+}
+
+static bool is_image_path(std::string const& s) {
+    return has_ext(s, ".jpg") || has_ext(s, ".jpeg") || has_ext(s, ".png") || has_ext(s, ".bmp");
+}
+
+// `source` 가 비어 있지 않게 채워지면 입력이 이미지였다는 뜻 — 결과를 그 위에 그릴 수 있다.
+static std::vector<float> load_input(const char* path, int SZ, mmdet_cfg const& c,
+                                     image_data* source) {
     std::string s(path);
-    auto ext = [&](const char* e) {
-        size_t n = std::strlen(e);
-        return s.size() >= n && s.compare(s.size() - n, n, e) == 0;
-    };
-    if (ext(".jpg") || ext(".jpeg") || ext(".png") || ext(".bmp")) {
+    if (is_image_path(s)) {
         image_data img = image_load(path);
         int iw = img.extent[0], ih = img.extent[1];
         int ic = n_channels(img.format);   // stbi_load(...,0)=네이티브 채널수 (JPEG=3, PNG+α=4)
@@ -70,14 +79,21 @@ static std::vector<float> load_input(const char* path, int SZ, mmdet_cfg const& 
         bool to_rgb = c.to_rgb;
         printf("- preprocess: image %dx%dx%d → %dx%d (mean %.1f,%.1f,%.1f std %.1f,%.1f,%.1f to_rgb=%d)\n",
             iw, ih, ic, SZ, SZ, mean[0], mean[1], mean[2], sd[0], sd[1], sd[2], (int)to_rgb);
-        return preprocess(img.data.get(), ih, iw, ic, SZ, mean, sd, to_rgb);
+        auto tensor_data = preprocess(img.data.get(), ih, iw, ic, SZ, mean, sd, to_rgb);
+        if (source) {
+            *source = std::move(img);
+        }
+        return tensor_data;
     }
     return load_bin(path, (size_t)3 * SZ * SZ);
 }
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <gguf> <input> <out.bin> [size=512]\n", argv[0]);
+        fprintf(stderr,
+            "usage: %s <gguf> <input> <output> [size=512]\n"
+            "       output ending in .bin holds raw float32 detections;\n"
+            "       any other extension is an image with the boxes drawn on it\n", argv[0]);
         return 1;
     }
     const char* gguf = argv[1];
@@ -129,7 +145,8 @@ int main(int argc, char** argv) {
 
     // 5) 계산 (입력: 이미지면 preprocess, .bin 이면 전처리된 텐서)
     compute_graph_allocate(graph, backend);
-    auto in_data = load_input(inp, SZ, cfg);
+    image_data source;
+    auto in_data = load_input(inp, SZ, cfg, &source);
     if (const char* dp = std::getenv("MMDET_DUMP_PRE")) {   // 디버그: 전처리 텐서 덤프
         FILE* f = fopen(dp, "wb"); if (f) { fwrite(in_data.data(), sizeof(float), in_data.size(), f); fclose(f); }
     }
@@ -150,13 +167,37 @@ int main(int argc, char** argv) {
     }
     std::vector<detection> dets = detect_anchor(cls_v, box_v, feat_hw, dp);
 
-    FILE* f = fopen(outp, "wb");
-    for (detection const& d : dets) {
-        float rec[6] = { d.x1, d.y1, d.x2, d.y2, d.score, (float)d.label };
-        fwrite(rec, sizeof(float), 6, f);
+    // 기본은 이미지 — vision-cli 의 다른 명령들과 같다. 원시 수치는 .bin 으로 요청한다.
+    std::string out_s(outp);
+    bool want_raw = has_ext(out_s, ".bin");
+    if (!want_raw && source.extent[0] == 0) {
+        fprintf(stderr, "- input was a tensor, so there is no image to draw on; writing raw\n");
+        want_raw = true;
     }
-    fclose(f);
-    printf("- detect(anchor): %zu boxes → %s (x1,y1,x2,y2,score,label f32*6)\n", dets.size(), outp);
+
+    if (want_raw) {
+        FILE* f = fopen(outp, "wb");
+        if (!f) { fprintf(stderr, "cannot write %s\n", outp); return 1; }
+        for (detection const& d : dets) {
+            float rec[6] = { d.x1, d.y1, d.x2, d.y2, d.score, (float)d.label };
+            fwrite(rec, sizeof(float), 6, f);
+        }
+        fclose(f);
+        printf("- detect(anchor): %zu boxes → %s (x1,y1,x2,y2,score,label f32*6)\n",
+            dets.size(), outp);
+    } else {
+        float thr = 0.3f;
+        if (const char* e = std::getenv("VISP_DRAW_THRESHOLD")) {
+            thr = (float)atof(e);
+        }
+        // 좌표는 정사각 입력 기준이므로 원본 해상도로 되돌린다.
+        float sx = float(source.extent[0]) / float(SZ);
+        float sy = float(source.extent[1]) / float(SZ);
+        int drawn = draw_detections(source, dets, sx, sy, thr);
+        image_save(source, outp);
+        printf("- detect(anchor): %zu boxes, %d drawn at score >= %.2f → %s\n",
+            dets.size(), drawn, thr, outp);
+    }
 
     // 파일은 대조용 raw f32 다. 사람이 결과를 눈으로 확인할 수 있게 상위 몇 개는 표로도 찍는다
     // (개수는 VISP_PRINT_DETS 로 조절, 0 이면 끄기).
