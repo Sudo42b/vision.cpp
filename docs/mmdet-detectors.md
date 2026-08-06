@@ -164,8 +164,7 @@ generated graph did not name its outputs as expected.
 ### Step 3 — Build the runner
 
 ```sh
-VISP_BUILD=/path/to/vision.cpp/build \
-    bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
+bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
 ```
 
 The script compiles three translation units together and links them against `libvisioncpp`:
@@ -177,7 +176,13 @@ The script compiles three translation units together and links them against `lib
 `build_mmdet_cpp.sh <gen_dir> [arch_name]`
 :   `gen_dir` is the directory holding the generated `.cpp`, `.h` and `.gguf`.
     `arch_name` defaults to the base name of the `.cpp` found there.
-    Set `VISP_BUILD` to the _vision_.cpp build directory containing `lib/libvisioncpp.so`.
+
+The library is looked up in `build/`, which is where [Building](../README.md#building) puts it.
+If you configured elsewhere, point `VISP_BUILD` at that directory:
+
+```sh
+VISP_BUILD=/path/to/that/directory bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
+```
 
 The result is `<gen_dir>/run_mmdet`.
 

@@ -154,8 +154,7 @@ MMDetBackbone_params MMDetBackbone_detect_params(model_file const& f);
 ### 3단계 — 러너 빌드
 
 ```sh
-VISP_BUILD=/path/to/vision.cpp/build \
-    bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
+bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
 ```
 
 스크립트가 아래 셋을 함께 컴파일해 `libvisioncpp` 에 링크한다.
@@ -166,8 +165,14 @@ VISP_BUILD=/path/to/vision.cpp/build \
 
 `build_mmdet_cpp.sh <gen_dir> [arch_name]`
 :   `gen_dir` 은 생성된 `.cpp`·`.h`·`.gguf` 가 있는 디렉터리다. `arch_name` 을 생략하면 거기 있는
-    `.cpp` 의 파일명을 쓴다. `VISP_BUILD` 는 `lib/libvisioncpp.so` 가 있는 _vision_.cpp 빌드
-    디렉터리를 가리켜야 한다.
+    `.cpp` 의 파일명을 쓴다.
+
+라이브러리는 `build/` 에서 찾는다 — [Building](../README.md#building) 이 거기에 만든다.
+다른 곳에 빌드했다면 그 디렉터리를 `VISP_BUILD` 로 알려준다.
+
+```sh
+VISP_BUILD=/path/to/that/directory bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
+```
 
 결과물은 `<gen_dir>/run_mmdet` 이다.
 
