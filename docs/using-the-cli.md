@@ -1,7 +1,5 @@
 # Using the command line
 
-[한국어](using-the-cli.ko.md)
-
 `vision-cli` runs every built-in model without writing any code. All you need is the executable
 and a `.gguf` weights file.
 

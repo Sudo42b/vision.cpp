@@ -1,7 +1,5 @@
 # Object Detection with MMDetection Models
 
-[한국어](mmdet-detectors.ko.md)
-
 This guide describes how to run detectors from
 [MMDetection](https://github.com/open-mmlab/mmdetection) with _vision_.cpp.
 If you are new to the library, read the [Overview](overview.md) first.

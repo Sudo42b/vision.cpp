@@ -1,7 +1,5 @@
 # Using the library
 
-[한국어](using-the-library.ko.md)
-
 Everything `vision-cli` does is a few calls into `libvisioncpp`. This page shows the shape of
 those calls so you can put the models inside your own program.
 

@@ -1,7 +1,5 @@
 # Overview
 
-[한국어](overview.ko.md)
-
 _vision_.cpp is a C++ library for running computer-vision neural networks. It loads weights
 from a GGUF file, builds a compute graph with [ggml](https://github.com/ggml-org/ggml), and
 executes it on CPU or GPU. The result is a single native binary with no Python, no framework

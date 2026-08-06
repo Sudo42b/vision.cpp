@@ -1,7 +1,5 @@
 # Getting Started
 
-[한국어](getting-started.ko.md)
-
 In this tutorial you will cut an object out of a photo using _vision_.cpp. It takes about five
 minutes and needs nothing but the release package, one model file and one image — no build, no
 Python, no conversion.
