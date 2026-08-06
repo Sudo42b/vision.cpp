@@ -1,7 +1,7 @@
-// 검출 결과를 이미지 위에 그린다. 러너의 기본 출력이 이미지이기 위한 최소한의 부품.
+// Draw detections onto an image -- the minimum needed for the runner's default output.
 //
-// 글자는 그리지 않는다 — 폰트를 들여오면 러너가 무거워지고, 클래스·점수는 러너가 표로
-// 찍는다. 이미지는 "어디"를, 터미널 표는 "무엇"을 담당한다.
+// No text is drawn. A font would grow the runner for nothing, because the runner also prints
+// the detections as a table: the image carries where, the table carries what.
 #pragma once
 
 #include "visp/image.h"
@@ -13,7 +13,7 @@
 
 namespace visp {
 
-// 클래스끼리 구분되게. 범례 없이도 같은 클래스가 같은 색으로 보이면 충분하다.
+// Enough separation to tell classes apart. Same class, same colour, no legend needed.
 inline std::array<uint8_t, 3> detection_colour(int label) {
     static constexpr uint8_t table[][3] = {
         {230, 60, 60},   {60, 160, 230}, {70, 190, 110}, {240, 160, 40}, {170, 100, 220},
@@ -39,7 +39,7 @@ inline void put_pixel(image_span const& img, int x, int y, std::array<uint8_t, 3
 
 }  // namespace detail
 
-// 박스 외곽선 하나. thickness 픽셀 두께로 안쪽에 그린다.
+// One box outline, drawn inwards to the given thickness in pixels.
 inline void draw_box(image_span const& img, float x1, float y1, float x2, float y2,
                      std::array<uint8_t, 3> colour, int thickness = 2) {
     int ix1 = int(std::min(x1, x2)), ix2 = int(std::max(x1, x2));
@@ -56,9 +56,8 @@ inline void draw_box(image_span const& img, float x1, float y1, float x2, float 
     }
 }
 
-// 검출 목록을 그린다.
-// 좌표는 검출기가 돈 정사각 입력 기준이므로 원본 크기로 되돌린다(scale_x/scale_y).
-// 반환: 실제로 그린 개수.
+// Draw a list of detections. Coordinates are in the square input the detector ran on, so
+// scale_x / scale_y put them back on the original image. Returns how many were drawn.
 inline int draw_detections(image_span const& img, std::vector<detection> const& dets,
                            float scale_x, float scale_y, float threshold = 0.3f) {
     int thickness = std::max(2, img.extent[1] / 300);

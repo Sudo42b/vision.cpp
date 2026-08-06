@@ -95,6 +95,11 @@ The `.pt` file pickles by module name `mmdet_wrap`, so the export directory must
 PyTorch-to-ggml model compiler. That compiler is outside the scope of this document; what
 matters is the interface the generated code must satisfy.
 
+**Compile at the resolution `--size` used in step 1.** Tracing records the operations for one
+input shape, so the graph runs at that shape and no other. A graph built for a different size
+aborts at run time in `ggml_can_repeat` once a tensor of the wrong extent reaches a residual
+addition.
+
 **Generated files** — for an architecture named `MMDetBackbone`:
 
 | File | Contents |
@@ -134,7 +139,7 @@ generated graph did not name its outputs as expected.
 ### Step 3 — Build the runner
 
 ```sh
-bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
+bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 ```
 
 The script compiles three translation units together, with the generated parameters

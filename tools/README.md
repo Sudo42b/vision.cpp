@@ -49,10 +49,13 @@ python tools/frontend/mmdet/mmdet_to_pt.py \
     --out backbone.pt --size 512
 
 # 2. Compile backbone.pt to a vision.cpp arch module: <Arch>.cpp, <Arch>.h, <Arch>.gguf.
+#    Compile it at the same resolution --size used above. Tracing records the operations for
+#    one input shape, and a graph built for another size aborts in ggml_can_repeat at run time.
 #    The interface the generated code must satisfy is in docs/mmdet-detectors.md.
 
 # 3. Build the runner: the generated graph, head.cpp and run_mmdet.cpp together.
-bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
+#    The parameters header is the one export wrote next to backbone.pt.
+bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 
 # 4. Run.
 output/MMDetBackbone/run_mmdet output/MMDetBackbone/MMDetBackbone.gguf image.jpg detected.png 512

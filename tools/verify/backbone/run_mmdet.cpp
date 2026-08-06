@@ -3,19 +3,19 @@
 //   백본  = g2c 가 생성한 output/<ARCH>.cpp (그대로 컴파일) → <ARCH>_forward
 //   head  = tools/detect/head.cpp 부품 (러너와 함께 컴파일, 라이브러리 아님)
 //   decode+NMS = src/visp/postproc.cpp detect_anchor (라이브러리)
-//   cfg   = <name>.postproc.h (mmdet_to_pt.py 가 생성한 mmdet_params(), 함께 컴파일)
+//   cfg   = <name>.postproc.h (mmdet_params() from mmdet_to_pt.py, compiled in)
 //
 // 백본을 arch/ 로 복사하거나 cli REG 에 등록하지 않는다 — output/.cpp 를 직접 컴파일해
 // libvisioncpp 와 링크(build_mmdet_cpp.sh). run_yolo_cpp 와 동일한 -DARCH 매크로 방식.
 //
 // 컴파일: -DARCH=<클래스명> -DVISP_ARCH_HEADER='"<gen>/<ARCH>.h"'
-// 실행:  run_mmdet <gguf> <input> <out.png> [size=512]
-//        출력 확장자가 .bin 이면 원시 f32(레퍼런스 대조용), 그 외에는 박스를 그린 이미지.
+// run:   run_mmdet <gguf> <input> <out.png> [size=512]
+//        an output ending in .bin holds raw f32 for comparison; anything else is an image
 
 #include VISP_ARCH_HEADER                 // 백본: <ARCH>_forward / <ARCH>_params / <ARCH>_detect_params
 #include "head.h"                          // head 부품: anchor_head_forward (같은 폴더)
-#include "draw.h"                          // 검출 결과를 이미지에 그린다 (같은 폴더)
-#include MMDET_PARAMS_HEADER              // 생성된 mmdet_params() — 값이 실행 파일 안에 있다
+#include "draw.h"                          // draws detections onto the image (same folder)
+#include MMDET_PARAMS_HEADER              // generated mmdet_params(); values live in the binary
 #include "visp/image.h"                   // image_load (이미지 입력 pre)
 #include "visp/ml.h"
 #include "visp/postproc.h"                // detect_anchor, preprocess, det_params, detection
@@ -55,8 +55,8 @@ static std::vector<float> to_vec(tensor t) {
     return d;
 }
 
-// 입력이 이미지(.jpg/.png…)면 preprocess()(resize+normalize+to_rgb, 생성된 상수)로 텐서 생성.
-// .bin 이면 이미 전처리된 CWHN f32 텐서로 간주. → yolo run_yolo_cpp 는 .bin(외부 전처리)만, 여기선 둘 다.
+// An image input goes through preprocess() with the generated constants;
+// a .bin is taken as an already pre-processed CWHN f32 tensor.
 static bool has_ext(std::string const& s, const char* e) {
     size_t n = std::strlen(e);
     return s.size() >= n && s.compare(s.size() - n, n, e) == 0;
@@ -66,7 +66,7 @@ static bool is_image_path(std::string const& s) {
     return has_ext(s, ".jpg") || has_ext(s, ".jpeg") || has_ext(s, ".png") || has_ext(s, ".bmp");
 }
 
-// `source` 가 비어 있지 않게 채워지면 입력이 이미지였다는 뜻 — 결과를 그 위에 그릴 수 있다.
+// A non-empty `source` means the input was an image, so the result can be drawn on it.
 static std::vector<float> load_input(const char* path, int SZ, mmdet_cfg const& c,
                                      image_data* source) {
     std::string s(path);
@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
     tensor bb = FWD(m, input, p);
     ggml_build_forward_expand(graph, bb);
 
-    // 3) 설정 — 컴파일 시점에 박힌 상수. 런타임에 읽는 파일이 없다.
+    // 3) Configuration -- constants fixed at compile time. No file is read.
     mmdet_cfg cfg = mmdet_params();
     anchor_head_cfg& hc = cfg.head;
     det_params& dp = cfg.det;
@@ -167,7 +167,7 @@ int main(int argc, char** argv) {
     }
     std::vector<detection> dets = detect_anchor(cls_v, box_v, feat_hw, dp);
 
-    // 기본은 이미지 — vision-cli 의 다른 명령들과 같다. 원시 수치는 .bin 으로 요청한다.
+    // An image by default, as with every other entry point here. Raw numbers on request.
     std::string out_s(outp);
     bool want_raw = has_ext(out_s, ".bin");
     if (!want_raw && source.extent[0] == 0) {
@@ -190,7 +190,7 @@ int main(int argc, char** argv) {
         if (const char* e = std::getenv("VISP_DRAW_THRESHOLD")) {
             thr = (float)atof(e);
         }
-        // 좌표는 정사각 입력 기준이므로 원본 해상도로 되돌린다.
+        // Coordinates are in the square input, so scale them back to the original resolution.
         float sx = float(source.extent[0]) / float(SZ);
         float sy = float(source.extent[1]) / float(SZ);
         int drawn = draw_detections(source, dets, sx, sy, thr);
@@ -199,8 +199,8 @@ int main(int argc, char** argv) {
             dets.size(), drawn, thr, outp);
     }
 
-    // 파일은 대조용 raw f32 다. 사람이 결과를 눈으로 확인할 수 있게 상위 몇 개는 표로도 찍는다
-    // (개수는 VISP_PRINT_DETS 로 조절, 0 이면 끄기).
+    // The highest-scoring detections, so a run says something without opening the output.
+    // VISP_PRINT_DETS sets how many; 0 turns it off.
     int n_print = 10;
     if (const char* e = std::getenv("VISP_PRINT_DETS")) {
         n_print = atoi(e);

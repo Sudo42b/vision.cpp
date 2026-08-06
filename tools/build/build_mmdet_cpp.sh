@@ -5,10 +5,10 @@
 # head.cpp 는 라이브러리가 아니라 여기서 러너와 함께 컴파일된다 → g2c output/.cpp 를 직접
 # 컴파일(arch/ 복사·cli REG 없음).
 #
-# 사용:  build_mmdet_cpp.sh <gen_dir> <params.h> [arch_name]
+# usage: build_mmdet_cpp.sh <gen_dir> <params.h> [arch_name]
 #   gen_dir  = g2c --output 디렉토리 (예: output/MMDetBackbone) — <ARCH>.cpp/.h/.gguf 있음
-#   params.h = mmdet_to_pt.py 가 생성한 <name>.postproc.h (mmdet_params()). 생략하면
-#              gen_dir 안의 *.postproc.h 를 찾는다.
+#   params.h = <name>.postproc.h written by mmdet_to_pt.py next to its --out. When omitted,
+#              a *.postproc.h inside gen_dir is used.
 #   arch_name= 클래스명(생략 시 gen_dir 의 *.cpp 에서 자동)
 # env:  VISP_BUILD = libvisioncpp 빌드 디렉토리 (기본: <vision.cpp>/build)
 #
@@ -19,7 +19,7 @@ DETECT="$V/tools/detect"                  # 공용 head/decode 부품 (head.cpp/
 RUN="$V/tools/verify"                     # E2E 검증 러너
 GEN="${1:?usage: build_mmdet_cpp.sh <gen_dir> [arch_name]}"
 GEN="$(cd "$GEN" && pwd)"
-# 2번째 인자는 params 헤더거나(.h) 아키텍처 이름이다 — 확장자로 가른다.
+# The second argument is either the parameters header (.h) or an architecture name.
 PARAMS=""
 ARCH=""
 case "${2:-}" in
@@ -30,7 +30,11 @@ esac
 if [ -z "$PARAMS" ]; then
   PARAMS="$(ls "$GEN"/*.postproc.h 2>/dev/null | head -1)"
 fi
-[ -f "$PARAMS" ] || { echo "params 헤더를 못 찾음 (mmdet_to_pt.py 가 만든 <name>.postproc.h): ${PARAMS:-없음}"; exit 1; }
+if [ ! -f "$PARAMS" ]; then
+  echo "no parameters header. mmdet_to_pt.py writes <name>.postproc.h next to its --out."
+  echo "  usage: $(basename "$0") $GEN <name>.postproc.h"
+  exit 1
+fi
 if [ -z "$ARCH" ]; then
   ARCH="$(basename "$(ls "$GEN"/*.cpp | grep -v run_ | head -1)" .cpp)"
 fi

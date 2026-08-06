@@ -23,7 +23,7 @@ from mmdet_wrap import MMDetBackbone, build   # noqa: E402,F401 (MMDetBackbone: 
 
 
 def _f(v):
-    """C++ float 리터럴. repr 로 유효숫자를 보존한다 (0.1 이 0.1f 로 반올림되지 않게)."""
+    """A C++ float literal. repr keeps the significant digits."""
     return f"{float(v)!r}f"
 
 
@@ -32,10 +32,11 @@ def _arr(name, values):
 
 
 def emit_params(cfg, config_name):
-    """decode/anchor config → `mmdet_params()` 를 담은 C++ 헤더.
+    """Decoding and anchor configuration as a C++ header holding mmdet_params().
 
-    JSON 사이드카를 대신한다. 값이 실행 파일 안으로 들어가므로 배포물이 하나 줄고,
-    gguf 와 설정이 서로 다른 export 에서 나와 짝이 어긋나는 사고가 원천적으로 사라진다.
+    Replaces the JSON sidecar. The values end up inside the executable, which removes a
+    deployed file and makes it impossible to pair a .gguf with a configuration from a
+    different export.
     """
     h = cfg.get("head_type", "raw")
     out = [
@@ -100,8 +101,8 @@ def main(argv=None):
     n_head = sum(1 for k in m.state_dict() if k.startswith("bbox_head"))
     print(f"  → saved: {a.out}  (state_dict {len(m.state_dict())} tensors, head {n_head} 포함)")
 
-    # decode/anchor + head-conv config → **C++ 함수**로 생성.
-    # 모델이 정해지면 이 값들은 상수라 런타임에 읽을 이유가 없다 → 러너와 함께 컴파일한다.
+    # Decoding, anchor and head-conv configuration, emitted as a C++ function. Once the
+    # architecture is fixed these are constants, so they are compiled into the runner.
     header = os.path.splitext(a.out)[0] + ".postproc.h"
     with open(header, "w") as f:
         f.write(emit_params(cfg, os.path.basename(a.config)))
