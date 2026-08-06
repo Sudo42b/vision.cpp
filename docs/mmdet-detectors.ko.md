@@ -3,7 +3,7 @@
 [English](mmdet-detectors.md)
 
 [MMDetection](https://github.com/open-mmlab/mmdetection) 의 검출기를 _vision_.cpp 에서
-실행하는 방법을 설명한다.
+실행하는 방법을 설명한다. 라이브러리가 처음이면 [개요](overview.ko.md) 를 먼저 읽는다.
 
 MMDetection 은 검출기를 백본·넥·head 의 조합으로 정의한다. 백본과 넥은 단순 순전파 망이라
 ggml 그래프로 그대로 옮겨진다. head 는 그렇지 않다 — NMS, 동적 offset, 가변 proposal 개수처럼

@@ -4,6 +4,7 @@
 
 This guide describes how to run detectors from
 [MMDetection](https://github.com/open-mmlab/mmdetection) with _vision_.cpp.
+If you are new to the library, read the [Overview](overview.md) first.
 
 MMDetection defines hundreds of detectors as compositions of a backbone, a neck and a head.
 The backbone and neck are plain feed-forward networks and translate directly into a ggml graph.
