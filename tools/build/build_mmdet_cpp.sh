@@ -5,8 +5,10 @@
 # head.cpp 는 라이브러리가 아니라 여기서 러너와 함께 컴파일된다 → g2c output/.cpp 를 직접
 # 컴파일(arch/ 복사·cli REG 없음).
 #
-# 사용:  build_mmdet_cpp.sh <gen_dir> [arch_name]
+# 사용:  build_mmdet_cpp.sh <gen_dir> <params.h> [arch_name]
 #   gen_dir  = g2c --output 디렉토리 (예: output/MMDetBackbone) — <ARCH>.cpp/.h/.gguf 있음
+#   params.h = mmdet_to_pt.py 가 생성한 <name>.postproc.h (mmdet_params()). 생략하면
+#              gen_dir 안의 *.postproc.h 를 찾는다.
 #   arch_name= 클래스명(생략 시 gen_dir 의 *.cpp 에서 자동)
 # env:  VISP_BUILD = libvisioncpp 빌드 디렉토리 (기본: <vision.cpp>/build)
 #
@@ -17,7 +19,18 @@ DETECT="$V/tools/detect"                  # 공용 head/decode 부품 (head.cpp/
 RUN="$V/tools/verify"                     # E2E 검증 러너
 GEN="${1:?usage: build_mmdet_cpp.sh <gen_dir> [arch_name]}"
 GEN="$(cd "$GEN" && pwd)"
-ARCH="${2:-}"
+# 2번째 인자는 params 헤더거나(.h) 아키텍처 이름이다 — 확장자로 가른다.
+PARAMS=""
+ARCH=""
+case "${2:-}" in
+  *.h) PARAMS="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; ARCH="${3:-}" ;;
+  "")  ;;
+  *)   ARCH="$2" ;;
+esac
+if [ -z "$PARAMS" ]; then
+  PARAMS="$(ls "$GEN"/*.postproc.h 2>/dev/null | head -1)"
+fi
+[ -f "$PARAMS" ] || { echo "params 헤더를 못 찾음 (mmdet_to_pt.py 가 만든 <name>.postproc.h): ${PARAMS:-없음}"; exit 1; }
 if [ -z "$ARCH" ]; then
   ARCH="$(basename "$(ls "$GEN"/*.cpp | grep -v run_ | head -1)" .cpp)"
 fi
@@ -31,7 +44,7 @@ FMT_INC="$BUILD/_deps/fmt-src/include"
 FMT_FLAGS=""
 [ -f "$FMT_INC/fmt/format.h" ] && FMT_FLAGS="-DVISP_FMT_LIB -I$FMT_INC"
 
-echo "arch=$ARCH gen=$GEN build=$BUILD fmt=${FMT_FLAGS:-fallback}"
+echo "arch=$ARCH gen=$GEN params=$PARAMS build=$BUILD fmt=${FMT_FLAGS:-fallback}"
 INC="$GEN/inc"
 mkdir -p "$INC/visp/arch"
 cp "$GEN/$ARCH.h" "$INC/visp/arch/$ARCH.h"
@@ -39,6 +52,7 @@ cp "$GEN/$ARCH.h" "$INC/visp/arch/$ARCH.h"
 # run_mmdet.cpp + head.cpp(러너와 함께 컴파일, 라이브러리 아님) + g2c 백본 output/.cpp
 g++ -std=c++20 -O2 $FMT_FLAGS \
   -DARCH="$ARCH" -DVISP_ARCH_HEADER="\"visp/arch/$ARCH.h\"" \
+  -DMMDET_PARAMS_HEADER="\"$PARAMS\"" \
   -I"$DETECT" -I"$INC" -I"$V/include" -I"$V/src" \
   -I"$V/depend/llama/ggml/include" -I"$V/depend/llama/vendor" \
   "$RUN/backbone/run_mmdet.cpp" "$DETECT/head.cpp" "$GEN/$ARCH.cpp" \

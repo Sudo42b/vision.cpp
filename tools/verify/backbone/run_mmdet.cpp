@@ -3,26 +3,25 @@
 //   백본  = g2c 가 생성한 output/<ARCH>.cpp (그대로 컴파일) → <ARCH>_forward
 //   head  = tools/detect/head.cpp 부품 (러너와 함께 컴파일, 라이브러리 아님)
 //   decode+NMS = src/visp/postproc.cpp detect_anchor (라이브러리)
-//   cfg   = <name>.postproc.json (tools/frontend/mmdet/mmdet_to_pt.py 가 생성)
+//   cfg   = <name>.postproc.h (mmdet_to_pt.py 가 생성한 mmdet_params(), 함께 컴파일)
 //
 // 백본을 arch/ 로 복사하거나 cli REG 에 등록하지 않는다 — output/.cpp 를 직접 컴파일해
 // libvisioncpp 와 링크(build_mmdet_cpp.sh). run_yolo_cpp 와 동일한 -DARCH 매크로 방식.
 //
 // 컴파일: -DARCH=<클래스명> -DVISP_ARCH_HEADER='"<gen>/<ARCH>.h"'
-// 실행:  run_mmdet <gguf> <input_cwhn.bin> <postproc.json> <out.bin> [size=512]
+// 실행:  run_mmdet <gguf> <input> <out.bin> [size=512]
 
 #include VISP_ARCH_HEADER                 // 백본: <ARCH>_forward / <ARCH>_params / <ARCH>_detect_params
 #include "head.h"                          // head 부품: anchor_head_forward (같은 폴더)
+#include MMDET_PARAMS_HEADER              // 생성된 mmdet_params() — 값이 실행 파일 안에 있다
 #include "visp/image.h"                   // image_load (이미지 입력 pre)
 #include "visp/ml.h"
 #include "visp/postproc.h"                // detect_anchor, preprocess, det_params, detection
 
 #include <ggml.h>
-#include <nlohmann/json.hpp>
 
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <span>
 #include <string>
 #include <vector>
@@ -52,9 +51,9 @@ static std::vector<float> to_vec(tensor t) {
     return d;
 }
 
-// 입력이 이미지(.jpg/.png…)면 preprocess()(resize+normalize+to_rgb, postproc.json 메타)로 텐서 생성.
+// 입력이 이미지(.jpg/.png…)면 preprocess()(resize+normalize+to_rgb, 생성된 상수)로 텐서 생성.
 // .bin 이면 이미 전처리된 CWHN f32 텐서로 간주. → yolo run_yolo_cpp 는 .bin(외부 전처리)만, 여기선 둘 다.
-static std::vector<float> load_input(const char* path, int SZ, nlohmann::json const& j) {
+static std::vector<float> load_input(const char* path, int SZ, mmdet_cfg const& c) {
     std::string s(path);
     auto ext = [&](const char* e) {
         size_t n = std::strlen(e);
@@ -64,10 +63,9 @@ static std::vector<float> load_input(const char* path, int SZ, nlohmann::json co
         image_data img = image_load(path);
         int iw = img.extent[0], ih = img.extent[1];
         int ic = n_channels(img.format);   // stbi_load(...,0)=네이티브 채널수 (JPEG=3, PNG+α=4)
-        float mean[3] = {0, 0, 0}, sd[3] = {1, 1, 1};
-        if (j.contains("img_mean")) { auto v = j["img_mean"].get<std::vector<float>>(); for (int i = 0; i < 3; ++i) mean[i] = v[i]; }
-        if (j.contains("img_std"))  { auto v = j["img_std"].get<std::vector<float>>();  for (int i = 0; i < 3; ++i) sd[i] = v[i]; }
-        bool to_rgb = j.value("to_rgb", false);
+        float const (&mean)[3] = c.img_mean;
+        float const (&sd)[3] = c.img_std;
+        bool to_rgb = c.to_rgb;
         printf("- preprocess: image %dx%dx%d → %dx%d (mean %.1f,%.1f,%.1f std %.1f,%.1f,%.1f to_rgb=%d)\n",
             iw, ih, ic, SZ, SZ, mean[0], mean[1], mean[2], sd[0], sd[1], sd[2], (int)to_rgb);
         return preprocess(img.data.get(), ih, iw, ic, SZ, mean, sd, to_rgb);
@@ -76,16 +74,14 @@ static std::vector<float> load_input(const char* path, int SZ, nlohmann::json co
 }
 
 int main(int argc, char** argv) {
-    if (argc < 5) {
-        fprintf(stderr,
-            "usage: %s <gguf> <input_cwhn.bin> <postproc.json> <out.bin> [size=512]\n", argv[0]);
+    if (argc < 4) {
+        fprintf(stderr, "usage: %s <gguf> <input> <out.bin> [size=512]\n", argv[0]);
         return 1;
     }
     const char* gguf = argv[1];
     const char* inp = argv[2];
-    const char* jsonp = argv[3];
-    const char* outp = argv[4];
-    const int SZ = argc > 5 ? atoi(argv[5]) : 512;
+    const char* outp = argv[3];
+    const int SZ = argc > 4 ? atoi(argv[4]) : 512;
 
     // 1) 가중치 (백본 + head 전부 이 gguf 에)
     backend_device backend = backend_init();
@@ -103,33 +99,17 @@ int main(int argc, char** argv) {
     tensor bb = FWD(m, input, p);
     ggml_build_forward_expand(graph, bb);
 
-    // 3) postproc.json → head-conv cfg + anchor decode cfg
-    nlohmann::json j;
-    { std::ifstream jf(jsonp); if (!jf) { fprintf(stderr, "cannot open %s\n", jsonp); return 1; } jf >> j; }
-    int L = (int)j["strides"].size();
-
-    anchor_head_cfg hc;
-    hc.stacked_convs = j.value("stacked_convs", 4);
-    hc.feat_channels = j.value("feat_channels", 256);
-    hc.num_base = j.value("num_base", 9);
-    hc.num_classes = j.value("num_classes", 80);
-    hc.cls_convs_prefix = j.value("cls_convs_prefix", std::string("bbox_head.cls_convs"));
-    hc.reg_convs_prefix = j.value("reg_convs_prefix", std::string("bbox_head.reg_convs"));
-    hc.cls_head = j.value("cls_head", std::string("bbox_head.retina_cls"));
-    hc.reg_head = j.value("reg_head", std::string("bbox_head.retina_reg"));
-
-    det_params dp;
-    dp.strides = j["strides"].get<std::vector<float>>();
-    dp.octave_base_scale = j.value("octave_base_scale", 4.0f);
-    dp.octave_scales = j["octave_scales"].get<std::vector<float>>();
-    dp.ratios = j["ratios"].get<std::vector<float>>();
-    dp.center_offset = j.value("center_offset", 0.0f);
-    dp.num_classes = j.value("num_classes", 80);
-    dp.use_sigmoid = j.value("use_sigmoid", true);
+    // 3) 설정 — 컴파일 시점에 박힌 상수. 런타임에 읽는 파일이 없다.
+    mmdet_cfg cfg = mmdet_params();
+    anchor_head_cfg& hc = cfg.head;
+    det_params& dp = cfg.det;
     dp.input_w = SZ;
     dp.input_h = SZ;
-    { auto mn = j["means"].get<std::vector<float>>(); auto sd = j["stds"].get<std::vector<float>>();
-      for (int i = 0; i < 4; ++i) { dp.means[i] = mn[i]; dp.stds[i] = sd[i]; } }
+    int L = (int)dp.strides.size();
+    if (L == 0) {
+        fprintf(stderr, "no FPN strides — this config's head was not recognised at export\n");
+        return 1;
+    }
 
     // 4) 백본 features(out_0..L-1) 를 잡아 head 부품 조립
     std::vector<tensor> feats;
@@ -147,7 +127,7 @@ int main(int argc, char** argv) {
 
     // 5) 계산 (입력: 이미지면 preprocess, .bin 이면 전처리된 텐서)
     compute_graph_allocate(graph, backend);
-    auto in_data = load_input(inp, SZ, j);
+    auto in_data = load_input(inp, SZ, cfg);
     if (const char* dp = std::getenv("MMDET_DUMP_PRE")) {   // 디버그: 전처리 텐서 덤프
         FILE* f = fopen(dp, "wb"); if (f) { fwrite(in_data.data(), sizeof(float), in_data.size(), f); fclose(f); }
     }
