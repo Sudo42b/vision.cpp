@@ -29,7 +29,6 @@ objects.
 
 ## Contents
 
-- [Design](#design)
 - [Prerequisites](#prerequisites)
 - [Pipeline](#pipeline)
 - [Detection heads](#detection-heads)
@@ -39,36 +38,6 @@ objects.
 - [Multi-object tracking](#multi-object-tracking)
 - [Configuration reference](#configuration-reference)
 
-## Design
-
-Framework knowledge is confined to a single directory. Everything else is framework-neutral,
-so a different detection framework can be added by writing one new frontend.
-
-```
-tools/
-  frontend/
-    mmdet/            MMDetection-specific. The only place that imports mmdet.
-      mmdet_wrap.py     traceable module + config extraction
-      mmdet_to_pt.py    CLI: config -> backbone.pt + postproc.json
-      frcnn_wrap.py     two-stage / mask sub-graphs
-      frcnn_to_pt.py    CLI for the above
-  detect/             Framework-neutral head components, compiled into the runner
-    head.h  head.cpp
-  verify/             End-to-end runners, grouped by task
-    backbone/  run_mmdet.cpp  run_dump.cpp
-    dense_head/ run_vfnet_head.cpp
-    roi/       run_frcnn.cpp  run_roi_verify.cpp  run_rpn_verify.cpp
-    seg/       run_maskrcnn.cpp
-    tracking/  run_bytetrack_verify.cpp
-  build/              Build scripts for the runners
-```
-
-Two rules keep this from leaking:
-
-- **`detect/head.cpp` is not part of `libvisioncpp`.** It is compiled together with the runner,
-  so no framework-specific structure enters the core library.
-- **Decoding lives in the library, not in the frontend.** `detect_anchor`, `roi_align`,
-  `rpn_proposals` and friends take numbers, not config objects.
 
 ## Prerequisites
 
@@ -108,10 +77,12 @@ Outputs:
 :   The backbone and neck as a traceable module. The head is kept as an attribute so that its
     weights are preserved in the `state_dict`, but it does not participate in the forward pass.
 
-`backbone.postproc.json`
+`backbone.postproc.h`
 :   Everything the C++ side needs to reconstruct the head and decode its output: anchor
     generator settings, bbox coder statistics, head convolution layout, and the pre-processing
-    normalisation taken from the config's `data_preprocessor`.
+    normalisation taken from the config's `data_preprocessor` — emitted as a generated
+    `mmdet_params()` function. These values are constants once the architecture is chosen, so
+    they are compiled into the runner rather than read at run time.
     See [Configuration reference](#configuration-reference).
 
 The `.pt` file pickles by module name `mmdet_wrap`, so the export directory must be on
@@ -165,14 +136,17 @@ generated graph did not name its outputs as expected.
 bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
 ```
 
-The script compiles three translation units together and links them against `libvisioncpp`:
+The script compiles three translation units together, with the generated parameters
+included as a header, and links them against `libvisioncpp`:
 
 - `tools/verify/backbone/run_mmdet.cpp` — the runner,
 - `tools/detect/head.cpp` — the head component,
-- `output/MMDetBackbone/MMDetBackbone.cpp` — the generated graph.
+- `output/MMDetBackbone/MMDetBackbone.cpp` — the generated graph,
+- `backbone.postproc.h` — the generated parameters.
 
-`build_mmdet_cpp.sh <gen_dir> [arch_name]`
-:   `gen_dir` is the directory holding the generated `.cpp`, `.h` and `.gguf`.
+`build_mmdet_cpp.sh <gen_dir> [params.h] [arch_name]`
+:   `gen_dir` is the directory holding the generated `.cpp`, `.h` and `.gguf`. The parameters
+    header is found in `gen_dir` when it is there, and named explicitly otherwise.
     `arch_name` defaults to the base name of the `.cpp` found there.
 
 The library is looked up in `build/`, which is where [Building](../README.md#building) puts it.
@@ -190,13 +164,12 @@ The result is `<gen_dir>/run_mmdet`.
 output/MMDetBackbone/run_mmdet \
     output/MMDetBackbone/MMDetBackbone.gguf \
     image.jpg \
-    backbone.postproc.json \
     boxes.bin \
     512
 ```
 
 ```
-run_mmdet <gguf> <input> <postproc.json> <out.bin> [size=512]
+run_mmdet <gguf> <input> <out.bin> [size=512]
 ```
 
 `<gguf>`
@@ -204,12 +177,9 @@ run_mmdet <gguf> <input> <postproc.json> <out.bin> [size=512]
 
 `<input>`
 :   An image (`.jpg`, `.jpeg`, `.png`, `.bmp`) or a pre-processed tensor (`.bin`).
-    Images are resized and normalised in-process using `preprocess()` with the mean, standard
-    deviation and channel order recorded in the JSON. A `.bin` file is taken as-is and must
+    Images are resized and normalised in-process using `preprocess()`; the mean, standard
+    deviation and channel order are compiled in. A `.bin` file is taken as-is and must
     contain `3 × size × size` `float32` values in CWHN order.
-
-`<postproc.json>`
-:   The sidecar written in step 1.
 
 `<out.bin>`
 :   Output path. Each detection is written as six `float32` values:
@@ -284,8 +254,8 @@ reg_denom`).
 1. Add a `<name>_head_forward` function to `tools/detect/head.cpp` that turns FPN features
    into raw per-level tensors. Use library primitives (`conv_2d`, `group_norm`,
    `conv_2d_deform`); do not add framework-specific code to `src/visp`.
-2. Extract the head's structural parameters in `mmdet_wrap.postproc_cfg` and emit them into
-   the sidecar JSON.
+2. Extract the head's structural parameters in `mmdet_wrap.postproc_cfg`; they are emitted
+   into the generated parameters header.
 3. Connect the raw output to the matching decoder in `visp/postproc.h`, or add one if the
    decoding scheme is new.
 
@@ -439,27 +409,27 @@ match to drop it. Passing `frame_id == 0` resets the tracker.
 
 ## Configuration reference
 
-`<name>.postproc.json` is written by the export step and read by the runner. Fields are grouped
-by consumer.
+`mmdet_params()` in `<name>.postproc.h` is generated by the export step and compiled into the
+runner. Its fields are grouped here by consumer.
 
-**Pre-processing** — used only when the runner is given an image rather than a `.bin`.
+**Pre-processing** (`c.img_mean`, `c.img_std`, `c.to_rgb`) — used only when the runner is
+given an image rather than a `.bin`.
 
 | Field | Description |
 | :--- | :--- |
 | `img_mean`, `img_std` | Per-channel normalisation, taken from the config's `data_preprocessor`. |
 | `to_rgb` | Whether to swap channel order before normalising. |
 
-**Head reconstruction** — maps onto `anchor_head_cfg`.
+**Head reconstruction** (`c.head`) — maps onto `anchor_head_cfg`.
 
 | Field | Description |
 | :--- | :--- |
-| `head_type` | `anchor` for supported dense heads, `raw` when only features are exported. |
 | `stacked_convs`, `feat_channels` | Shape of the shared tower. |
 | `cls_convs_prefix`, `reg_convs_prefix` | Weight-name prefixes of the towers. |
 | `cls_head`, `reg_head` | Names of the final convolutions. |
 | `head_has_norm` | Whether the tower contains normalisation layers. |
 
-**Decoding** — maps onto `det_params`.
+**Decoding** (`c.det`) — maps onto `det_params`.
 
 | Field | Description |
 | :--- | :--- |
@@ -469,8 +439,9 @@ by consumer.
 | `means`, `stds` | Delta coder statistics. |
 | `num_classes`, `use_sigmoid` | Classification output layout and activation. |
 
-A `head_type` of `raw` means the config's head was not recognised; the backbone still exports,
-but decoding must be supplied by the caller.
+When the config's head is not recognised the generated function returns defaults and leaves
+the stride list empty, and the runner stops rather than decoding with meaningless anchors. The
+backbone still exports, but decoding must then be supplied by the caller.
 
 Isolation harnesses for each stage live in `tools/verify/`: `run_vfnet_head` for a dense head,
 `run_rpn_verify` and `run_roi_verify` for the two-stage host components, and
