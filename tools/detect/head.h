@@ -5,6 +5,7 @@
 #pragma once
 
 #include "visp/ml.h"
+#include "visp/postproc.h"   // det_params
 
 #include <string>
 #include <vector>
@@ -22,6 +23,17 @@ struct anchor_head_cfg {
     std::string cls_head = "bbox_head.retina_cls";         // 최종 cls conv
     std::string reg_head = "bbox_head.retina_reg";         // 최종 reg conv
     bool head_has_norm = false;  // 타워에 norm(GN 등) — 이번 PoC(RetinaNet)=false
+};
+
+// 러너가 검출기 하나를 돌리는 데 필요한 설정 전부.
+// 모델이 정해지면 이 값들은 **상수**다 → mmdet_to_pt.py 가 `<name>.postproc.h` 로
+// `mmdet_params()` 를 생성하고, 러너와 함께 컴파일된다. 런타임에 읽는 파일이 없다.
+struct mmdet_cfg {
+    anchor_head_cfg head;
+    det_params det;
+    float img_mean[3] = {0, 0, 0};
+    float img_std[3] = {1, 1, 1};
+    bool to_rgb = false;
 };
 
 // FPN features(레벨별, cwhn) → 레벨별 raw cls_score / bbox_pred(cwhn).
