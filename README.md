@@ -10,6 +10,10 @@ Computer Vision ML inference in C++
 
 Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](https://github.com/ggml-org/llama.cpp) project.
 
+New here? [**Getting started**](docs/getting-started.md) walks through a first run in five minutes.
+
+**Docs:** [Getting started](docs/getting-started.md) · [Overview](docs/overview.md) · [Command line](docs/using-the-cli.md) · [Library API](docs/using-the-library.md) · [Implementing a model](docs/model-implementation-guide.md) · [MMDetection detectors](docs/mmdet-detectors.md)
+
 ### Features
 
 | Model                                    | Task                     | Backends    |
@@ -20,6 +24,7 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 | [**MI-GAN**](#mi-gan)                    | Inpainting               | CPU, Vulkan |
 | [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [**YOLOv9t**](#yolov9t)                  | Object detection         | CPU         |
+| [**MMDetection** models](docs/mmdet-detectors.md) | Object detection, segmentation, tracking | CPU |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 **Backbones:** SWIN (v1), DINO (v2), TinyViT
