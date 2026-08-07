@@ -12,6 +12,7 @@
   PYTHONPATH=<GTX_Compiler>:<이 폴더> g2c --model retinanet_bb.pt --name Retina --output output/retina
 """
 import argparse
+import math
 import os
 import sys
 import torch
@@ -23,8 +24,17 @@ from mmdet_wrap import MMDetBackbone, build   # noqa: E402,F401 (MMDetBackbone: 
 
 
 def _f(v):
-    """A C++ float literal. repr keeps the significant digits."""
-    return f"{float(v)!r}f"
+    """A C++ float literal. repr keeps the significant digits.
+
+    Infinities reach here from configs that bound a regression range with one -- FCOS writes
+    regress_ranges=((-1, 64), ..., (512, INF)) -- and `inff` is not something C++ accepts.
+    """
+    v = float(v)
+    if math.isinf(v):
+        return "-INFINITY" if v < 0 else "INFINITY"
+    if math.isnan(v):
+        return "NAN"
+    return f"{v!r}f"
 
 
 def _arr(name, values):
@@ -44,6 +54,7 @@ def emit_params(cfg, config_name):
         f"// source: {config_name}\n",
         f"// head_type: {h}\n",
         "#pragma once\n\n",
+        "#include <cmath>\n",
         '#include "head.h"\n\n',
         "namespace visp {\n\n",
         "inline mmdet_cfg mmdet_params() {\n",
