@@ -1,6 +1,6 @@
 # tools — detection frontends, components and runners
 
-Everything needed to run a detector with _vision_.cpp that does not belong in the library
+Everything needed to run a detector with vision.cpp that does not belong in the library
 itself. [docs/mmdet-detectors.md](../docs/mmdet-detectors.md) explains the pipeline end to end;
 this file describes how the directory is arranged.
 
@@ -34,9 +34,9 @@ tracing records only the path one input happened to take.
 
 Two arrangements keep framework knowledge from spreading:
 
-- **`detect/head.cpp` is not part of `libvisioncpp`.** It is compiled together with the runner,
+- `detect/head.cpp` is not part of `libvisioncpp`. It is compiled together with the runner,
   so detector-specific structure never enters the core library.
-- **Decoding lives in the library, not in the frontend.** `detect_anchor`, `roi_align` and
+- Decoding lives in the library, not in the frontend. `detect_anchor`, `roi_align` and
   `rpn_proposals` in `src/visp/postproc.h` take numbers, not configuration objects, which is why
   they are reusable for detectors that never went through MMDetection.
 
