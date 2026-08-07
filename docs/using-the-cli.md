@@ -74,7 +74,7 @@ vision-cli birefnet -m BiRefNet-lite-F16.gguf -i photo.jpg -o mask.png --composi
 
 ## Segment one object
 
-Unlike background removal, this needs to be told *which* object. Give a point inside it:
+Unlike background removal, this needs to be told which object. Give a point inside it:
 
 ```sh
 vision-cli sam -m MobileSAM-F16.gguf -i photo.jpg -p 300 200 -o mask.png
