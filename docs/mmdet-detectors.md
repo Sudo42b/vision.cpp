@@ -159,7 +159,8 @@ The library is looked up in `build/`, which is where [Building](../README.md#bui
 If you configured elsewhere, point `VISP_BUILD` at that directory:
 
 ```sh
-VISP_BUILD=/path/to/that/directory bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone
+VISP_BUILD=/path/to/that/directory \
+    bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 ```
 
 The result is `<gen_dir>/run_mmdet`.

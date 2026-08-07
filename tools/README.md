@@ -61,6 +61,13 @@ bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 output/MMDetBackbone/run_mmdet output/MMDetBackbone/MMDetBackbone.gguf image.jpg detected.png 512
 ```
 
+Step 3 looks for the library in `build/`. If you configured elsewhere, name it:
+
+```sh
+VISP_BUILD=/path/to/that/directory \
+    bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
+```
+
 `backbone.postproc.h` holds a generated `mmdet_params()` — anchor scales, head convolution
 layout, normalisation values. Once an architecture is fixed those are constants, so they are
 compiled into the runner rather than read at run time, and the deployed set is the executable
