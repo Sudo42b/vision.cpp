@@ -1,6 +1,6 @@
 # Getting Started
 
-In this tutorial you will cut an object out of a photo using _vision_.cpp. It takes about five
+In this tutorial you will cut an object out of a photo using vision.cpp. It takes about five
 minutes and needs nothing but the release package, one model file and one image — no build, no
 Python, no conversion.
 
@@ -73,7 +73,7 @@ Open `object.png`. The subject is untouched and the background has faded away.
 `mask.png` is what the model actually produced: white where the subject is, black elsewhere.
 Everything in `object.png` was computed from it.
 
-**That is the whole loop.** An executable that already knows the network, a `.gguf` that carries
+That is the whole loop. An executable that already knows the network, a `.gguf` that carries
 the weights, an image in, a result out.
 
 ## Try one more

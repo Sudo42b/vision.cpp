@@ -1,6 +1,6 @@
 # Overview
 
-_vision_.cpp is a C++ library for running computer-vision neural networks. It loads weights
+vision.cpp is a C++ library for running computer-vision neural networks. It loads weights
 from a GGUF file, builds a compute graph with [ggml](https://github.com/ggml-org/ggml), and
 executes it on CPU or GPU. The result is a single native binary with no Python, no framework
 runtime, and no interchange-format interpreter.
@@ -10,34 +10,34 @@ models instead of language models.
 
 ## The idea: a model is code, not a file
 
-Most inference stacks treat a model as **data**. You export a graph to ONNX or TorchScript, and
+Most inference stacks treat a model as data. You export a graph to ONNX or TorchScript, and
 a general-purpose runtime loads that graph, matches its operators against a kernel library, and
 interprets it. The runtime has to support every operator anyone might export, so it is large,
 and it has to plan the graph at startup, so loading takes time.
 
-_vision_.cpp splits the model in two:
+vision.cpp splits the model in two:
 
 | Part | Form | Where it lives |
 | :--- | :--- | :--- |
-| **Structure** | C++ that builds a ggml graph | compiled into your binary |
-| **Weights** | GGUF tensors | a `.gguf` file loaded at run time |
+| Structure | C++ that builds a ggml graph | compiled into your binary |
+| Weights | GGUF tensors | a `.gguf` file loaded at run time |
 
 Nothing interprets a graph description at run time, because there is no graph description — the
 graph is the code you compiled. That is what makes the deployment small and start-up fast, and
-it is the trade-off at the centre of the project: **adding a model that isn't supported yet
-means writing or generating code, not exporting a file.**
+it is the trade-off at the centre of the project: adding a model that isn't supported yet
+means writing or generating code, not exporting a file.
 
 Weights stay external, so swapping checkpoints, changing precision, or quantising does not
 require rebuilding.
 
 ## What you get
 
-- **Self-contained.** The only dependencies are ggml, `stb` for image I/O, and optionally
+- Self-contained. The only dependencies are ggml, `stb` for image I/O, and optionally
   `fmt`. There is no Python in the runtime path.
-- **CPU and GPU.** CPU works everywhere; Vulkan covers NVIDIA, AMD and Intel from one build.
-- **Small and quick to start.** Deployment size and model-load time are explicit goals of the
+- CPU and GPU. CPU works everywhere; Vulkan covers NVIDIA, AMD and Intel from one build.
+- Small and quick to start. Deployment size and model-load time are explicit goals of the
   project — see the [Performance](../README.md#performance) section for the current numbers.
-- **Modular.** The same primitives the built-in models are made of are public, so you can
+- Modular. The same primitives the built-in models are made of are public, so you can
   assemble your own.
 
 ## How it fits together
@@ -56,9 +56,9 @@ how much control you need.
 
 Two front-ends are built on top:
 
-- **`vision-cli`** — a command-line tool for the built-in models
+- `vision-cli` — a command-line tool for the built-in models
   (`vision-cli sam -m MobileSAM-F16.gguf -i image.jpg -p 100 200 -o mask.png`).
-- **Python bindings** — `bindings/python`, for scripting and comparison against reference
+- Python bindings — `bindings/python`, for scripting and comparison against reference
   implementations.
 
 ## Running a model
@@ -95,7 +95,7 @@ satisfy, and how to handle what tracing cannot capture.
 
 ## Scope
 
-_vision_.cpp is an inference library. There is no training, no autograd, and no optimizer.
+vision.cpp is an inference library. There is no training, no autograd, and no optimizer.
 
 It is also not a general model runtime: it does not aim to execute arbitrary exported graphs.
 Supported models are the ones that have been implemented or generated, which is why the model
