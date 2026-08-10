@@ -18,7 +18,7 @@ tools/
     head.h  head.cpp
   verify/             Runners and inspection, grouped by task
     backbone/    run_mmdet.cpp  run_dump.cpp
-    dense_head/  run_vfnet_head.cpp
+    dense_head/  run_vfnet_head.cpp  verify_heads.py
     roi/         run_frcnn.cpp  run_roi_verify.cpp  run_rpn_verify.cpp
     seg/         run_maskrcnn.cpp
     tracking/    run_bytetrack_verify.cpp
@@ -31,6 +31,42 @@ decoding and post-processing are C++ assembled from library primitives. Detectio
 control flow that depends on the data — suppression counts that are not known in advance,
 deformable offsets derived from an earlier prediction, proposal counts that vary per image — and
 tracing records only the path one input happened to take.
+
+`detect/head.cpp` assembles eight MMDetection families with four functions. RetinaNet, ATSS,
+PAA, FCOS and GFL share one skeleton — two convolution towers and a few output convolutions —
+so they differ only through flags on `anchor_head_cfg`: a third `centerness` branch, per-level
+learnable scales, the FCOS bbox transform, and GFL's distribution decode. VFNet, RepPoints and
+TOOD have skeletons of their own and get a function each. Reach for the flags before writing a
+new function.
+
+Nothing here holds a table of layer names. The final classification and regression convolutions
+are found by output channel count, and convolution padding comes from the kernel size stored in
+the weights, so a new family needs no edit to a lookup table.
+
+`verify/dense_head/verify_heads.py` measures each family against `bbox_head` in PyTorch, one
+tensor at a time, before decoding. It needs trained checkpoints: an untrained model leaves
+gamma at 1, beta at 0 and scale at 1, and an assembly that skips those terms still scores a
+perfect cosine.
+
+Of the 100 MMDetection families, 41 carry a dense head; the rest are two-stage detectors,
+trackers, or panoptic and instance models whose output goes through `roi/` and `seg/` instead.
+Twenty-two of the 41 are covered. Ten of those needed no new code at all: they subclass a head
+that was already handled and change only the loss, the backbone or the neck — GHM and PVT are
+`RetinaHead`, DyHead is `ATSSHead`, NAS-FCOS is `FCOSHead`, LD subclasses `GFLHead`, LAD
+subclasses `PAAHead`, BoxInst and CondInst reach `FCOSHead`. The assembler picks its path by
+walking the head's MRO, so a family lands on its nearest covered ancestor.
+
+When a new family arrives, read `bbox_head.type` first; only if it is unrelated to everything
+covered does it need a function of its own, and even then the flags usually get most of the way.
+A head that lands on an ancestor is a guess until `verify_heads.py` measures it — a subclass
+that overrides `_init_layers` or `forward` assembles into something plausible and wrong.
+
+Families that are not covered stay registered in `verify_heads.py` anyway. Their failures are
+the record of what is left: AutoAssign and YOLOF assemble but disagree (an objectness branch
+folded into the score), YOLOX, SSD and YOLACT arrange their towers differently, CornerNet and
+CenterNet pool corners rather than score a grid, and the DETR family does not take feature maps
+alone — its head consumes decoder queries, so it needs a different assembler rather than another
+flag. The attention primitives it would build on already exist in `src/visp/nn.h`.
 
 Two arrangements keep framework knowledge from spreading:
 

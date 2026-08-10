@@ -136,10 +136,28 @@ int main(int argc, char** argv) {
         if (!f) { fprintf(stderr, "백본 출력 out_%d 없음 (백본 .cpp 출력 규약 확인)\n", l); return 3; }
         feats.push_back(f);
     }
-    std::vector<tensor> cls_t, box_t;
-    anchor_head_forward(m, feats, hc, cls_t, box_t);
+    // deformable 을 쓰는 계열(vfnet/reppoints)은 고정 3×3 격자가 필요하다. mmdet 의
+    // dcn_base_offset 과 같은 값 — [y,x] 가 번갈아 놓인 18개다. 계열이 안 쓰면 그냥 남는다.
+    // ⚠️ 안 쓰는 계열에서 만들면 그래프에 안 실려 버퍼가 없고, add_buffer 가
+    //    "tensor buffer not set" 으로 죽는다. 쓰는 계열에서만 만든다.
+    tensor dcn_base = nullptr;
+    if (hc.kind == head_kind::vfnet || hc.kind == head_kind::reppoints) {
+        dcn_base = compute_graph_input(m, GGML_TYPE_F32, {18, 1, 1, 1}, "dcn_base");
+        tensor_data d = tensor_alloc(dcn_base);
+        std::span<float> v = d.as_f32();
+        for (int i = 0; i < 9; ++i) {
+            v[2 * i] = float(i / 3 - 1);        // y: -1,-1,-1, 0,0,0, 1,1,1
+            v[2 * i + 1] = float(i % 3 - 1);    // x: -1,0,1 반복
+        }
+        m.add_buffer(std::move(d));
+    }
+
+    head_outputs ho;
+    mmdet_head_forward(m, feats, hc, dcn_base, ho);
+    std::vector<tensor>&cls_t = ho.cls, &box_t = ho.box;
     for (tensor t : cls_t) ggml_build_forward_expand(graph, t);
     for (tensor t : box_t) ggml_build_forward_expand(graph, t);
+    for (tensor t : ho.ctr) ggml_build_forward_expand(graph, t);
     printf("- mmdet runner: 백본 out_0..%d + C++ head(%d convs, %s)\n",
         L - 1, hc.stacked_convs, hc.cls_head.c_str());
 
@@ -156,6 +174,24 @@ int main(int argc, char** argv) {
     }
     transfer_to_backend(input, std::span<const float>(in_data.data(), in_data.size()));
     compute(graph, backend);
+
+    // 5b) head 검증용 원시 덤프. **디코드 전** 값을 그대로 내보내 torch 의 bbox_head 출력과
+    //     직접 대조한다 — NMS 를 거치면 어디가 틀렸는지 못 짚는다.
+    if (const char* pre = std::getenv("MMDET_DUMP_HEAD")) {
+        auto dump = [&](const char* kind, size_t l, tensor t) {
+            std::vector<float> v = to_vec(t);
+            std::string path = std::string(pre) + "." + kind + "." + std::to_string(l) + ".bin";
+            if (FILE* f = fopen(path.c_str(), "wb")) {
+                fwrite(v.data(), sizeof(float), v.size(), f);
+                fclose(f);
+            }
+        };
+        for (size_t l = 0; l < cls_t.size(); ++l) dump("cls", l, cls_t[l]);
+        for (size_t l = 0; l < box_t.size(); ++l) dump("box", l, box_t[l]);
+        for (size_t l = 0; l < ho.ctr.size(); ++l) dump("ctr", l, ho.ctr[l]);
+        printf("- head raw dump: %s.{cls,box%s}.<level>.bin\n", pre,
+               ho.ctr.empty() ? "" : ",ctr");
+    }
 
     // 6) raw cls/box → detect_anchor (decode + NMS)
     std::vector<std::vector<float>> cls_v(L), box_v(L);

@@ -60,7 +60,7 @@ def emit_params(cfg, config_name):
         "inline mmdet_cfg mmdet_params() {\n",
         "    mmdet_cfg c;\n",
     ]
-    if h != "anchor":
+    if h == "raw":
         out += [
             "    // The head in this config was not recognised, so only the backbone is\n",
             "    // exported and decoding is left to the caller.\n",
@@ -68,13 +68,42 @@ def emit_params(cfg, config_name):
         ]
         return "".join(out)
 
-    for k in ("stacked_convs", "feat_channels", "num_base", "num_classes"):
+    out.append(f"    c.head.kind = head_kind::{h};\n")
+    for k in ("stacked_convs", "feat_channels", "num_base", "num_classes",
+              "gn_groups", "reg_max"):
         if k in cfg:
             out.append(f"    c.head.{k} = {int(cfg[k])};\n")
-    for k in ("cls_convs_prefix", "reg_convs_prefix", "cls_head", "reg_head"):
+    for k in ("cls_convs_prefix", "reg_convs_prefix", "cls_head", "reg_head",
+              "centerness_head", "scales_prefix"):
         if k in cfg:
             out.append(f'    c.head.{k} = "{cfg[k]}";\n')
-    out.append(f"    c.head.head_has_norm = {str(bool(cfg.get('head_has_norm', False))).lower()};\n\n")
+    for k in ("head_has_norm", "centerness_on_reg", "bbox_exp", "bbox_clamp_stride",
+          "per_level_towers", "per_level_heads"):
+        out.append(f"    c.head.{k} = {str(bool(cfg.get(k, False))).lower()};\n")
+    # 조립기도 stride 를 쓴다(FCOS 의 곱, GFL 의 거리, TOOD 의 격자→픽셀).
+    out.append("    c.head.strides = {" + ", ".join(_f(v) for v in cfg["strides"]) + "};\n")
+    if cfg.get("reg_denoms"):
+        out.append("    c.head.reg_denoms = {" + ", ".join(_f(v) for v in cfg["reg_denoms"]) + "};\n")
+    # 격자 중심. anchor 계열(AnchorGenerator)은 0, point 계열은 0.5 — 조립기가 TOOD 에 쓴다.
+    out.append(f"    c.head.center_offset = {_f(cfg.get('center_offset', 0.0))};\n\n")
+
+    # anchor(Delta) 디코드가 되는 계열만 c.det 를 채운다. 조립은 되는데 코더가
+    # 다른 계열(FSAF 의 TBLRBBoxCoder 등)은 head 원시 출력까지만 낸다.
+    if h != "anchor" or not cfg.get("can_decode", True):
+        out += [
+            "    // Decoding for this family is the caller's: the head above emits raw\n",
+            "    // per-level tensors, and only the anchor(Delta) path fills c.det here.\n",
+        ]
+        out.append("    c.det.strides = {" + ", ".join(_f(v) for v in cfg["strides"]) + "};\n")
+        out.append(f"    c.det.num_classes = {int(cfg.get('num_classes', 80))};\n")
+        out.append(f"    c.det.use_sigmoid = {str(bool(cfg.get('use_sigmoid', True))).lower()};\n")
+        for i, v in enumerate(cfg.get("img_mean", [0.0] * 3)):
+            out.append(f"    c.img_mean[{i}] = {_f(v)};\n")
+        for i, v in enumerate(cfg.get("img_std", [1.0] * 3)):
+            out.append(f"    c.img_std[{i}] = {_f(v)};\n")
+        out.append(f"    c.to_rgb = {str(bool(cfg.get('to_rgb', False))).lower()};\n")
+        out.append("    return c;\n}\n\n}  // namespace visp\n")
+        return "".join(out)
 
     out.append(_arr("strides", cfg["strides"]))
     out.append(_arr("octave_scales", cfg["octave_scales"]))

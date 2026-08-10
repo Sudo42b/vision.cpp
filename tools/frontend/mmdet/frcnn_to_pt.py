@@ -30,7 +30,9 @@ def main(argv=None):
     ap.add_argument("--size", type=int, default=800)
     a = ap.parse_args(argv)
     from mmdet.apis import init_detector
-    det = init_detector(a.config, a.checkpoint, device="cpu").eval()
+    # `.eval()` 체이닝 금지 — train() 을 오버라이드한 계열에서 None 이 돌아온다.
+    det = init_detector(a.config, a.checkpoint, device="cpu")
+    det.eval()
     os.makedirs(a.out, exist_ok=True)
 
     torch.save(FRCNN_SubA(det).eval(), f"{a.out}/FRCNN_SubA.pt")   # 이미지 → 14 출력
