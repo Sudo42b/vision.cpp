@@ -112,6 +112,10 @@ CKPT = os.environ.get("MMDET_CHECKPOINTS",
 
 MM = os.environ.get("MMDET_CONFIGS", os.path.expanduser("~/mmbuild/mmdetection/configs"))
 ROOT = os.environ.get("VERIFY_WORKDIR", "/tmp/visp-verify-heads")
+# head.cpp 를 미리 컴파일해 둘 자리(계열 무관). 지우면 다시 만든다.
+HEAD_OBJ = os.path.join(ROOT, "head.o")
+# 검증 빌드의 최적화 수준. 수치는 libggml 이 내므로 -O1 로 충분하다(컴파일이 빠르다).
+OPT = os.environ.get("VERIFY_OPT", "-O1")
 # g2c(컴파일러)와 vision.cpp 경로. 이 파일은 vision.cpp/tools/verify/dense_head/ 에 있다.
 V = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 P = os.environ.get("G2C_ROOT", os.path.dirname(V))
@@ -173,15 +177,58 @@ print("LEVELS", len(cls_l), "CTR", len(ctr_l))
 '''
 
 
-def run(cmd, cwd, env_extra=None, timeout=2400):
+# 단계별 소요 시간. 어디가 느린지 **재고 나서** 고치려고 둔다.
+# 실측(3계열 96초): g2c 46% · export 21% · ref 21% · g++ 9% · 실행 3%.
+PHASE = {}
+_PHASE_LOCK = __import__("threading").Lock()
+# ⚠️ head.o 빌드용 락은 **따로** 둔다. 계측 락을 재사용하면 `run()` 안에서 같은 락을
+#    다시 잡아 자기 자신을 기다린다(비재진입 Lock → 교착). 실제로 한 번 걸렸다.
+_HEAD_LOCK = __import__("threading").Lock()
+
+# 계열끼리 공유하는 상태가 없어 병렬로 돌릴 수 있다(전부 독립 프로세스).
+# 실측 계열당 최대 RSS 1.16GB → 4개면 ~4.6GB. 6코어 중 4개만 쓴다(2개는 호스트 몫).
+WORKERS = int(os.environ.get("VERIFY_WORKERS", "4"))
+# ⚠️ **메모리 가드.** 위키 `wsl-계속-터짐` — 병렬 torch 스윕이 WSL 을 통째로 죽인 적이 있다.
+#    가용 메모리가 이 밑으로 내려가면 새 계열을 안 띄우고 기다린다. 느려질지언정 안 죽는다.
+MIN_FREE_MB = int(os.environ.get("VERIFY_MIN_FREE_MB", "2500"))
+
+
+def _avail_mb():
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 1 << 30      # 못 읽으면 가드를 끈다(측정 실패로 막지 않는다)
+
+
+def _wait_for_memory(fam):
+    import time
+    waited = 0
+    while _avail_mb() < MIN_FREE_MB:
+        if waited == 0:
+            print(f"  … 메모리 대기 ({fam}): 가용 {_avail_mb()}MB < {MIN_FREE_MB}MB", flush=True)
+        time.sleep(5); waited += 5
+        if waited > 600:      # 10분을 기다려도 안 풀리면 그냥 간다(교착 방지)
+            break
+
+
+def run(cmd, cwd, env_extra=None, timeout=2400, phase=None):
+    import time
     env = dict(os.environ, OMP_NUM_THREADS="1")
     env.update(env_extra or {})
-    return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    t0 = time.time()
+    r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    if phase:
+        with _PHASE_LOCK:
+            PHASE[phase] = PHASE.get(phase, 0.0) + (time.time() - t0)
+    return r
 
 
 def one(fam, rel, ckpt):
     d = os.path.join(ROOT, fam)
-    os.makedirs(d, exist_ok=True)
+    os.makedirs(d, exist_ok=True)   # ROOT 도 같이 생긴다(head.o 자리)
     open(os.path.join(d, "_stub.py"), "w").write(STUB)
     cfg_path = os.path.join(MM, rel)
     if not os.path.exists(cfg_path):
@@ -198,7 +245,7 @@ def one(fam, rel, ckpt):
     mm_root = os.path.dirname(MM.rstrip("/"))
     r = run([PY, FE + "/mmdet_to_pt.py", "--config", cfg_path, "--checkpoint", cw,
              "--out", os.path.join(d, "bb.pt"), "--size", str(SZ)], mm_root,
-            {"PYTHONPATH": f"{d}:{FE}"})
+            {"PYTHONPATH": f"{d}:{FE}"}, phase="1_export")
     if not os.path.exists(os.path.join(d, "bb.pt")):
         return fam, "EXPORT_FAIL", (r.stderr.strip().splitlines() or ["-"])[-1][:70]
     ph = os.path.join(d, "bb.postproc.h")
@@ -211,7 +258,7 @@ def one(fam, rel, ckpt):
 import _stub, sys
 sys.argv = ["g2c","--model","bb.pt","--name","Fam","--output","out","--input-shape","1,3,%d,%d"]
 from shared.compile.pipeline import main; main()
-''' % (SZ, SZ)], d, {"PYTHONPATH": f"{d}:{P}:{FE}:{GGUF_PY}"})
+''' % (SZ, SZ)], d, {"PYTHONPATH": f"{d}:{P}:{FE}:{GGUF_PY}"}, phase="2_g2c")
     if not os.path.exists(os.path.join(d, "out", "Fam.gguf")):
         return fam, "COMPILE_FAIL", (r.stderr.strip().splitlines() or ["-"])[-1][:70]
 
@@ -221,22 +268,35 @@ from shared.compile.pipeline import main; main()
     os.makedirs(inc, exist_ok=True)
     import shutil
     shutil.copy(os.path.join(gen, "Fam.h"), inc)
-    b = run(["g++", "-std=c++20", "-O2", "-DARCH=Fam",
+    # head.cpp 는 `ARCH`·파라미터 헤더를 안 쓴다 → **계열마다 다시 컴파일할 이유가 없다.**
+    # 한 번 .o 로 만들어 두고 링크만 한다(38계열이면 37번을 아낀다).
+    # 여러 계열이 동시에 들어와도 한 번만 만든다.
+    with _HEAD_LOCK:
+        b = run(["g++", "-std=c++20", OPT, "-c", V + "/tools/detect/head.cpp",
+                 "-I" + V + "/include", "-I" + V + "/src", "-I" + V + "/tools/detect",
+                 "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
+                 "-o", HEAD_OBJ], d, phase="3a_head") if not os.path.exists(HEAD_OBJ) else None
+    if not os.path.exists(HEAD_OBJ):
+        return fam, "BUILD_FAIL", "head.o: " + ((b.stderr.strip().split(chr(10)) or ["-"])[-1][:70])
+
+    # 최적화 수준은 **수치와 무관**하다 — 실제 계산은 libggml(사전 빌드)이 한다.
+    # 이 코드는 그래프를 짜기만 하므로 -O1 이면 충분하고, 컴파일이 훨씬 빠르다.
+    b = run(["g++", "-std=c++20", OPT, "-DARCH=Fam",
              '-DVISP_ARCH_HEADER="visp/arch/Fam.h"',
              f'-DMMDET_PARAMS_HEADER="{ph}"',
              "-I" + gen + "/inc", "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/tools/detect",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/backbone/run_mmdet.cpp", V + "/tools/detect/head.cpp",
+             V + "/tools/verify/backbone/run_mmdet.cpp", HEAD_OBJ,
              gen + "/Fam.cpp",
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
-             "-Wl,-rpath," + V + "/build/lib", "-o", gen + "/run_mmdet"], d)
+             "-Wl,-rpath," + V + "/build/lib", "-o", gen + "/run_mmdet"], d, phase="3b_build")
     if not os.path.exists(os.path.join(gen, "run_mmdet")):
         return fam, "BUILD_FAIL", (b.stderr.strip().split(chr(10)) or ["-"])[-1][:80]
 
     # 4) torch 기준값
     open(os.path.join(d, "ref.py"), "w").write(REF % {"FE": FE, "SZ": SZ})
-    r = run([PY, "ref.py", fam, cfg_path, gen], d, {"PYTHONPATH": f"{d}:{FE}"})
+    r = run([PY, "ref.py", fam, cfg_path, gen], d, {"PYTHONPATH": f"{d}:{FE}"}, phase="4_ref")
     if "LEVELS" not in r.stdout:
         return fam, "REF_FAIL", (r.stderr.strip().splitlines() or ["-"])[-1][:70]
     shapes = {}
@@ -247,7 +307,7 @@ from shared.compile.pipeline import main; main()
 
     # 5) C++ 실행 + 대조
     r = run([gen + "/run_mmdet", gen + "/Fam.gguf", "in.bin", "o.bin", str(SZ)], d,
-            {"MMDET_DUMP_HEAD": "cpp", "VISP_BACKEND": "cpu"})
+            {"MMDET_DUMP_HEAD": "cpp", "VISP_BACKEND": "cpu"}, phase="5_run")
     import numpy as np
     worst, nmiss = 1.0, 0
     for (tag, i), (c, h, w) in sorted(shapes.items()):
@@ -272,14 +332,36 @@ from shared.compile.pipeline import main; main()
 if sys.argv[1:]:
     FAMILIES = [x for x in FAMILIES if x[0] in sys.argv[1:]]
 
+def _one_guarded(args):
+    fam, rel, ckpt = args
+    _wait_for_memory(fam)          # 가용 메모리가 회복될 때까지 시작을 미룬다
+    try:
+        return one(fam, rel, ckpt)
+    except subprocess.TimeoutExpired:
+        return fam, "TIMEOUT", "-"
+    except Exception as e:
+        return fam, "ERROR", f"{type(e).__name__}: {e}"[:70]
+
+
 print(f"{'계열':<12} {'판정':<14} 비고")
 print("-" * 70)
-for fam, rel, ckpt in FAMILIES:
-    try:
-        f, st, note = one(fam, rel, ckpt)
-    except subprocess.TimeoutExpired:
-        f, st, note = fam, "TIMEOUT", "-"
-    except Exception as e:
-        f, st, note = fam, "ERROR", f"{type(e).__name__}: {e}"[:70]
+
+# 각 단계가 별도 프로세스라 GIL 을 잡지 않는다 → 스레드 풀로 충분하다.
+# 완료 순서가 아니라 **등록 순서**로 출력한다(실행마다 표가 달라지면 비교를 못 한다).
+if WORKERS > 1 and len(FAMILIES) > 1:
+    os.makedirs(ROOT, exist_ok=True)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        results = list(ex.map(_one_guarded, FAMILIES))
+else:
+    results = [_one_guarded(x) for x in FAMILIES]
+
+for f, st, note in results:
     mark = "O" if st == "PASS" else ("X" if st == "FAIL" else "-")
     print(f"{f:<12} {mark} {st:<12} {note}", flush=True)
+
+if PHASE:
+    tot = sum(PHASE.values())
+    print("\n단계별 소요 (합계 %.0f초)" % tot)
+    for k in sorted(PHASE):
+        print(f"  {k:<10} {PHASE[k]:7.1f}초  {PHASE[k]/tot*100:4.1f}%")
