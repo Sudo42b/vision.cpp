@@ -1,3 +1,4 @@
+#include <vector>
 #include "nn.h"
 #include "util/string.h"
 
@@ -214,6 +215,57 @@ tensor conv_2d_deform(
         x = permute_whcn_to_cwhn(m, x);
     }
     return x;
+}
+
+namespace {
+
+// ggml 축 `dim` 에서 인덱스 `i` 한 칸만 잘라 **연속** 텐서로 만든다.
+// `ggml_concat` 은 비연속 src 도 받지만, view 를 그대로 넘기면 stride 해석이 축마다
+// 달라져 디버깅이 어렵다 — 한 칸짜리라 복사 비용이 무시할 만하므로 cont 로 고정한다.
+tensor pad_reflect_slice(model_ref m, tensor x, int dim, int64_t i) {
+    int64_t ne[4] = {x->ne[0], x->ne[1], x->ne[2], x->ne[3]};
+    ne[dim] = 1;
+    return ggml_cont(m, ggml_view_4d(m, x, ne[0], ne[1], ne[2], ne[3],
+                                     x->nb[1], x->nb[2], x->nb[3],
+                                     (size_t)i * x->nb[dim]));
+}
+
+// 한 축만 거울 반사. torch 규약: out[k] = x[lo-k] (k<lo), out[n+lo+k] = x[n-2-k].
+// **경계 자신은 복제하지 않는다** — 그래서 인덱스가 1 부터 시작하고 n-2 에서 내려간다.
+tensor pad_reflect_axis(model_ref m, tensor x, int dim, int lo, int hi) {
+    if (lo <= 0 && hi <= 0) {
+        return x;
+    }
+    int64_t n = x->ne[dim];
+    ASSERT(lo < n && hi < n, "reflect 패딩이 축 길이보다 크다");
+    std::vector<tensor> parts;
+    for (int k = lo; k >= 1; --k) {
+        parts.push_back(pad_reflect_slice(m, x, dim, k));
+    }
+    parts.push_back(x);
+    for (int k = 1; k <= hi; ++k) {
+        parts.push_back(pad_reflect_slice(m, x, dim, n - 1 - k));
+    }
+    return ggml_concat_n(m, parts.data(), (int)parts.size(), dim);
+}
+
+}  // namespace
+
+tensor pad_reflect_ext(model_ref m, tensor x, int l0, int r0, int l1, int r1) {
+    x = pad_reflect_axis(m, x, 0, l0, r0);
+    x = pad_reflect_axis(m, x, 1, l1, r1);
+    return x;
+}
+
+tensor group_norm(model_ref m, tensor x, int groups, float eps) {
+    x = ggml_group_norm(m, x, groups, eps);
+    // 채널축 broadcast 규약은 batch_norm_2d 와 같다 — CWHN 은 ne0 이 채널이라 그대로,
+    // WHCN 은 ne2 라 [1,1,C,1] 로 편다.
+    const bool whcn = !(m.flags & model_build_flag::cwhn);
+    auto ch = [&](tensor t) { return whcn ? ggml_reshape_4d(m, t, 1, 1, t->ne[0], 1) : t; };
+    if (tensor weight = m.find("weight")) x = ggml_mul(m, x, ch(weight));
+    if (tensor bias = m.find("bias")) x = ggml_add(m, x, ch(bias));
+    return named(m, x);
 }
 
 tensor batch_norm_2d(model_ref m, tensor x) {
