@@ -94,6 +94,25 @@ std::vector<detection> detect_yolox(
     std::vector<std::vector<float>> const& obj,
     std::vector<std::pair<int, int>> const& feat_hw, yolox_params const& p);
 
+// ── YOLO dense (v8/v10/v26 계열, 격자 ltrb) ─────────────────────────────────
+// g2c 생성 그래프는 **디코드 앞에서 끊는다** — 격자 단위 ltrb 와 클래스 **로짓**을 낸다.
+// 여기서 stride 곱 · 격자점 더하기 · 시그모이드 · top-k 를 한다(전부 호스트).
+struct yolo_dense_params {
+    std::vector<float> strides{8, 16, 32};
+    float point_offset = 0.5f;   // ultralytics make_anchors 규약
+    int num_classes = 80;
+    float score_thr = 0.25f;
+    float nms_thr = 0.7f;
+    bool nms_free = true;        // one2one(YOLOv10/26) 은 NMS 없이 top-k 만
+    int max_det = 300;
+    int input_w = 0, input_h = 0;
+};
+// box[4*N] · score[nc*N] 은 **채널 우선**(flat[c*N + a]) — 그래프 덤프 레이아웃 그대로다.
+// N = Σ(W_l·H_l). feat_hw 는 레벨별 (H, W).
+std::vector<detection> detect_yolo_dense(
+    float const* box, float const* score,
+    std::vector<std::pair<int, int>> const& feat_hw, yolo_dense_params const& p);
+
 // ── DETR (set prediction, NMS 없음) ─────────────────────────────────────────
 struct detr_params {
     int num_queries = 100;
