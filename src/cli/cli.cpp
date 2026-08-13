@@ -576,6 +576,19 @@ void run_generated(cli_args const& args) {
 
     const float sx = float(image.extent[0]) / float(SZ);
     const float sy = float(image.extent[1]) / float(SZ);
+
+    // 좌표까지 찍는다. 그리기만 하면 결과를 수치로 확인할 방법이 없어서, 참조 구현과
+    // 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
+    printf("  %4s %9s %9s %9s %9s %8s  %s\n", "#", "x1", "y1", "x2", "y2", "score", "class");
+    for (size_t i = 0; i < dets.size(); ++i) {
+        detection const& d = dets[i];
+        char const* name = (d.label >= 0 && size_t(d.label) < task.class_names.size())
+                               ? task.class_names[d.label].c_str()
+                               : "";
+        printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d %s\n", i,
+               d.x1 * sx, d.y1 * sy, d.x2 * sx, d.y2 * sy, d.score, d.label, name);
+    }
+
     draw_detections(image_span(image), dets, task.class_names, sx, sy);
     image_save(image, args.output);
     printf("-> %zu boxes drawn, saved to %s\n", dets.size(), args.output);

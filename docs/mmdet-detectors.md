@@ -50,6 +50,11 @@ objects.
 Running a detector takes four steps. Steps 1 and 2 happen once per model; steps 3 and 4 are
 the deployment path.
 
+Commands in this chapter run from the **vision.cpp checkout** — the paths are written
+`tools/...`. The one exception is the compiler itself: `g2c` belongs to the project that
+carries vision.cpp as a submodule, so *Models whose head survives tracing*, at the end, runs
+from that project's root instead and says so.
+
 ### Step 1 — Export the detector
 
 `mmdet_to_pt.py` loads an MMDetection config, wraps the detector so that the backbone and neck
@@ -265,7 +270,9 @@ cmake --build vision.cpp/build -j4
 ```
 
 `--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
-is NMS-free — so the result comes back as boxes. Without it the graph outputs are written as
+is NMS-free — so the result comes back as boxes: `vision-cli` draws them and prints their
+coordinates and scores. The `.bin` rule described under *Output* above belongs to `run_mmdet`;
+a registered detector writes an image whatever the output path is called. Without it the graph outputs are written as
 raw `float32` files instead, which is what a numerical comparison needs.
 
 The full version of this route — options, failure modes, how to measure it — is
