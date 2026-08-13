@@ -7,8 +7,7 @@ MMDetection defines hundreds of detectors as compositions of a backbone, a neck 
 The backbone and neck are plain feed-forward networks and translate directly into a ggml graph.
 vision.cpp splits the model there: the feature extractor runs as a compiled ggml graph, and the
 head, decoding and post-processing are C++ built from library primitives. One head assembled
-that way serves every family that shares its structure, and the numbers stay inspectable at the
-seam, which is what the per-family verification in this guide measures.
+that way serves every family that shares its structure.
 
 ```
  image ──▶ backbone + neck (compiled ggml graph) ──▶ FPN features
@@ -243,6 +242,30 @@ d = np.fromfile("boxes.bin", dtype="float32").reshape(-1, 6)
 
 `tools/verify/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
 
+
+## Models whose head survives tracing
+
+Everything above splits the model because an MMDetection head cannot be traced. Most other
+detectors have no such problem — an ultralytics YOLO or a torchvision model traces whole, and
+then none of the steps above apply. A compiler emits the entire graph, `install_arch.py` drops
+it into `src/visp/arch/` with a registration unit beside it, and `vision-cli` dispatches on the
+architecture name recorded in the GGUF:
+
+```sh
+g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m --output out --input-shape 1,3,640,640
+python tools/install_arch.py out --name Yolo26m --detect-yolo
+cmake --build build -j4
+./build/bin/vision-cli yolo26m -m out/Yolo26m.gguf -i photo.jpg -o detected.jpg
+```
+
+`--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
+is NMS-free — so the result comes back as boxes. Without it the graph outputs are written as
+raw `float32` files instead, which is what a numerical comparison needs.
+
+Measured on `yolo26m` at 640, against ultralytics on the same pixels: the three detections
+above 0.25 agree in class and score (cat 0.918, couch 0.771, tv 0.681) with box coordinates
+within 0.09 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxes and
+4.7e-04 on the class logits.
 
 ## Detection heads
 
