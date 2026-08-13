@@ -114,7 +114,7 @@ def main(argv=None):
         print(__doc__)
         return 2
     n = append(a[0], a[1])
-    print(f"  · 그래프 밖 가중치 {n} 개 추가 → {a[1]}")
+    print(f"  → appended {n} weights that the graph does not use: {a[1]}")
     return 0
 
 
