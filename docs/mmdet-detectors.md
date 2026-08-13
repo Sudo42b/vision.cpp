@@ -251,16 +251,26 @@ then none of the steps above apply. A compiler emits the entire graph, `install_
 it into `src/visp/arch/` with a registration unit beside it, and `vision-cli` dispatches on the
 architecture name recorded in the GGUF:
 
+Run these from the **compiler checkout root** — the directory that holds `vision.cpp/` and
+`pyproject.toml`. `g2c` is that project's console script, not one of vision.cpp's, and `uv run`
+started inside `vision.cpp/` finds no project there: it builds a second virtual environment and
+then fails to spawn.
+
 ```sh
-g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m --output out --input-shape 1,3,640,640
-python tools/install_arch.py out --name Yolo26m --detect-yolo
-cmake --build build -j4
-./build/bin/vision-cli yolo26m -m out/Yolo26m.gguf -i photo.jpg -o detected.jpg
+uv run g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m \
+    --output out --input-shape 1,3,640,640
+python vision.cpp/tools/install_arch.py out --name Yolo26m --detect-yolo
+cmake --build vision.cpp/build -j4
+./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf -i photo.jpg -o detected.jpg
 ```
 
 `--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
 is NMS-free — so the result comes back as boxes. Without it the graph outputs are written as
 raw `float32` files instead, which is what a numerical comparison needs.
+
+The full version of this route — options, failure modes, how to measure it — is
+[`../docs/vision-cpp-mmdet-guide-en.md`](../docs/vision-cpp-mmdet-guide-en.md), in the
+compiler checkout beside this one.
 
 Measured on `yolo26m` at 640, against ultralytics on the same pixels: the three detections
 above 0.25 agree in class and score (cat 0.918, couch 0.771, tv 0.681) with box coordinates

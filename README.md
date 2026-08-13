@@ -21,7 +21,7 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 | [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [**YOLOv9t**](#yolov9t)                  | Object detection         | CPU         |
 | [**MMDetection** models](docs/mmdet-detectors.md) | Object detection, segmentation, tracking | CPU |
-| [**Compiled PyTorch models**](docs/mmdet-detectors.md#models-whose-head-survives-tracing) | Any traceable `nn.Module` — ultralytics YOLO, torchvision | CPU |
+| [**Compiled PyTorch models**](docs/mmdet-detectors.md#models-whose-head-survives-tracing) | Any traceable `nn.Module` — ultralytics YOLO, torchvision · [full guide](../docs/vision-cpp-mmdet-guide-en.md) | CPU |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 **Backbones:** SWIN (v1), DINO (v2), TinyViT
