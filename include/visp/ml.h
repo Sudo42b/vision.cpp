@@ -1,19 +1,13 @@
 #pragma once
 
-// ggml 기본 텐서명 한도는 64자인데, state_dict 키를 그대로 gguf 텐서명으로 쓰는 모델은
-// 그걸 넘는다(mmdet HourglassNet: 68자 `backbone.hourglass_modules.0.low2.…downsample.0`).
-// 넘으면 gguf 로드가 `tensor name is too long: 65 >= 64` 로 거부한다.
+// 텐서명 한도는 ggml 기본값(64) 을 그대로 쓴다. `state_dict` 키가 그보다 길면 컴파일러가
+// 줄인다(g2c `shared/compile/tensor_names.py` — 모듈 prefix 를 접고 접미사는 보존한다).
 //
-// ⚠️ **여기와 CMakeLists 양쪽에 둔다. 한쪽만으로는 부족하다.**
-//   · 헤더만: 라이브러리의 `ggml.c` 는 64 로 컴파일돼 `ggml_tensor.name[]` 레이아웃이
-//     갈린다 → `Failed to load GGUF model`.
-//   · CMake 만: 손수 짠 g++ 소비자가 `-D` 를 못 받는다. `tensor_name =
-//     fixed_string<GGML_MAX_NAME>` 이 공개 API 시그니처라 맹글링이 갈려
-//     `undefined reference to compute_graph_output(…, fixed_string<128>)` 로 깨진다.
-// (upstream ggml.h 는 `#ifndef` 가드가 있어 이 정의가 우선한다 — ggml 포크 수정 불필요.)
-#ifndef GGML_MAX_NAME
-#    define GGML_MAX_NAME 128
-#endif
+// ⚠️ **여기서 다시 정의하지 마라.** `tensor_name = fixed_string<GGML_MAX_NAME>` 이 공개 API
+//    시그니처라, 이 헤더와 라이브러리가 다른 값을 보면 맹글링이 갈려
+//    `undefined reference to compute_graph_output(…, fixed_string<N>)` 로 깨지거나
+//    `ggml_tensor` 크기가 어긋나 런타임에 죽는다. 값을 하나로 두는 가장 확실한 방법은
+//    **아무도 안 바꾸는 것**이다.
 
 #include "visp/image.h"
 #include "visp/util.h"
