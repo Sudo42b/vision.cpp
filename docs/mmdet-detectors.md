@@ -208,9 +208,8 @@ run_mmdet model.gguf image.jpg detected.png 512   # the image, boxes drawn on it
 run_mmdet model.gguf image.jpg boxes.bin     512   # raw float32, six numbers per box
 ```
 
-An image is the default, which is what the rest of the command-line tools produce and what a
-person looking at a result wants. Raw `float32` is what comparing against a reference
-implementation needs, so it stays one extension away rather than being the only option.
+An image is the default; a `.bin` extension gives raw `float32` instead, which is what
+comparing against a reference implementation needs.
 
 Either way the highest-scoring detections are printed:
 
