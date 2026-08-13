@@ -1,5 +1,8 @@
 #include "util/math.h"
 #include "util/string.h"
+#include "visp/arch_registry.h"
+#include "visp/draw.h"
+#include "visp/postproc.h"
 #include "visp/vision.h"
 
 #include <algorithm>
@@ -13,10 +16,13 @@
 namespace visp {
 using std::filesystem::path;
 
-enum class cli_command { none, sam, birefnet, depth_anything, migan, esrgan };
+// `generated` = g2c 산출 arch. **모델마다 항목을 늘리지 않는다** — 이름은 런타임에
+// `arch_registry` 에서 찾는다. 손코딩 arch 5개만 여기 남는다(전처리·후처리가 제각각).
+enum class cli_command { none, sam, birefnet, depth_anything, migan, esrgan, generated };
 
 struct cli_args {
     cli_command command = cli_command::none;
+    std::string_view arch;             // command == generated 일 때 arch 이름
     std::vector<char const*> inputs;   // -i --input
     char const* output = "output.png"; // -o --output
     char const* model = nullptr;       // -m --model
@@ -41,6 +47,7 @@ Commands:
     depthany  - Depth-Anything depth estimation
     migan     - MI-GAN inpainting
     esrgan    - ESRGAN/Real-ESRGAN upscaling
+    <arch>    - g2c generated model (see "Generated archs" below)
 
 Options:
     -i, --input <image1> [<image2> ...]  Input image(s)
@@ -59,6 +66,16 @@ Examples:
     vision-cli esrgan -m ESRGAN-x4-F16.gguf -i image.jpg -o upscaled.png
 )";
     printf("%s", usage);
+
+    // 등록된 생성 arch 는 **빌드에 무엇이 들어갔느냐**에 달렸다 — 하드코딩할 수 없다.
+    auto archs = arch_all();
+    printf("Generated archs (%zu):\n", archs.size());
+    if (archs.empty()) {
+        printf("    (none - build one with g2c, then tools/install_arch.py)\n");
+    }
+    for (arch_entry const& e : archs) {
+        printf("    %.*s\n", (int)e.name.size(), e.name.data());
+    }
 }
 
 char const* const short_usage = R"(
@@ -128,6 +145,10 @@ cli_args cli_parse(int argc, char** argv) {
         r.command = cli_command::esrgan;
     } else if (arg1 == "-h" || arg1 == "--help") {
         print_usage();
+    } else if (arch_find(arg1)) {
+        // g2c 생성 arch. `src/visp/arch/<name>_register.cpp` 가 스스로 등록한 것.
+        r.command = cli_command::generated;
+        r.arch = arg1;
     } else {
         throw except("Unknown command: '{}'\n{}", arg1, short_usage);
     }
@@ -168,6 +189,7 @@ void run_birefnet(cli_args const&);
 void run_depth_anything(cli_args const&);
 void run_migan(cli_args const&);
 void run_esrgan(cli_args const&);
+void run_generated(cli_args const&);
 
 } // namespace visp
 
@@ -186,6 +208,7 @@ int main(int argc, char** argv) {
             case cli_command::depth_anything: run_depth_anything(args); break;
             case cli_command::migan: run_migan(args); break;
             case cli_command::esrgan: run_esrgan(args); break;
+            case cli_command::generated: run_generated(args); break;
             case cli_command::none: break;
         }
 
@@ -442,6 +465,121 @@ void run_sam(cli_args const& args) {
 
 //
 // BirefNet
+
+//
+// g2c 생성 arch (레지스트리 경유). **모델이 늘어도 이 함수는 안 바뀐다.**
+
+void run_generated(cli_args const& args) {
+    arch_entry const* e = arch_find(args.arch);
+    ASSERT(e != nullptr, "arch not registered");   // 파싱에서 이미 확인했다
+
+    backend_device backend = backend_init(args);
+    auto [file, weights] = load_model_weights(args, backend, nullptr, 0, backend.preferred_layout());
+
+    // gguf 이름과 부를 함수가 어긋나면 **엉뚱한 그래프에 남의 가중치**를 태운다.
+    // 크래시 없이 값만 틀리므로 여기서 막는다.
+    if (file.arch() != e->name) {
+        throw except("Model arch is '{}' but command is '{}'", file.arch(), e->name);
+    }
+
+    require_inputs(args.inputs, 1, "<image>");
+    image_data image = image_load(args.inputs[0]);
+
+    arch_task const& task = e->task;
+    const int SZ = task.input_size;
+    // 정사각 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
+    // **letterbox 가 아니라 단순 리사이즈**다 — 종횡비가 바뀌므로 박스를 되돌릴 때
+    // x·y 배율을 따로 쓴다.
+    const int nch = n_channels(image.format);
+    std::vector<float> input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0],
+                                               nch, SZ, task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
+
+    compute_graph graph = compute_graph_init(262144);
+    model_ref m(weights, graph);
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, SZ, SZ, 1}, "x");
+    ggml_build_forward_expand(graph, input);
+    ggml_build_forward_expand(graph, e->forward(m, input, file));
+    compute_graph_allocate(graph, backend);
+    transfer_to_backend(input, std::span<const float>(input_cwhn.data(), input_cwhn.size()));
+    compute_timed(graph, backend);
+
+    // 등록된 out_0.. 를 전부 읽는다. **개수를 강제하지 않는다** — 계열마다 분기 수가 다르다
+    // (YOLO26 은 one2many/one2one 두 벌을 낸다).
+    std::vector<std::vector<float>> outs;
+    std::vector<std::pair<int, int>> hw;
+    for (int i = 0;; ++i) {
+        tensor o = ggml_graph_get_tensor(graph, ("out_" + std::to_string(i)).c_str());
+        if (!o) {
+            break;
+        }
+        std::vector<float> d((size_t)ggml_nelements(o));
+        transfer_from_backend(o, std::span<float>(d.data(), d.size()));
+        outs.push_back(std::move(d));
+        hw.push_back({(int)o->ne[2], (int)o->ne[1]});
+    }
+    printf("- outputs: %zu\n", outs.size());
+
+    if (task.kind != arch_kind::detect_yolo) {
+        for (size_t i = 0; i < outs.size(); ++i) {
+            std::string path = std::string(args.output) + "." + std::to_string(i) + ".bin";
+            if (FILE* f = fopen(path.c_str(), "wb")) {
+                fwrite(outs[i].data(), sizeof(float), outs[i].size(), f);
+                fclose(f);
+            }
+        }
+        printf("-> raw outputs saved to %s.<i>.bin\n", args.output);
+        return;
+    }
+
+    // 박스/점수 출력 고르기. 지정이 없으면 **뒤에서부터** 찾는다 — YOLO26 은 one2many 가 앞이고
+    // 추론에 쓰는 one2one 이 뒤다. 앞 것을 쓰면 조용히 다른 분기를 재게 된다.
+    int bi = task.box_out, si = task.score_out;
+    if (bi < 0 || si < 0) {
+        for (int i = (int)outs.size() - 1; i >= 0; --i) {
+            if (si < 0 && hw[i].first == task.num_classes) {
+                si = i;
+            } else if (si >= 0 && bi < 0 && hw[i].first == 4) {
+                bi = i;
+            }
+        }
+    }
+    if (bi < 0 || si < 0) {
+        throw except("Could not find box/score outputs (num_classes={})", task.num_classes);
+    }
+    const int n_anchor = hw[si].second;
+    printf("- decode: box=out_%d score=out_%d anchors=%d\n", bi, si, n_anchor);
+
+    // 레벨별 격자는 stride 와 입력 크기로 정해진다. 합이 앵커 수와 안 맞으면 stride 가 틀린 것 —
+    // 그대로 디코드하면 박스가 통째로 엉뚱한 데 찍힌다.
+    std::vector<std::pair<int, int>> feat_hw;
+    int sum = 0;
+    for (float s : task.strides) {
+        const int g = int(float(SZ) / s);
+        feat_hw.push_back({g, g});
+        sum += g * g;
+    }
+    if (sum != n_anchor) {
+        throw except("anchor mismatch: strides give {} but graph has {}", sum, n_anchor);
+    }
+
+    yolo_dense_params dp;
+    dp.strides = task.strides;
+    dp.num_classes = task.num_classes;
+    dp.score_thr = task.score_thr;
+    dp.nms_thr = task.nms_thr;
+    dp.nms_free = task.nms_free;
+    dp.max_det = task.max_det;
+    dp.input_w = SZ;
+    dp.input_h = SZ;
+    std::vector<detection> dets =
+        detect_yolo_dense(outs[bi].data(), outs[si].data(), feat_hw, dp);
+
+    const float sx = float(image.extent[0]) / float(SZ);
+    const float sy = float(image.extent[1]) / float(SZ);
+    draw_detections(image_span(image), dets, task.class_names, sx, sy);
+    image_save(image, args.output);
+    printf("-> %zu boxes drawn, saved to %s\n", dets.size(), args.output);
+}
 
 void run_birefnet(cli_args const& args) {
     backend_device backend = backend_init(args);

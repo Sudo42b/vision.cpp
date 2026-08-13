@@ -542,4 +542,82 @@ std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_
     return out;
 }
 
+
+// ── YOLO dense (v8/v10/v26) ─────────────────────────────────────────────────
+std::vector<detection> detect_yolo_dense(
+    float const* box, float const* score,
+    std::vector<std::pair<int, int>> const& feat_hw, yolo_dense_params const& p) {
+
+    // 레벨별 격자점을 이어 붙인다. 순서는 그래프가 concat 한 순서와 **같아야** 한다
+    // (레벨 0 = 가장 큰 feature map). 어긋나면 박스가 통째로 엉뚱한 데 찍힌다.
+    std::vector<float> points;
+    std::vector<float> pt_stride;
+    size_t n_total = 0;
+    for (size_t l = 0; l < feat_hw.size(); ++l) {
+        const int H = feat_hw[l].first, W = feat_hw[l].second;
+        const float s = l < p.strides.size() ? p.strides[l] : p.strides.back();
+        std::vector<float> pts = gen_points(H, W, s, p.point_offset);
+        points.insert(points.end(), pts.begin(), pts.end());
+        pt_stride.insert(pt_stride.end(), (size_t)H * W, s);
+        n_total += (size_t)H * W;
+    }
+    const int N = (int)n_total;
+    if (N == 0) {
+        return {};
+    }
+
+    // ltrb 는 **격자 단위**다 — stride 를 곱해야 픽셀이 된다.
+    // 그래프 덤프는 채널 우선(flat[c*N+a])이고 `distance2bbox` 는 앵커 우선([i*4+k])이라
+    // 여기서 전치도 같이 한다.
+    std::vector<float> dist((size_t)N * 4);
+    for (int i = 0; i < N; ++i) {
+        const float s = pt_stride[i];
+        for (int k = 0; k < 4; ++k) {
+            dist[(size_t)i * 4 + k] = box[(size_t)k * N + i] * s;
+        }
+    }
+    std::vector<float> xyxy((size_t)N * 4);
+    distance2bbox(points.data(), dist.data(), N, xyxy.data(), p.input_w, p.input_h);
+
+    // 클래스 로짓 → 시그모이드. 앵커마다 최고 클래스만 남긴다(YOLO 규약).
+    std::vector<detection> dets;
+    dets.reserve(256);
+    for (int i = 0; i < N; ++i) {
+        int best = 0;
+        float best_logit = score[(size_t)0 * N + i];
+        for (int c = 1; c < p.num_classes; ++c) {
+            const float v = score[(size_t)c * N + i];
+            if (v > best_logit) {
+                best_logit = v;
+                best = c;
+            }
+        }
+        // 시그모이드는 **최댓값 하나만** 계산한다 — 단조라 argmax 가 안 바뀐다.
+        const float sc = 1.0f / (1.0f + std::exp(-best_logit));
+        if (sc < p.score_thr) {
+            continue;
+        }
+        dets.push_back(detection{xyxy[(size_t)i * 4 + 0], xyxy[(size_t)i * 4 + 1],
+                                 xyxy[(size_t)i * 4 + 2], xyxy[(size_t)i * 4 + 3], sc, best});
+    }
+
+    std::sort(dets.begin(), dets.end(),
+              [](detection const& a, detection const& b) { return a.score > b.score; });
+
+    // one2one(YOLOv10/26) 은 중복을 모델이 이미 없앴다 — NMS 를 또 걸면 겹친 물체를 지운다.
+    if (!p.nms_free) {
+        std::vector<int> keep = nms(dets, p.nms_thr);
+        std::vector<detection> out;
+        out.reserve(keep.size());
+        for (int idx : keep) {
+            out.push_back(dets[idx]);
+        }
+        dets.swap(out);
+    }
+    if ((int)dets.size() > p.max_det) {
+        dets.resize(p.max_det);
+    }
+    return dets;
+}
+
 }  // namespace visp
