@@ -487,13 +487,12 @@ void run_generated(cli_args const& args) {
 
     arch_task const& task = e->task;
     const int SZ = task.input_size;
-    // YOLO 전처리: 정사각 리사이즈 + 0..1. **letterbox 가 아니라 단순 리사이즈**다 —
-    // 종횡비가 바뀌므로 박스를 되돌릴 때 x·y 배율을 따로 쓴다.
-    const float mean[3] = {0.0f, 0.0f, 0.0f};
-    const float stdv[3] = {255.0f, 255.0f, 255.0f};
+    // 정사각 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
+    // **letterbox 가 아니라 단순 리사이즈**다 — 종횡비가 바뀌므로 박스를 되돌릴 때
+    // x·y 배율을 따로 쓴다.
     const int nch = n_channels(image.format);
     std::vector<float> input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0],
-                                               nch, SZ, mean, stdv, /*to_rgb=*/false);
+                                               nch, SZ, task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
 
     compute_graph graph = compute_graph_init(262144);
     model_ref m(weights, graph);

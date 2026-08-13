@@ -18,6 +18,7 @@
 
 #include "visp/ml.h"
 
+#include <array>
 #include <span>
 #include <string>
 #include <string_view>
@@ -45,6 +46,12 @@ struct arch_task {
     float nms_thr = 0.7f;          // nms_free 면 안 쓴다
     int max_det = 300;
     int input_size = 640;
+
+    // 전처리 정규화 `(v - mean) / std`. 기본값은 0~1 (YOLO 규약).
+    // ⚠️ **모델마다 다르다.** torchvision 분류기는 ImageNet 통계를 쓰는데, 0~1 로 돌리면
+    //    크래시 없이 값만 틀린다(ResNet-18 실측 상대 L1 5.1e-02, argmax 는 우연히 일치).
+    std::array<float, 3> mean{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> stdv{255.0f, 255.0f, 255.0f};
     // 그래프 출력 중 몇 번이 박스/점수인지. 생성 모델마다 다르다(one2many 분기가 앞에 올 수 있다).
     int box_out = -1;              // -1 = 자동(뒤에서 두 번째 4채널 출력)
     int score_out = -1;

@@ -111,6 +111,27 @@ def detect_shapes(out_dir, cls):
     return nc
 
 
+def traced_size(out_dir, cls, fallback):
+    """생성 `<Arch>.py` 에서 trace 입력 크기를 읽는다.
+
+    그래프는 **한 크기로만** 돈다(trace 가 그 크기를 구웠다). 러너가 다른 크기로 돌리면
+    `GGML_ASSERT(ggml_nelements(a) == ne0*ne1)` 로 죽는다 — 사람이 `--size` 를 기억하게
+    두지 말고 산출물에서 읽는다.
+    """
+    path = os.path.join(out_dir, cls + ".py")
+    try:
+        src = open(path, encoding="utf-8").read()
+    except OSError:
+        return fallback
+    m = re.search(r"np\.random\.randn\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)", src)
+    if not m:
+        return fallback
+    h, w = int(m.group(1)), int(m.group(2))
+    if h != w:
+        print(f"  ⚠ 입력이 정사각이 아니다({h}x{w}) — {h} 로 등록한다. 필요하면 --size 로 덮어써라")
+    return h
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", help="g2c --output 폴더")
@@ -119,7 +140,13 @@ def main():
                     help="YOLO dense 검출기로 등록(디코드+박스 그리기)")
     ap.add_argument("--classes", type=int, default=0, help="클래스 수(0=자동)")
     ap.add_argument("--strides", default="8,16,32")
-    ap.add_argument("--size", type=int, default=640)
+    ap.add_argument("--size", type=int, default=0,
+                    help="입력 해상도. 생략하면 생성 <Arch>.py 에서 읽는다")
+    ap.add_argument("--mean", default="0,0,0",
+                    help="전처리 평균(픽셀 0~255 기준). torchvision 분류기는 "
+                         "'123.675,116.28,103.53'")
+    ap.add_argument("--std", default="255,255,255",
+                    help="전처리 표준편차. torchvision 분류기는 '58.395,57.12,57.375'")
     ap.add_argument("--score-thr", type=float, default=0.25)
     ap.add_argument("--nms", action="store_true",
                     help="NMS 를 건다(기본은 NMS-free — YOLOv10/26 은 one2one 이라 필요 없다)")
@@ -134,6 +161,17 @@ def main():
     shutil.copy(cpp, os.path.join(ARCH_DIR, cls + ".cpp"))
     shutil.copy(hdr, os.path.join(ARCH_DIR, header))
 
+    size = a.size or traced_size(a.out_dir, cls, 640)
+
+    def _triple(spec, what):
+        v = [x.strip() for x in spec.split(",") if x.strip()]
+        if len(v) != 3:
+            sys.exit(f"오류: --{what} 는 값 3개여야 한다: {spec}")
+        return "{" + ", ".join(f"{float(x)}f" for x in v) + "}"
+
+    norm = [f"    t.mean = {_triple(a.mean, 'mean')};",
+            f"    t.stdv = {_triple(a.std, 'std')};"]
+
     if a.detect_yolo:
         nc = a.classes or detect_shapes(a.out_dir, cls)
         strides = [s.strip() for s in a.strides.split(",") if s.strip()]
@@ -144,15 +182,17 @@ def main():
             "    t.strides = {" + ", ".join(f"{s}.0f" for s in strides) + "};",
             f"    t.nms_free = {'false' if a.nms else 'true'};",
             f"    t.score_thr = {a.score_thr}f;",
-            f"    t.input_size = {a.size};",
-        ]
+            f"    t.input_size = {size};",
+        ] + norm
         if names:
             body.append("    t.class_names = {")
             for i in range(0, len(names), 6):
                 body.append("        " + ", ".join(f'"{n}"' for n in names[i:i + 6]) + ",")
             body.append("    };")
     else:
-        body = ["    t.kind = visp::arch_kind::raw;"]
+        # 검출기가 아니어도 크기는 실어야 한다 — 러너가 그 크기로 입력을 만든다.
+        body = ["    t.kind = visp::arch_kind::raw;",
+                f"    t.input_size = {size};"] + norm
 
     reg_path = os.path.join(ARCH_DIR, arch + "_register.cpp")
     with open(reg_path, "w", encoding="utf-8") as f:
