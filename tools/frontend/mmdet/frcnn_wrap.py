@@ -7,32 +7,94 @@
 roi_align/detect_roi). 두 wrapper 모두 flat tuple 반환 → g2c 가 out_0.. 다출력으로 컴파일.
 피클 모듈명 = frcnn_wrap (self-contained). g2c 코어 무관 — mmdet 만 import.
 """
+import mmdet_compat  # noqa: F401  (import 만으로 호환 패치가 걸린다)
 import torch
 import torch.nn as nn
 
 
+def _n_roi_levels(det):
+    """RoIAlign 이 실제로 쓰는 레벨 수. **4 로 박으면 안 된다.**
+
+    FPN 계열은 P2..P6 중 앞 4개를 쓰지만, C4 계열(TridentNet 등)은 neck 없이
+    백본 마지막 단계 **하나**만 쓴다. extractor 의 `featmap_strides` 가 정답이다.
+    """
+    ext = getattr(getattr(det, "roi_head", None), "bbox_roi_extractor", None)
+    if isinstance(ext, nn.ModuleList):
+        ext = ext[0]
+    strides = getattr(ext, "featmap_strides", None)
+    return len(strides) if strides else 4
+
+
 class FRCNN_SubA(nn.Module):
-    """이미지 → (P2,P3,P4,P5, rpn_cls×5, rpn_bbox×5) = 14 출력. P2-P5=RoIAlign 입력, rpn=5레벨(P2-P6)."""
+    """이미지 → (RoI 레벨 feats, rpn_cls×L, rpn_bbox×L).
+
+    FPN 계열은 (P2..P5, rpn×5, rpn×5) = 14 출력. C4 계열(TridentNet)은 neck 이 없어
+    (C4, rpn_cls, rpn_bbox) = 3 출력이다.
+    """
     def __init__(self, det):
         super().__init__()
         self.backbone = det.backbone
-        self.neck = det.neck
+        # ⚠️ **neck 이 항상 있다고 보면 안 된다.** C4 계열(TridentFasterRCNN)은 FPN 없이
+        #    백본 C4 를 그대로 쓰고 `shared_head`(ResLayer)가 C5 역할을 한다.
+        self.neck = getattr(det, "neck", None)
         self.rpn_head = det.rpn_head
+        self.n_roi = _n_roi_levels(det)
 
     def forward(self, x):
-        feats = self.neck(self.backbone(x))          # tuple len 5: P2..P6
-        rpn_cls, rpn_bbox = self.rpn_head(feats)     # (list5, list5)
-        return tuple(feats[:4]) + tuple(rpn_cls) + tuple(rpn_bbox)
+        feats = self.backbone(x)
+        if getattr(self, "neck", None) is not None:
+            feats = self.neck(feats)                 # tuple len 5: P2..P6
+        rpn_cls, rpn_bbox = self.rpn_head(feats)     # (listL, listL)
+        return tuple(feats[:getattr(self, "n_roi", 4)]) + tuple(rpn_cls) + tuple(rpn_bbox)
 
 
 class FRCNN_SubB(nn.Module):
-    """RoIAlign feat (N,256,7,7) → (cls_score (N,81), bbox_pred (N,320))."""
-    def __init__(self, det):
+    """RoIAlign feat (N,256,7,7) → (cls_score (N,81), bbox_pred (N,320)).
+
+    캐스케이드 계열(`CascadeRoIHead`·HTC·SCNet)은 `bbox_head` 가 **ModuleList** 다 —
+    단계마다 박스를 정제하고 다음 단계에서 그 박스로 RoIAlign 을 다시 한다.
+    그래서 단계 하나만 담고, 루프는 러너가 돈다(호스트 RoIAlign 이 사이에 끼므로
+    한 그래프로 못 돈다 — two-stage 와 같은 이유).
+    """
+    def __init__(self, det, stage=None):
         super().__init__()
-        self.bbox_head = det.roi_head.bbox_head
+        bh = det.roi_head.bbox_head
+        self.bbox_head = bh if stage is None else bh[stage]
+        # ⚠️ C4 계열은 RoIAlign 과 bbox_head 사이에 **`shared_head`(ResLayer=C5)** 가 있다.
+        #    빼먹으면 채널이 안 맞아 `mat1 and mat2 shapes cannot be multiplied
+        #    (N×1024 and 2048×81)` 로 죽는다(tridentnet 실측). mmdet `_bbox_forward` 와
+        #    같은 순서다: extractor → shared_head → bbox_head.
+        self.shared_head = (det.roi_head.shared_head
+                            if getattr(det.roi_head, "with_shared_head", False) else None)
+        # ⚠️ Double-Head R-CNN 은 head 가 **입력 두 개**를 받는다(`forward(x_cls, x_reg)`).
+        #    같은 proposal 로 RoIAlign 을 두 번 하는데, 회귀용은 상자를 `reg_roi_scale_factor`
+        #    배(1.3) 키워 넓은 맥락을 본다. g2c 그래프는 입력이 하나뿐이라
+        #    **배치로 이어붙여** 받고 여기서 가른다(앞 절반=cls, 뒤 절반=reg).
+        self.two_in = getattr(det.roi_head, "reg_roi_scale_factor", None) is not None
+        # ⚠️ 가르는 지점을 **export 시점 상수**로 박는다. `roi_feat.shape[0] // 2` 로 두면
+        #    trace 가 실행 중 값으로 봐서 렌더러가 시작 인덱스를 모르고 **offset 0 으로
+        #    폴백**한다 — 두 슬라이스가 같은 자리를 읽어 확대판 RoI 가 무시된다(L1 0.740).
+        #    proposal 개수는 `test_cfg.rpn.max_per_img` 로 이미 정해져 있다.
+        self.n_half = int(det.test_cfg.rpn.max_per_img) if self.two_in else 0
 
     def forward(self, roi_feat):
+        # ⚠️ **`self.<새속성>` 을 그냥 읽지 마라.** 이 클래스는 `torch.save` 로 통째 절여지는데,
+        #    저장은 **오래 사는 워커 프로세스**(스윕 시작 때 import 한 옛 코드)가 하고
+        #    불러오기는 **새 서브프로세스**(새 코드)가 한다. 코드를 고치는 순간 그 사이가
+        #    갈라져 `AttributeError: no attribute 'two_in'` 이 난다(스윕 도중 실측).
+        #    새 속성은 항상 `getattr(..., 기본값)` 으로 읽는다.
+        if getattr(self, "shared_head", None) is not None:
+            roi_feat = self.shared_head(roi_feat)
+        if getattr(self, "two_in", False):
+            m = getattr(self, "n_half", 0) or roi_feat.shape[0] // 2
+            return self.bbox_head(roi_feat[:m], roi_feat[m:])
         return self.bbox_head(roi_feat)
+
+
+def num_bbox_stages(det):
+    """RoI bbox head 단계 수. 1 이면 평범한 two-stage."""
+    bh = getattr(getattr(det, "roi_head", None), "bbox_head", None)
+    return len(bh) if isinstance(bh, nn.ModuleList) else 1
 
 
 class MaskRCNN_SubC(nn.Module):
@@ -48,24 +110,60 @@ class MaskRCNN_SubC(nn.Module):
 def frcnn_cfg(det, size=800):
     """host 부품(rpn_proposals/roi_align/detect_roi)용 config 추출 → .frcnn.json."""
     rh = det.rpn_head
+    # ⚠️ RPN 이 표준 `AnchorGenerator` 를 안 쓰는 계열이 있다. 호스트 `rpn_proposals` 는
+    #    (strides, scale, ratios) 로 앵커를 깔아 디코드하는 구조라 그대로는 못 쓴다.
+    #    **`AttributeError` 로 흘려보내지 말고** 왜 안 되는지 말한다 — 그래야 "미지원" 과
+    #    "우리 버그" 가 구분된다.
+    if not hasattr(rh, "prior_generator"):
+        raise NotImplementedError(
+            f"{type(rh).__name__}: 표준 앵커 RPN 이 아니다. "
+            "CascadeRPNHead=다단계 정제(stages), GARPNHead=앵커 모양을 예측, "
+            "EmbeddingRPNHead=학습된 proposal — 각각 호스트 proposal 생성이 달라진다")
     pg = rh.prior_generator
     bc = rh.bbox_coder
     ext = det.roi_head.bbox_roi_extractor
+    # 캐스케이드는 extractor 도 ModuleList 다(단계마다 하나). 설정은 전부 같으므로 0번을 쓴다.
+    if isinstance(ext, nn.ModuleList):
+        ext = ext[0]
+    # ⚠️ bbox extractor 가 `GenericRoIExtractor` 면 **레벨을 고르지 않고 전 레벨을 합친다**
+    #    (게다가 groie 는 레벨마다 5x5 conv + GeneralizedAttention 을 건다). 호스트
+    #    RoIAlign 은 그걸 표현 못 한다 — 조용히 레벨 선택으로 떨어뜨리면 값만 틀린다.
+    if type(ext).__name__ == "GenericRoIExtractor":
+        raise NotImplementedError(
+            "GenericRoIExtractor(bbox): 전 레벨 집계 + pre/post 모듈이라 호스트 RoIAlign 으로 "
+            "표현 못 한다. 레벨별 conv 가 그래프에 들어가야 한다")
     bh = det.roi_head.bbox_head
+    # 캐스케이드는 bbox_head 도 ModuleList 다. 클래스 수·coder 종류는 단계 공통이라
+    # **마지막 단계**를 쓴다(최종 박스를 내는 단계라 디코드 규약이 거기 맞춰져 있다).
+    if isinstance(bh, nn.ModuleList):
+        bh = bh[-1]
     rpn_c, rcnn_c = det.test_cfg.rpn, det.test_cfg.rcnn
     strides = [s[0] if isinstance(s, (tuple, list)) else int(s) for s in pg.strides]
     scales = pg.scales.tolist() if hasattr(pg.scales, "tolist") else list(pg.scales)
     mask = {}
     if getattr(det.roi_head, "with_mask", False):
         mext = det.roi_head.mask_roi_extractor
+        if isinstance(mext, nn.ModuleList):
+            mext = mext[0]
         mask = {
             "has_mask": True,
             "mask_roi_out": int(mext.roi_layers[0].output_size[0]),   # 14
             "mask_strides": [int(s) for s in mext.featmap_strides],
-            "mask_finest_scale": int(mext.finest_scale),
+            # ⚠️ `GenericRoIExtractor`(PointRend 의 마스크 경로)에는 `finest_scale` 이 없다.
+            #    전 레벨을 합치므로 레벨 선택 개념 자체가 없다. **bbox 검증에는 안 쓰이는
+            #    값이라** 여기서 죽으면 안 된다 — 없으면 기본값으로 둔다.
+            "mask_finest_scale": int(getattr(mext, "finest_scale", 56)),
             "mask_thr_binary": float(rcnn_c.mask_thr_binary),
         }
+    ns = num_bbox_stages(det)
+    heads = det.roi_head.bbox_head
+    heads = list(heads) if ns > 1 else [heads]
     return {**mask,
+        # 캐스케이드: 단계 수와 **단계별 bbox 정규화 상수**. 단계마다 다르다
+        # (예: [0.1,0.1,0.2,0.2] → [0.05,0.05,0.1,0.1] → [0.033,0.033,0.067,0.067]).
+        "num_bbox_stages": ns,
+        "stage_stds": [list(map(float, h.bbox_coder.stds)) for h in heads],
+        "stage_means": [list(map(float, h.bbox_coder.means)) for h in heads],
         "img_size": int(size),
         # RPN
         "rpn_strides": [float(s) for s in strides],
@@ -75,6 +173,11 @@ def frcnn_cfg(det, size=800):
         "rpn_nms_pre": int(rpn_c.nms_pre), "rpn_nms_thr": float(rpn_c.nms.iou_threshold),
         "rpn_max": int(rpn_c.max_per_img),
         # RoIAlign
+        # ⚠️ **RoI feature 채널을 256 으로 박으면 안 된다.** FPN 계열은 256 이지만
+        #    C4 계열(TridentNet)은 neck 이 없어 백본 C4 채널(1024)이 그대로 온다.
+        # Double-Head: 회귀용 RoI 는 상자를 이만큼 키워 다시 자른다(0 이면 안 씀).
+        "reg_roi_scale_factor": float(getattr(det.roi_head, "reg_roi_scale_factor", 0.0) or 0.0),
+        "roi_channels": int(ext.out_channels),
         "roi_out": int(ext.roi_layers[0].output_size[0]),
         "roi_strides": [int(s) for s in ext.featmap_strides],
         "roi_finest_scale": int(ext.finest_scale),

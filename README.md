@@ -20,6 +20,7 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 | [**MI-GAN**](#mi-gan)                    | Inpainting               | CPU, Vulkan |
 | [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [**YOLOv9t**](#yolov9t)                  | Object detection         | CPU         |
+| [**MMDetection** models](docs/mmdet-detectors.md) | Object detection, segmentation, tracking | CPU |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 **Backbones:** SWIN (v1), DINO (v2), TinyViT
