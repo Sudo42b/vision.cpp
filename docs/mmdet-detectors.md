@@ -155,11 +155,11 @@ included as a header, and links them against `libvisioncpp`:
     `arch_name` defaults to the base name of the `.cpp` found there.
 
 The library is looked up in `build/`, which is where [Building](../README.md#building) puts it.
-If you configured elsewhere, point `VISP_BUILD` at that directory:
+If you configured elsewhere, name that directory:
 
 ```sh
-VISP_BUILD=/path/to/that/directory \
-    bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
+bash tools/build/build_mmdet_cpp.sh --build /path/to/that/directory \
+    output/MMDetBackbone backbone.postproc.h
 ```
 
 The result is `<gen_dir>/run_mmdet`.
@@ -266,6 +266,7 @@ void anchor_head_forward(model_ref m, std::vector<tensor> const& feats,
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `stacked_convs` | `4` | Depth of the shared cls/reg tower. |
+| `reg_stacked_convs` | `0` | Depth of the regression tower when it differs from the classification tower. `0` means they match; YOLOF has 2 and 4. |
 | `feat_channels` | `256` | Channels inside the tower. |
 | `num_base` | `9` | Anchors per location. |
 | `num_classes` | `80` | Classification output channels. |
