@@ -74,11 +74,11 @@ def find_outputs(out_dir, name):
     else:
         cand = cpps
     if len(cand) != 1:
-        sys.exit(f"오류: .cpp 를 하나로 못 좁혔다 ({cand}). --name 으로 지정할 것.")
+        sys.exit(f"error: cannot tell which .cpp to install ({cand}). Name it with --name.")
     cls = os.path.splitext(cand[0])[0]
     h = os.path.join(out_dir, cls + ".h")
     if not os.path.exists(h):
-        sys.exit(f"오류: 헤더가 없다: {h}")
+        sys.exit(f"error: header not found: {h}")
     return cls, os.path.join(out_dir, cand[0]), h
 
 
@@ -91,7 +91,7 @@ def gguf_arch(out_dir, cls):
     src = open(os.path.join(out_dir, cls + ".cpp"), encoding="utf-8").read()
     m = re.search(r'arch\s*!=\s*"([^"]+)"', src)
     if not m:
-        sys.exit("오류: 생성 .cpp 에서 general.architecture 를 못 찾았다")
+        sys.exit("error: the generated .cpp declares no general.architecture")
     return m.group(1)
 
 
@@ -166,7 +166,7 @@ def main():
     def _triple(spec, what):
         v = [x.strip() for x in spec.split(",") if x.strip()]
         if len(v) != 3:
-            sys.exit(f"오류: --{what} 는 값 3개여야 한다: {spec}")
+            sys.exit(f"error: --{what} takes three values, got: {spec}")
         return "{" + ", ".join(f"{float(x)}f" for x in v) + "}"
 
     norm = [f"    t.mean = {_triple(a.mean, 'mean')};",
@@ -204,7 +204,7 @@ def main():
     print(f"  {ARCH_DIR}/{header}")
     print(f"  {reg_path}")
     print()
-    print("다음:")
+    print("next:")
     print(f"  cmake --build {os.path.join(VCPP, 'build')} -j4")
     print(f"  {os.path.join(VCPP, 'build/bin/vision-cli')} {arch} -m <gguf> -i <img> -o out.jpg")
 
