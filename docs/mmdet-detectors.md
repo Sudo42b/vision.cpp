@@ -307,9 +307,12 @@ no label mismatch and no difference in how many boxes survive.
 | `ghm` | `detect_anchor` | 0.46 px | 0.005 |
 | `pisa` | `detect_anchor` | 0.18 px | 0.005 |
 | `pvt` | `detect_anchor` | 1.93 px | 0.003 |
+| `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
+| `nas_fpn` | `detect_anchor` | 0.34 px | 0.004 |
 | `fcos` | `detect_fcos` | 0.13 px | 0.000 |
 | `gfl` | `detect_fcos` | 0.23 px | 0.004 |
 | `vfnet` | `detect_fcos` | 0.46 px | 0.003 |
+| `rtmdet` | `detect_fcos` | 0.66 px | 0.007 |
 | `yolox` | `detect_yolox` | 0.41 px | 0.002 |
 | `detr` | `detect_detr` | 1.85 px | 0.044 |
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
@@ -324,9 +327,12 @@ box likewise on the boundary.
 
 Three groups do not decode, and they fail for different reasons:
 
-- **The head or neck already disagrees with torch**, so there is nothing to judge the decoder
-  against: `tood`, `rtmdet`, `deformable_detr`, `dyhead`, `efficientnet`, `nas_fpn`. Dumping
-  with `MMDET_DUMP_HEAD` shows the neck output matching at 1e-3 while the head output does not.
+- **Something before the decoder already disagrees with torch**, so there is nothing to judge
+  the decoder against: `tood` (the box branch blows up while the class branch matches at
+  2e-3), `deformable_detr`, and `dyhead` (its neck is already at 0.7 relative L1, so the head
+  never had a chance). `MMDET_DUMP_HEAD` writes the neck output beside the head output for
+  exactly this split — a family whose `feat` dumps match and whose `cls`/`box` dumps do not is
+  a head problem, and the reverse is a compiler problem.
 - **The family post-processes its own way**: `paa` and `lad` combine class score and IoU as
   `sqrt(cls * iou)` and then re-average boxes by score voting; `yolact` uses fast NMS and mask
   coefficients. Their boxes already agree — `paa` to 9 px — but far fewer survive the threshold.
