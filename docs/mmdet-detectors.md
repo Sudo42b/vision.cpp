@@ -30,6 +30,7 @@ objects.
 - [Prerequisites](#prerequisites)
 - [Pipeline](#pipeline)
 - [Output](#output)
+- [What decodes to boxes](#what-decodes-to-boxes)
 - [Detection heads](#detection-heads)
 - [Post-processing API](#post-processing-api)
 - [Two-stage detectors](#two-stage-detectors)
@@ -285,6 +286,57 @@ above 0.25 agree in class and score (cat 0.918, couch 0.771, tv 0.681) with box 
 within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxes and
 4.7e-04 on the class logits.
 
+## What decodes to boxes
+
+Assembling a head and decoding its output are separate steps, and a family can pass the first
+and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
+against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
+shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
+nothing like it.
+
+Each row below was measured against MMDetection's own `predict_by_feat` on the same pixels at
+512 (`cat-and-hat.jpg`), with the trained checkpoint the family's `metafile.yml` names.
+The harness is `tools/verify/dense_head/verify_postproc.py`; it passes at 2 px, 0.05 score,
+no label mismatch and no difference in how many boxes survive.
+
+| Family | Decoder | Worst box | Worst score |
+| :--- | :--- | ---: | ---: |
+| `retinanet` | `detect_anchor` | 0.15 px | 0.006 |
+| `atss` | `detect_anchor` | 0.14 px | 0.000 |
+| `ddod` | `detect_anchor` | 0.41 px | 0.001 |
+| `ghm` | `detect_anchor` | 0.46 px | 0.005 |
+| `pisa` | `detect_anchor` | 0.18 px | 0.005 |
+| `pvt` | `detect_anchor` | 1.93 px | 0.003 |
+| `fcos` | `detect_fcos` | 0.13 px | 0.000 |
+| `gfl` | `detect_fcos` | 0.23 px | 0.004 |
+| `vfnet` | `detect_fcos` | 0.46 px | 0.003 |
+| `yolox` | `detect_yolox` | 0.41 px | 0.002 |
+| `detr` | `detect_detr` | 1.85 px | 0.044 |
+| `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
+| `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
+| `dino` | `detect_detr` | 0.41 px | 0.030 |
+| `faster_rcnn` | `detect_roi` (at 800) | 0.10 px | 0.0008 |
+
+`rpn` decodes proposals rather than detections, so a worst case over the whole set says little:
+of 185 proposals the median is 0.09 px and 182 are within 1 px, with one proposal of 186
+falling on the other side of the score cut. `free_anchor` agrees to 0.35 px and 0.025 with one
+box likewise on the boundary.
+
+Three groups do not decode, and they fail for different reasons:
+
+- **The head or neck already disagrees with torch**, so there is nothing to judge the decoder
+  against: `tood`, `rtmdet`, `deformable_detr`, `dyhead`, `efficientnet`, `nas_fpn`. Dumping
+  with `MMDET_DUMP_HEAD` shows the neck output matching at 1e-3 while the head output does not.
+- **The family post-processes its own way**: `paa` and `lad` combine class score and IoU as
+  `sqrt(cls * iou)` and then re-average boxes by score voting; `yolact` uses fast NMS and mask
+  coefficients. Their boxes already agree — `paa` to 9 px — but far fewer survive the threshold.
+- **The priors or the coder are outside `det_params`**: `ssd` uses a different number of anchors
+  per level, `fsaf` a TBLR coder, and `cornernet`, `centripetalnet`, `centernet` and `yolov3`
+  decode from heatmaps or corner pairs.
+
+A family in the first group is not silently wrong: without anchor parameters `detect_anchor`
+generates no candidates and the runner reports zero boxes.
+
 ## Detection heads
 
 Head components take FPN features and produce the raw per-level tensors that the decoders
@@ -379,12 +431,19 @@ struct detection {
 ### Dense heads
 
 <a id="detect_anchor"></a>
-`std::vector<detection> detect_anchor(cls_scores, bbox_preds, feat_hw, det_params const& p)`
+`std::vector<detection> detect_anchor(cls_scores, bbox_preds, feat_hw, det_params const& p, score_factors = nullptr)`
 :   Anchor-based decoding: anchor generation, delta decoding, per-level top-k, score
-    thresholding and NMS. Used by RetinaNet, ATSS, GFL and RPN-style heads.
+    thresholding and NMS. Used by RetinaNet, ATSS, PAA and other delta-coded heads.
+    `score_factors` is the optional centerness/IoU branch. MMDetection thresholds and takes
+    top-k on the class score **alone** and multiplies the factor in afterwards, so passing it
+    here rather than folding it into `cls_scores` is what keeps the surviving set the same.
 
 `std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`
-:   Anchor-free distance decoding with centerness weighting.
+:   Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
+    the class score and have no such branch. `bbox_preds` are already pixel distances: the head
+    component applies the DFL integral, the stride multiply and the exponent, so this function
+    must not apply a stride again. `point_offset` is 0.5 for FCOS and 0 for the heads built on
+    an `AnchorGenerator`.
 
 `std::vector<detection> detect_yolox(cls, box, obj, feat_hw, yolox_params const& p)`
 :   Grid-based decoding with an objectness branch; score is `sigmoid(cls) * sigmoid(obj)`.
@@ -400,9 +459,14 @@ image.
 
 ### Two-stage components
 
+`std::vector<detection> detect_rpn(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`
+:   Region proposals with their objectness scores. NMS runs **per level**, not per class —
+    MMDetection passes level ids to `batched_nms` — and there is no pre-NMS score threshold.
+    The returned `label` is the level the proposal came from.
+
 `std::vector<float> rpn_proposals(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`
-:   Region proposals from RPN outputs: anchor decode, per-level top-k, NMS across levels.
-    Returns `M × 4` boxes in image coordinates, `M ≤ max_per_img`.
+:   The same computation with the scores dropped: `M × 4` boxes in image coordinates,
+    `M ≤ max_per_img`, which is the form the RoIAlign stage takes.
 
 `std::vector<float> roi_align(feats, feat_hw, float const* rois, int m, roi_align_params const& p)`
 :   MMCV-compatible RoIAlign (`aligned = true`, adaptive `sampling_ratio`). Level assignment
@@ -471,10 +535,15 @@ x = (np.asarray(img.resize((800, 800)), dtype=np.float32) - mean) / std
 np.ascontiguousarray(x).tofile("input.bin")          # HWC memory order == CWHN
 ```
 
-`out` is a prefix: the runner writes `out.cls.0.bin` (`rpn_max × num_classes+1` logits),
-`out.box.0.bin`, the proposals, and the per-level RPN tensors — raw `float32`, for comparing
-against the reference. Run on a trained Faster R-CNN R50 at 800, the highest-scoring RoI on
-`cat-and-hat.jpg` is class 15 at 0.89 after softmax.
+`out` is a prefix. `out.boxes.bin` holds the final detections in the same six-`float32`
+layout `run_mmdet` writes (`x1 y1 x2 y2 score label`), and the runner prints the
+highest-scoring rows. Beside it go the raw stages — `out.cls.0.bin` (`rpn_max ×
+num_classes+1` logits), `out.box.0.bin`, the proposals and the per-level RPN tensors — which
+is what comparing against the reference at a single stage needs.
+
+Measured on a trained Faster R-CNN R50 at 800, `cat-and-hat.jpg`, against MMDetection's own
+`predict` on the same pixels: four detections above 0.30 on both sides, box coordinates within
+0.10 px and scores within 0.0008 (top row: class 15 at 0.893).
 
 `run_roi_verify` and `run_rpn_verify` check the two host stages in isolation against dumps
 from the reference implementation.
