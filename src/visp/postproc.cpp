@@ -102,7 +102,8 @@ static inline float sigmoidf(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 std::vector<detection> detect_anchor(
     std::vector<std::vector<float>> const& cls_scores,
     std::vector<std::vector<float>> const& bbox_preds,
-    std::vector<std::pair<int, int>> const& feat_hw, det_params const& p) {
+    std::vector<std::pair<int, int>> const& feat_hw, det_params const& p,
+    std::vector<std::vector<float>> const* score_factors) {
 
     int num_base = (int)(p.octave_scales.size() * p.ratios.size());
     int nc = p.num_classes;
@@ -137,6 +138,15 @@ std::vector<detection> detect_anchor(
                              [](auto const& a, auto const& c) { return std::get<0>(a) > std::get<0>(c); });
             lvl.resize(p.nms_pre);
         }
+        // score factor (ATSS/PAA 의 centerness). **여기서 곱한다 — top-k 뒤다.**
+        //   mmdet 은 `filter_scores_and_topk` 로 cls 점수만 보고 자른 뒤
+        //   `_bbox_post_process` 에서 `scores *= score_factors` 를 한다
+        //   (base_dense_head.py). 앞에서 곱하면 **살아남는 후보가 달라진다** —
+        //   점수는 맞는데 경계선 박스 몇 개가 사라지고, 짝지어 비교하면 안 보인다.
+        float const* sf = (score_factors && l < (int)score_factors->size() &&
+                           !(*score_factors)[l].empty())
+                              ? (*score_factors)[l].data()
+                              : nullptr;
         for (auto const& t : lvl) {
             int aidx = std::get<2>(t), b = aidx % num_base, pos = aidx / num_base;
             float delta[4];
@@ -145,7 +155,9 @@ std::vector<detection> detect_anchor(
             float outb[4];
             delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
                        p.means, p.stds, p.input_w, p.input_h);
-            cand.push_back({outb[0], outb[1], outb[2], outb[3], std::get<0>(t), std::get<1>(t)});
+            float sc = std::get<0>(t);
+            if (sf) sc *= sigmoidf(sf[(size_t)pos * num_base + b]);
+            cand.push_back({outb[0], outb[1], outb[2], outb[3], sc, std::get<1>(t)});
         }
     }
     // multiclass NMS (label별) — mmcv batched_nms 동등

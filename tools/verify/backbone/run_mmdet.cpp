@@ -330,15 +330,23 @@ int main(int argc, char** argv) {
         return 4;
     }
 
-    // 6) raw cls/box → detect_anchor (decode + NMS)
-    std::vector<std::vector<float>> cls_v(L), box_v(L);
+    // 6) raw cls/box(+ctr) → detect_anchor (decode + NMS)
+    std::vector<std::vector<float>> cls_v(L), box_v(L), ctr_v;
     std::vector<std::pair<int, int>> feat_hw(L);
     for (int l = 0; l < L; ++l) {
         feat_hw[l] = { (int)cls_t[l]->ne[2], (int)cls_t[l]->ne[1] };  // (fh, fw)
         cls_v[l] = to_vec(cls_t[l]);
         box_v[l] = to_vec(box_t[l]);
     }
-    std::vector<detection> dets = detect_anchor(cls_v, box_v, feat_hw, dp);
+    // centerness 갈래가 있으면 score factor 로 넘긴다(ATSS·PAA·DDOD…). mmdet 은 이걸
+    // top-k 뒤에 곱한다 — 안 넘기면 **박스는 맞고 점수만** 높게 나온다(실측 Δ0.071).
+    // ⚠️ YOLACT 의 coeff 갈래는 점수가 아니다 — `ctr_tanh` 로 가른다.
+    if ((int)ho.ctr.size() >= L && !hc.ctr_tanh) {
+        ctr_v.resize(L);
+        for (int l = 0; l < L; ++l) ctr_v[l] = to_vec(ho.ctr[l]);
+    }
+    std::vector<detection> dets =
+        detect_anchor(cls_v, box_v, feat_hw, dp, ctr_v.empty() ? nullptr : &ctr_v);
 
     // An image by default, as with every other entry point here. Raw numbers on request.
     std::string out_s(outp);

@@ -430,12 +430,30 @@ def postproc_cfg(det):
             img_std = [float(v) for v in dp.std.flatten().tolist()]
         to_rgb = not bool(getattr(dp, "_channel_conversion", False))
 
+    # ── 디코드 임계값: mmdet 의 test_cfg 가 정본이다 ────────────────────────────
+    # 안 실으면 러너가 라이브러리 기본값(0.05/0.5/1000/100)을 쓴다. 계열마다 다르다 —
+    # 실측: retinanet 은 nms 0.5 인데 **ATSS 는 0.6**, RTMDet 은 score 0.001·nms 0.65·
+    # max 300 이다. 다르면 살아남는 박스 집합이 달라져 mmdet 과의 비교가 성립하지 않는다.
+    tc = getattr(bh, "test_cfg", None) or getattr(det, "test_cfg", None)
+
+    def _tc(key, default):
+        return default if tc is None else tc.get(key, default)
+
+    _nms = _tc("nms", {}) or {}
+    thresholds = {
+        "score_thr": float(_tc("score_thr", 0.05)),
+        "nms_thr": float(_nms.get("iou_threshold", 0.5)),
+        "nms_pre": int(_tc("nms_pre", 1000)),
+        "max_per_img": int(_tc("max_per_img", 100)),
+    }
+
     return {
         "head_type": kind,
         # ── 전처리(pre) — 이미지→텐서 (vision.cpp preprocess) ──
         "img_mean": img_mean,
         "img_std": img_std,
         "to_rgb": to_rgb,
+        **thresholds,
         "use_sigmoid": bool(getattr(bh, "use_sigmoid_cls", True)),
         "num_classes": ncls,
         "strides": [float(s) for s in strides],

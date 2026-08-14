@@ -91,8 +91,16 @@ def emit_params(cfg, config_name):
     out.append(f"    c.head.ddq_iou_thr = {_f(cfg.get('ddq_iou_thr', 0.8))};\n")
     out.append(f"    c.head.center_offset = {_f(cfg.get('center_offset', 0.0))};\n\n")
 
-    # anchor(Delta) 디코드가 되는 계열만 c.det 를 채운다. 조립은 되는데 코더가
-    # 다른 계열(FSAF 의 TBLRBBoxCoder 등)은 head 원시 출력까지만 낸다.
+    # 임계값은 **게이트 앞**이다 — 디코더가 무엇이 되든 mmdet 의 test_cfg 를 써야 한다.
+    # 안 실으면 구조체 기본값(0.05/0.5/1000/100)이 쓰이는데, ATSS 는 nms 0.6,
+    # RTMDet 은 score 0.001·nms 0.65·max 300 이라 살아남는 박스 집합이 달라진다.
+    out.append(f"    c.det.score_thr = {_f(cfg.get('score_thr', 0.05))};\n")
+    out.append(f"    c.det.nms_thr = {_f(cfg.get('nms_thr', 0.5))};\n")
+    out.append(f"    c.det.nms_pre = {int(cfg.get('nms_pre', 1000))};\n")
+    out.append(f"    c.det.max_per_img = {int(cfg.get('max_per_img', 100))};\n")
+
+    # anchor(Delta) 디코드가 되는 계열만 c.det 의 **앵커 파라미터**를 채운다. 조립은
+    # 되는데 코더가 다른 계열(FSAF 의 TBLRBBoxCoder 등)은 head 원시 출력까지만 낸다.
     if h != "anchor" or not cfg.get("can_decode", True):
         out += [
             "    // Decoding for this family is the caller's: the head above emits raw\n",

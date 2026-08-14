@@ -48,11 +48,16 @@ struct det_params {
 // per-level 원시출력: cls_scores[level] = [num_base*num_classes, feat_w, feat_h](CWHN flat),
 // bbox_preds[level] = [num_base*4, feat_w, feat_h]. feat 크기는 shapes 로 전달.
 // 반환: 최종 detection(픽셀좌표, label, score).
+// score_factors: ATSS/PAA 의 centerness 갈래(레벨별 [num_base, feat_w, feat_h] CWHN flat).
+// nullptr 이면 cls 점수만 쓴다. **top-k 뒤에 곱한다** — mmdet 이 그렇다
+// (`base_dense_head._bbox_post_process`). 앞에서 곱하면 살아남는 후보가 달라져,
+// 점수는 맞는데 경계선 박스가 조용히 사라진다.
 std::vector<detection> detect_anchor(
     std::vector<std::vector<float>> const& cls_scores,
     std::vector<std::vector<float>> const& bbox_preds,
     std::vector<std::pair<int, int>> const& feat_hw,  // 레벨별 (feat_h, feat_w)
-    det_params const& p);
+    det_params const& p,
+    std::vector<std::vector<float>> const* score_factors = nullptr);
 
 // ── anchor-free 검출 (FCOS/FCOS계열) ────────────────────────────────────────
 // point 생성 (mmdet MlvlPointGenerator): point = (idx + offset) * stride.
