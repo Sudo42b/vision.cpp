@@ -23,6 +23,35 @@ import mmdet_compat  # noqa: E402
 from frcnn_wrap import FRCNN_SubA, FRCNN_SubB, MaskRCNN_SubC, frcnn_cfg  # noqa: E402,F401 (피클: frcnn_wrap)
 
 
+def _desync_norm(cfg_path):
+    """config 의 `SyncBN`/`MMSyncBN` 을 `BN` 으로 바꾼 Config 를 돌려준다.
+
+    ⚠️ **모델을 만든 뒤에 되돌리면 늦다.** `mmcv.ops.SyncBatchNorm.__init__` 이 생성 시점에
+    `dist.get_world_size()` 를 부르므로, 단일 프로세스에서는 `init_process_group` 을
+    요구하며 **build 중에** 죽는다(`mmengine.revert_sync_batchnorm` 은 이미 만들어진 모듈만
+    바꾼다). simple_copy_paste 가 그렇게 "export 실패" 로 남았다 — 못 하는 것이 아니라
+    **안 재본 것**이었다.
+
+    추론 수치는 BN 과 같다(둘 다 저장된 running stats 를 쓴다). 바꾸는 것은 학습 시 통계를
+    프로세스 간에 합치느냐뿐이다.
+    """
+    from mmengine.config import Config
+    cfg = Config.fromfile(cfg_path) if isinstance(cfg_path, str) else cfg_path
+
+    def walk(o):
+        if isinstance(o, dict):
+            if o.get("type") in ("SyncBN", "MMSyncBN"):
+                o["type"] = "BN"
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v)
+
+    walk(cfg._cfg_dict)
+    return cfg
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="frcnn_to_pt")
     ap.add_argument("--config", required=True, help="Faster R-CNN config .py")
@@ -32,7 +61,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     from mmdet.apis import init_detector
     # `.eval()` 체이닝 금지 — train() 을 오버라이드한 계열에서 None 이 돌아온다.
-    det = init_detector(a.config, a.checkpoint, device="cpu")
+    det = init_detector(_desync_norm(a.config), a.checkpoint, device="cpu")
     det.eval()
     os.makedirs(a.out, exist_ok=True)
 

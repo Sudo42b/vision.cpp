@@ -318,7 +318,61 @@ no label mismatch and no difference in how many boxes survive.
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
 | `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
 | `dino` | `detect_detr` | 0.41 px | 0.030 |
-| `faster_rcnn` | `detect_roi` (at 800) | 0.10 px | 0.0008 |
+
+Two-stage families are measured separately, at 800 and against the detector's own `predict`
+rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
+RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
+and the thresholds are the same. Fifteen of the thirty-four families with a `roi_head` agree:
+
+| Family | Decoder | Worst box | Worst score |
+| :--- | :--- | ---: | ---: |
+| `panoptic_fpn` | `detect_roi` | 0.04 px | 0.0001 |
+| `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
+| `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
+| `mask_rcnn` | `detect_roi` | 0.06 px | 0.0009 |
+| `empirical_attention` | `detect_roi` | 0.09 px | 0.0003 |
+| `faster_rcnn` | `detect_roi` | 0.10 px | 0.0008 |
+| `resnest` | `detect_roi` | 0.12 px | 0.0002 |
+| `albu_example` | `detect_roi` | 0.14 px | 0.0008 |
+| `point_rend` | `detect_roi` | 0.15 px | 0.0012 |
+| `regnet` | `detect_roi` | 0.16 px | 0.0012 |
+| `simple_copy_paste` | `detect_roi` | 0.19 px | 0.0007 |
+| `resnet_strikes_back` | `detect_roi` | 0.24 px | 0.0023 |
+| `fpg` | `detect_roi` (at 1024) | 0.28 px | 0.0036 |
+| `dcn` | `detect_roi` | 0.37 px | 0.0002 |
+| `instaboost` | `detect_roi` | 0.39 px | 0.0079 |
+
+`fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
+below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
+aborts. That is a property of the resolution, not of the family.
+
+The nineteen that do not agree split four ways, and the split matters more than the count:
+
+- **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
+  `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
+  `queryinst`/`sparse_rcnn` learn proposals outright. `groie` is refused for the neighbouring
+  reason — `GenericRoIExtractor` aggregates every level through per-level convolutions, which
+  host RoIAlign cannot express. All five stop at export with a stated reason rather than a
+  wrong number.
+- **Cascade heads decode from the last stage only** — `cascade_rcnn`, `htc`, `detectors`,
+  `scnet`. The runner does walk all three stages and refines boxes between them, but
+  MMDetection averages the classification scores over stages before the final decode, so the
+  scores diverge and the boxes follow. This is a decode-convention gap, not missing plumbing.
+- **The family post-processes its own way**: `crowddet` predicts two instances per proposal and
+  needs set-NMS (without it nothing is suppressed — 500 boxes against 1), `ms_rcnn` rescales
+  scores by a predicted mask IoU (its boxes are exact at 0.07 px; only the scores differ), and
+  `grid_rcnn` turns off box regression on the bbox head entirely and regresses in a grid head,
+  so there is no `bbox_pred` to decode.
+- **Something before the decoder disagrees**, the same category as `dyhead` above: `carafe`,
+  `pafpn`, `libra_rcnn`, `dynamic_rcnn`, `res2net` and `gcnet` return the right *number* of
+  boxes with the right labels but coordinates 6–37 px out. Every one of them replaces or
+  augments the plain FPN. `gn` and `gn+ws` are the sharper version of the same point — they use
+  `Shared4Conv1FCBBoxHead`, but so does `resnest`, which passes at 0.12 px, so the head layout
+  is exonerated and GroupNorm/weight-standardisation is what is left.
+
+`swin` (the SubA gguf fails to load), `tridentnet` (the runner returns no boxes at all) and
+`seesaw_loss` (an LVIS-class config, 3 reference boxes against 300) are not yet sorted into
+those four.
 
 `rpn` decodes proposals rather than detections, so a worst case over the whole set says little:
 of 185 proposals the median is 0.09 px and 182 are within 1 px, with one proposal of 186
