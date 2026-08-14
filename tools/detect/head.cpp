@@ -1304,6 +1304,7 @@ void mmdet_head_forward(model_ref m, std::vector<tensor> const& feats,
     switch (c.kind) {
         case head_kind::anchor:
         case head_kind::yolox:      // 조립은 anchor 와 같다(디코드만 다르다)
+        case head_kind::rpn:        // 〃 (`pre_conv` 로 rpn_conv 가 붙는다)
         case head_kind::fcos:
         case head_kind::gfl:
             tower_head_forward(m, feats, c, out);

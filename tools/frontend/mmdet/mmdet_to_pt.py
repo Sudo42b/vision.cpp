@@ -101,7 +101,8 @@ def emit_params(cfg, config_name):
 
     # anchor(Delta) 디코드가 되는 계열만 c.det 의 **앵커 파라미터**를 채운다. 조립은
     # 되는데 코더가 다른 계열(FSAF 의 TBLRBBoxCoder 등)은 head 원시 출력까지만 낸다.
-    if h != "anchor" or not cfg.get("can_decode", True):
+    # rpn 도 **앵커 파라미터를 그대로 쓴다**(디코드만 레벨별 NMS 로 다르다) — 같이 채운다.
+    if h not in ("anchor", "rpn") or not cfg.get("can_decode", True):
         out += [
             "    // Decoding for this family is the caller's: the head above emits raw\n",
             "    // per-level tensors, and only the anchor(Delta) path fills c.det here.\n",

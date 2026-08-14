@@ -123,23 +123,37 @@ def match(ref, got):
     """
     if len(ref) == 0 or len(got) == 0:
         return None
-    rows = []
-    used = set()
-    for r in ref:
-        # **라벨이 같은 것 중에서** 가장 가까운 것을 고른다. 박스 거리만 보면, 한 물체에
-        # 두 클래스가 겹쳐 나온 경우(DETR 이 흔하다) 두 ref 가 같은 got 에 붙어
-        # "라벨 불일치" 로 잘못 보고된다 — 실제로 DINO 에서 그렇게 오탐이 났다.
+
+    # **라벨이 같은 쌍만** 후보로 둔다. 박스 거리만 보면, 한 물체에 두 클래스가 겹쳐 나온
+    # 경우(DETR 이 흔하다) 두 ref 가 같은 got 에 붙어 "라벨 불일치" 로 잘못 보고된다 —
+    # 실제로 DINO 에서 그렇게 오탐이 났다.
+    #
+    # ⚠️ **ref 순서대로 가까운 것을 집으면 안 된다.** 앞쪽 ref 가 뒤쪽 ref 의 짝을 먼저
+    #    가져가면 그 뒤가 통째로 밀려, 사실은 0.1px 로 맞는 집합이 수백 px 로 보고된다
+    #    (RPN 제안 1000개처럼 라벨이 하나뿐이고 개수가 한 개 어긋날 때 그랬다).
+    #    전역으로 **가까운 쌍부터** 1:1 로 확정한다.
+    pairs = []
+    for i, r in enumerate(ref):
         same = np.flatnonzero(got[:, 5] == r[5])
         pool = same if len(same) else np.arange(len(got))
         d = np.abs(got[pool][:, :4] - r[:4]).max(1)
-        order = np.argsort(d)
-        j = int(pool[order[0]])
-        for o in order:                      # 이미 쓴 것은 뒤로 미룬다(1:1 에 가깝게)
-            if int(pool[o]) not in used:
-                j = int(pool[o])
-                break
-        used.add(j)
-        rows.append((r, got[j], float(np.abs(got[j][:4] - r[:4]).max())))
+        for j, dist in zip(pool, d):
+            pairs.append((float(dist), i, int(j)))
+    pairs.sort()
+
+    take_r, take_g = {}, set()
+    for dist, i, j in pairs:
+        if i in take_r or j in take_g:
+            continue
+        take_r[i] = (j, dist)
+        take_g.add(j)
+
+    rows = []
+    for i, r in enumerate(ref):
+        if i not in take_r:              # 짝이 없는 ref(개수차) — 호출부가 개수로 잡는다
+            continue
+        j, dist = take_r[i]
+        rows.append((r, got[j], dist))
     return rows
 
 
@@ -181,6 +195,13 @@ def main():
     n_gap = abs(len(ref) - len(got))
     print(f"\n최대: 박스 {worst_b:.2f}px · 점수 {worst_s:.3f} · 라벨 불일치 {bad_label}건"
           f" · 개수차 {n_gap}건")
+    # 박스가 수백 개인 계열(RPN 제안 186개)은 **최대값만 보면 오해한다** — 임계값 언저리에
+    # 몰린 후보 한둘이 집합에서 밀리면 그 자리만 크게 벌어지고, 나머지는 0.1px 로 맞는다.
+    # 분포를 같이 낸다: 어디가 어긋났는지가 아니라 **몇 개가** 어긋났는지가 보인다.
+    if len(rows) >= 20:
+        db = np.array([d for _, _, d in rows])
+        print(f"  분포: 중앙값 {np.median(db):.2f}px · 95%tile {np.percentile(db, 95):.2f}px"
+              f" · 1px 이내 {int((db < 1.0).sum())}/{len(db)}건")
     if n_gap:
         print("  ⚠️ 개수가 다르다 — 임계값(score_thr/nms_thr/max_per_img)이 mmdet 과 어긋났을 때"
               " 나는 증상이다. 짝지은 것만 보면 조용히 통과한다.")

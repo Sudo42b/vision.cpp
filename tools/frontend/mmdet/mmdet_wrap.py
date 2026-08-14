@@ -220,6 +220,7 @@ def postproc_cfg(det):
     HEADS = {
         "VFNetHead": "vfnet", "RepPointsHead": "reppoints", "TOODHead": "tood",
         "GFLHead": "gfl", "FCOSHead": "fcos",
+        "RPNHead": "rpn",
         "ATSSHead": "anchor", "PAAHead": "anchor", "RetinaHead": "anchor",
         "AnchorHead": "anchor", "AnchorFreeHead": "fcos",
         "CenterNetHead": "centernet", "YOLOFHead": "yolof",

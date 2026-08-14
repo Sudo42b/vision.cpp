@@ -177,7 +177,13 @@ struct rpn_params {
     int input_w = 0, input_h = 0;
 };
 // rpn_cls[l] = [num_base*1, W, H] objectness(CWHN flat), rpn_bbox[l] = [num_base*4, W, H].
-// 반환 proposals [M*4] (x1,y1,x2,y2), M ≤ max_per_img.
+// 점수까지 필요한 쪽(단독 RPN 계열 검증)이 쓴다. `label` 은 클래스가 아니라 **레벨 번호**다
+// — mmdet 이 `batched_nms(level_ids)` 로 레벨별 NMS 를 하기 때문이고, 그게 이 계열의 정본이다.
+std::vector<detection> detect_rpn(
+    std::vector<std::vector<float>> const& rpn_cls,
+    std::vector<std::vector<float>> const& rpn_bbox,
+    std::vector<std::pair<int, int>> const& feat_hw, rpn_params const& p);
+// 같은 계산에서 박스만 평평하게 뽑는다(two-stage 의 proposal 입력). M ≤ max_per_img.
 std::vector<float> rpn_proposals(
     std::vector<std::vector<float>> const& rpn_cls,
     std::vector<std::vector<float>> const& rpn_bbox,

@@ -309,6 +309,10 @@ int main(int argc, char** argv) {
                 fclose(f);
             }
         };
+        // ⚠️ **head 입력(neck 출력)도 같이 낸다.** head 출력만 보면 "조립이 틀렸다" 와
+        //    "백본·neck 이 이미 틀렸다" 를 못 가른다 — head 를 고쳐도 안 낫는 쪽인지
+        //    여기서 바로 갈린다(efficientnet·nas_fpn 이 실제로 neck 쪽이었다).
+        for (size_t l = 0; l < feats.size(); ++l) dump("feat", l, feats[l]);
         for (size_t l = 0; l < cls_t.size(); ++l) dump("cls", l, cls_t[l]);
         for (size_t l = 0; l < box_t.size(); ++l) dump("box", l, box_t[l]);
         for (size_t l = 0; l < ho.ctr.size(); ++l) dump("ctr", l, ho.ctr[l]);
@@ -431,6 +435,23 @@ int main(int argc, char** argv) {
         std::sort(dets.begin(), dets.end(),
                   [](detection const& a, detection const& b) { return a.score > b.score; });
         if ((int)dets.size() > dp.max_per_img) dets.resize(dp.max_per_img);
+    } else if (hc.kind == head_kind::rpn) {
+        // 제안 생성. mmdet 은 클래스별이 아니라 **레벨별**로 NMS 를 걸고(level_ids),
+        // pre-NMS 점수 임계값이 없다 — `detect_anchor` 로 두면 둘 다 어긋난다.
+        rpn_params rp;
+        rp.strides = dp.strides;
+        rp.octave_base_scale = dp.octave_base_scale;
+        rp.octave_scales = dp.octave_scales;
+        rp.ratios = dp.ratios;
+        for (int k = 0; k < 4; ++k) { rp.means[k] = dp.means[k]; rp.stds[k] = dp.stds[k]; }
+        rp.nms_pre = dp.nms_pre;
+        rp.nms_thr = dp.nms_thr;
+        rp.max_per_img = dp.max_per_img;
+        rp.input_w = dp.input_w;
+        rp.input_h = dp.input_h;
+        dets = detect_rpn(cls_v, box_v, feat_hw, rp);
+        // `label` 은 레벨 번호로 돌아온다. 밖에서는 클래스 자리라 0(유일한 클래스)으로 둔다.
+        for (auto& d : dets) d.label = 0;
     } else if (hc.kind == head_kind::yolox) {
         // 격자 단위 (dx,dy,log w,log h) + 별도 objectness. 코더가 없어 `c.det` 의 앵커
         // 파라미터가 안 실리고, 그대로 두면 detect_anchor 가 후보 0개를 낸다.

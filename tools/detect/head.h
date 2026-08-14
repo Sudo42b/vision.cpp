@@ -19,6 +19,10 @@ enum class head_kind {
     // 없고 격자 단위 (dx,dy,log w,log h) 를 내며 점수는 cls×obj 다. 조립만 보고 anchor 로
     // 두면 Delta 디코더로 떨어져 박스가 통째로 틀린다.
     yolox,
+    // 역시 조립은 anchor 와 같다(다만 `rpn_conv` 하나가 앞에 붙는다). 디코드가 다르다 —
+    // 클래스가 없고 objectness 하나이며, NMS 를 **레벨별로** 건다(batched_nms(level_ids)).
+    // 클래스별 NMS 로 두면 레벨끼리 겹친 제안이 서로를 지워 제안 수가 조용히 줄어든다.
+    rpn,
     fcos,       // + bbox 에 scale·clamp·stride (anchor-free 거리 디코드)
     gfl,        // + DFL(분포 → 거리 기댓값). cls 가 품질까지 겸한다
     vfnet,      // star deformable refine (전용 함수)

@@ -433,7 +433,7 @@ std::vector<detection> detect_roi(float const* scores, float const* bbox_deltas,
 }
 
 // ── RPN proposal 생성 (mmdet RPNHead.predict_by_feat) ────────────────────────
-std::vector<float> rpn_proposals(
+std::vector<detection> detect_rpn(
     std::vector<std::vector<float>> const& rpn_cls,
     std::vector<std::vector<float>> const& rpn_bbox,
     std::vector<std::pair<int, int>> const& feat_hw, rpn_params const& p) {
@@ -481,6 +481,14 @@ std::vector<float> rpn_proposals(
     }
     std::sort(kept.begin(), kept.end(), [](detection const& a, detection const& b) { return a.score > b.score; });
     if (p.max_per_img > 0 && (int)kept.size() > p.max_per_img) kept.resize(p.max_per_img);
+    return kept;
+}
+
+std::vector<float> rpn_proposals(
+    std::vector<std::vector<float>> const& rpn_cls,
+    std::vector<std::vector<float>> const& rpn_bbox,
+    std::vector<std::pair<int, int>> const& feat_hw, rpn_params const& p) {
+    std::vector<detection> kept = detect_rpn(rpn_cls, rpn_bbox, feat_hw, p);
     std::vector<float> out;
     out.reserve(kept.size() * 4);
     for (auto const& d : kept) { out.push_back(d.x1); out.push_back(d.y1); out.push_back(d.x2); out.push_back(d.y2); }
