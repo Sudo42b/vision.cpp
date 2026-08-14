@@ -32,7 +32,7 @@ control flow that depends on the data — suppression counts that are not known 
 deformable offsets derived from an earlier prediction, proposal counts that vary per image — and
 tracing records only the path one input happened to take.
 
-`detect/head.cpp` assembles eight MMDetection families with four functions. RetinaNet, ATSS,
+`detect/head.cpp` assembles the dense-head families with thirteen functions. RetinaNet, ATSS,
 PAA, FCOS and GFL share one skeleton — two convolution towers and a few output convolutions —
 so they differ only through flags on `anchor_head_cfg`: a third `centerness` branch, per-level
 learnable scales, the FCOS bbox transform, and GFL's distribution decode. VFNet, RepPoints and
@@ -50,7 +50,8 @@ perfect cosine.
 
 Of the 100 MMDetection families, 41 carry a dense head; the rest are two-stage detectors,
 trackers, or panoptic and instance models whose output goes through `roi/` and `seg/` instead.
-Twenty-two of the 41 are covered. Ten of those needed no new code at all: they subclass a head
+Thirty-eight of the 41 measure within tolerance; the other three are text-and-image models
+with no published checkpoint to measure against. Ten needed no new code at all: they subclass a head
 that was already handled and change only the loss, the backbone or the neck — GHM and PVT are
 `RetinaHead`, DyHead is `ATSSHead`, NAS-FCOS is `FCOSHead`, LD subclasses `GFLHead`, LAD
 subclasses `PAAHead`, BoxInst and CondInst reach `FCOSHead`. The assembler picks its path by
