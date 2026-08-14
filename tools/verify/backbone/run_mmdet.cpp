@@ -323,17 +323,26 @@ int main(int argc, char** argv) {
     // 이 러너의 몫이고, 그 뒤를 억지로 detect_anchor 에 넣으면 의미 없는 박스가 나온다.
     if (hc.kind == head_kind::cornernet) return 0;
 
+    // DETR 계열은 출력 인덱스가 **decoder 층**이라 레벨 수와 무관하다 — 아래 레벨 검사와
+    // 레벨별 수집을 건너뛴다(head.h:172-175).
+    const bool is_detr = hc.kind == head_kind::detr ||
+                         hc.kind == head_kind::conditional_detr ||
+                         hc.kind == head_kind::dab_detr ||
+                         hc.kind == head_kind::deformable_detr ||
+                         hc.kind == head_kind::dino;
+
     // 조립기가 레벨 수를 못 채우면 아래 인덱싱이 널을 읽는다. 여기서 말한다.
-    if ((int)cls_t.size() < L || (int)box_t.size() < L) {
+    if (!is_detr && ((int)cls_t.size() < L || (int)box_t.size() < L)) {
         fprintf(stderr, "head 출력이 %d 레벨에 못 미친다 (cls %zu, box %zu)\n",
                 L, cls_t.size(), box_t.size());
         return 4;
     }
 
-    // 6) raw cls/box(+ctr) → detect_anchor (decode + NMS)
-    std::vector<std::vector<float>> cls_v(L), box_v(L), ctr_v;
-    std::vector<std::pair<int, int>> feat_hw(L);
-    for (int l = 0; l < L; ++l) {
+    // 6) raw cls/box(+ctr) → 계열별 디코드
+    const int NL = is_detr ? 0 : L;
+    std::vector<std::vector<float>> cls_v(NL), box_v(NL), ctr_v;
+    std::vector<std::pair<int, int>> feat_hw(NL);
+    for (int l = 0; l < NL; ++l) {
         feat_hw[l] = { (int)cls_t[l]->ne[2], (int)cls_t[l]->ne[1] };  // (fh, fw)
         cls_v[l] = to_vec(cls_t[l]);
         box_v[l] = to_vec(box_t[l]);
@@ -357,7 +366,32 @@ int main(int argc, char** argv) {
                               hc.kind == head_kind::vfnet || hc.bbox_mul_stride;
 
     std::vector<detection> dets;
-    if (hc.kind == head_kind::tood) {
+    if (is_detr) {
+        // ⚠️ DETR 계열은 out.cls/out.box 의 인덱스가 **FPN 레벨이 아니라 decoder 층**이다
+        //    (head.h:172-175). mmdet 도 `all_layers_*[-1]` 만 쓴다 — 앞 층을 쓰면 shape 가
+        //    맞아 안 죽고 **더 거친 박스**가 나온다. 그림만 보면 알 수 없다.
+        if (ho.cls.empty() || ho.box.empty()) {
+            fprintf(stderr, "DETR head 출력이 비었다\n");
+            return 4;
+        }
+        std::vector<float> cls_last = to_vec(ho.cls.back());
+        std::vector<float> box_last = to_vec(ho.box.back());
+        detr_params qp;
+        qp.num_queries = hc.num_queries;
+        qp.num_classes = dp.num_classes;      // 배경을 뺀 수 (프론트엔드가 그렇게 싣는다)
+        qp.use_sigmoid = dp.use_sigmoid;      // 고전 DETR=softmax, Deformable/DINO=sigmoid
+        qp.max_per_img = dp.max_per_img;
+        qp.input_w = dp.input_w;
+        qp.input_h = dp.input_h;
+        // query 수는 실제 텐서에서 다시 확인한다 — 설정과 어긋나면 조용히 잘못 읽는다.
+        const int q_actual = (int)ho.box.back()->ne[1];
+        if (q_actual > 0 && q_actual != qp.num_queries) {
+            fprintf(stderr, "query 수가 설정(%d)과 텐서(%d)에서 다르다 — 텐서를 따른다\n",
+                    qp.num_queries, q_actual);
+            qp.num_queries = q_actual;
+        }
+        dets = detect_detr(cls_last.data(), box_last.data(), qp);
+    } else if (hc.kind == head_kind::tood) {
         // TOOD 는 조립기가 이미 `distance2bbox` 까지 그래프로 펴서 **격자 좌표계 xyxy** 를
         // 낸다(head.cpp:1260) — stride 만 곱하면 픽셀이다.
         // ⚠️ cls 는 `sqrt(σ(logits)·σ(align))` 라 **이미 확률**이다(head.cpp:1218).

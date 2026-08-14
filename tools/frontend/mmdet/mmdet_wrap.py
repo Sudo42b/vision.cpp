@@ -260,7 +260,18 @@ def postproc_cfg(det):
     can_decode = bc is not None and "Delta" in type(bc).__name__
     # (레벨별 anchor 수가 다르면 뒤에서 취소한다 — num_base 하나로는 못 푼다)
 
+    # cls 출력 채널 수. **의미상 클래스 수와 다를 수 있다** — softmax head 는 배경을 한 칸
+    # 더 쓰므로 `cls_out_channels == num_classes + 1` 이다(detr_head.py:114-118).
+    # 디코드는 둘을 다 알아야 한다: 채널 폭은 인덱싱에, 클래스 수는 배경 제외에 쓴다.
     ncls = int(getattr(bh, "cls_out_channels", getattr(bh, "num_classes", 80)))
+    ncls_semantic = int(getattr(bh, "num_classes", ncls))
+
+    # 활성: 대부분 `use_sigmoid_cls` 를 갖지만 **DETR 계열은 없다** — 그쪽은
+    # `loss_cls.use_sigmoid` 가 정본이다(고전 DETR=softmax, Deformable/DINO=sigmoid).
+    # 기본값 True 로 두면 고전 DETR 이 조용히 sigmoid 로 디코드된다.
+    _use_sig = getattr(bh, "use_sigmoid_cls", None)
+    if _use_sig is None:
+        _use_sig = getattr(getattr(bh, "loss_cls", None), "use_sigmoid", True)
     # stride 는 prior_generator 가 없으면 `build()` 가 실제 feature 크기에서 채운다.
     strides = ([s[0] if isinstance(s, (tuple, list)) else int(s) for s in pg.strides]
                if pg is not None else [])
@@ -469,7 +480,9 @@ def postproc_cfg(det):
         "img_std": img_std,
         "to_rgb": to_rgb,
         **thresholds,
-        "use_sigmoid": bool(getattr(bh, "use_sigmoid_cls", True)),
+        "use_sigmoid": bool(_use_sig),
+        # 배경 제외 클래스 수. softmax head 에서 `num_classes`(=채널폭)와 갈린다.
+        "num_classes_semantic": ncls_semantic,
         "num_classes": ncls,
         "strides": [float(s) for s in strides],
         "octave_base_scale": obs,

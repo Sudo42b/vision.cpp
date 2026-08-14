@@ -347,6 +347,16 @@ std::vector<detection> detect_detr(float const* cls, float const* bbox, detr_par
         int k = std::min(p.max_per_img, (int)q_best.size());
         out.assign(q_best.begin(), q_best.begin() + k);
     }
+    // mmdet 도 이미지 밖을 잘라낸다(`detr_head._predict_by_feat_single`). 안 자르면
+    // 가장자리 물체의 박스가 화면 밖으로 나가 비교가 어긋난다.
+    if (p.input_w > 0 && p.input_h > 0) {
+        for (detection& d : out) {
+            d.x1 = std::min(std::max(d.x1, 0.0f), (float)p.input_w);
+            d.x2 = std::min(std::max(d.x2, 0.0f), (float)p.input_w);
+            d.y1 = std::min(std::max(d.y1, 0.0f), (float)p.input_h);
+            d.y2 = std::min(std::max(d.y2, 0.0f), (float)p.input_h);
+        }
+    }
     return out;
 }
 

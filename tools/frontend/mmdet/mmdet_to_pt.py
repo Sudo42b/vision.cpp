@@ -107,7 +107,12 @@ def emit_params(cfg, config_name):
             "    // per-level tensors, and only the anchor(Delta) path fills c.det here.\n",
         ]
         out.append("    c.det.strides = {" + ", ".join(_f(v) for v in cfg["strides"]) + "};\n")
-        out.append(f"    c.det.num_classes = {int(cfg.get('num_classes', 80))};\n")
+        # ⚠️ `c.det.num_classes` 는 **배경을 뺀** 클래스 수다. softmax head(고전 DETR)는
+        #    채널이 하나 더 많으므로(`cls_out_channels = num_classes + 1`), 채널 폭은
+        #    `c.head.num_classes` 를 쓰고 여기엔 의미상 값을 싣는다. 뒤바꾸면 배경을
+        #    클래스로 세거나 마지막 클래스를 잃는다.
+        out.append("    c.det.num_classes = "
+                   f"{int(cfg.get('num_classes_semantic', cfg.get('num_classes', 80)))};\n")
         out.append(f"    c.det.use_sigmoid = {str(bool(cfg.get('use_sigmoid', True))).lower()};\n")
         for i, v in enumerate(cfg.get("img_mean", [0.0] * 3)):
             out.append(f"    c.img_mean[{i}] = {_f(v)};\n")

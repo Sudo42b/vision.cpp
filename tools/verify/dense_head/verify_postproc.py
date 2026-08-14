@@ -87,11 +87,22 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     x = (np.ascontiguousarray(x) - mean) / std
     t = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0)
 
+    meta = {"img_shape": (size, size), "ori_shape": (size, size),
+            "scale_factor": (1.0, 1.0), "batch_input_shape": (size, size)}
+
     with torch.no_grad():
-        outs = det.bbox_head(det.extract_feat(t))
-        meta = [{"img_shape": (size, size), "ori_shape": (size, size),
-                 "scale_factor": (1.0, 1.0), "batch_input_shape": (size, size)}]
-        res = det.bbox_head.predict_by_feat(*outs, batch_img_metas=meta, rescale=False)[0]
+        try:
+            outs = det.bbox_head(det.extract_feat(t))
+            res = det.bbox_head.predict_by_feat(*outs, batch_img_metas=[meta],
+                                                rescale=False)[0]
+        except TypeError:
+            # DETR 계열은 transformer 가 **head 가 아니라 detector** 에 달려 있어
+            # `bbox_head(feats)` 로는 못 부른다(mmdet_wrap.py:151-157). 그런 계열은
+            # detector 의 predict 를 그대로 탄다 — 그게 이 계열의 디코드 정본이다.
+            from mmdet.structures import DetDataSample
+            ds = DetDataSample()
+            ds.set_metainfo(meta)
+            res = det.predict(t, [ds], rescale=False)[0].pred_instances
 
     keep = res.scores.numpy() >= thr
     return np.concatenate([res.bboxes.numpy()[keep],
@@ -111,10 +122,22 @@ def match(ref, got):
     if len(ref) == 0 or len(got) == 0:
         return None
     rows = []
+    used = set()
     for r in ref:
-        d = np.abs(got[:, :4] - r[:4]).max(1)
-        j = int(d.argmin())
-        rows.append((r, got[j], d[j]))
+        # **라벨이 같은 것 중에서** 가장 가까운 것을 고른다. 박스 거리만 보면, 한 물체에
+        # 두 클래스가 겹쳐 나온 경우(DETR 이 흔하다) 두 ref 가 같은 got 에 붙어
+        # "라벨 불일치" 로 잘못 보고된다 — 실제로 DINO 에서 그렇게 오탐이 났다.
+        same = np.flatnonzero(got[:, 5] == r[5])
+        pool = same if len(same) else np.arange(len(got))
+        d = np.abs(got[pool][:, :4] - r[:4]).max(1)
+        order = np.argsort(d)
+        j = int(pool[order[0]])
+        for o in order:                      # 이미 쓴 것은 뒤로 미룬다(1:1 에 가깝게)
+            if int(pool[o]) not in used:
+                j = int(pool[o])
+                break
+        used.add(j)
+        rows.append((r, got[j], float(np.abs(got[j][:4] - r[:4]).max())))
     return rows
 
 
