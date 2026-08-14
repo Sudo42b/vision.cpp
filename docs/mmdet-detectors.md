@@ -451,14 +451,30 @@ Export both sub-graphs with `frcnn_to_pt.py`, compile each, then build and run:
 ```sh
 python tools/frontend/mmdet/frcnn_to_pt.py \
     --config faster-rcnn_r50_fpn_1x_coco.py --checkpoint frcnn.pth --out /tmp/frcnn
-# compile /tmp/frcnn/FRCNN_SubA.pt at 1,3,800,800 and /tmp/frcnn/FRCNN_SubB.pt at 4,256,7,7
+# compile /tmp/frcnn/FRCNN_SubA.pt at 1,3,800,800 and /tmp/frcnn/FRCNN_SubB.pt at
+# rpn_max,roi_channels,roi_out,roi_out — 1000,256,7,7 for this config; the
+# values are in frcnn.json. The runner feeds every proposal as one batch,
+# so a smaller batch dimension aborts at the first reshape.
 
 bash tools/build/build_frcnn_cpp.sh output/FRCNN_SubA output/FRCNN_SubB
 
 output/FRCNN_SubA/run_frcnn \
     output/FRCNN_SubA/FRCNN_SubA.gguf output/FRCNN_SubB/FRCNN_SubB.gguf \
-    /tmp/frcnn/frcnn.json input.bin 800
+    /tmp/frcnn/frcnn.json input.bin out 800
 ```
+
+`input.bin` is the image at the traced resolution, normalised with `frcnn.json`'s
+`img_mean`/`img_std`, written as raw CWHN `float32`:
+
+```python
+x = (np.asarray(img.resize((800, 800)), dtype=np.float32) - mean) / std
+np.ascontiguousarray(x).tofile("input.bin")          # HWC memory order == CWHN
+```
+
+`out` is a prefix: the runner writes `out.cls.0.bin` (`rpn_max × num_classes+1` logits),
+`out.box.0.bin`, the proposals, and the per-level RPN tensors — raw `float32`, for comparing
+against the reference. Run on a trained Faster R-CNN R50 at 800, the highest-scoring RoI on
+`cat-and-hat.jpg` is class 15 at 0.89 after softmax.
 
 `run_roi_verify` and `run_rpn_verify` check the two host stages in isolation against dumps
 from the reference implementation.
