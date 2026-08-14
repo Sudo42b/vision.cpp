@@ -223,7 +223,7 @@ def postproc_cfg(det):
         "ATSSHead": "anchor", "PAAHead": "anchor", "RetinaHead": "anchor",
         "AnchorHead": "anchor", "AnchorFreeHead": "fcos",
         "CenterNetHead": "centernet", "YOLOFHead": "yolof",
-        "YOLOXHead": "anchor", "YOLOV3Head": "yolo",
+        "YOLOXHead": "yolox", "YOLOV3Head": "yolo",
         "CornerHead": "cornernet", "CentripetalHead": "cornernet",
         "DeformableDETRHead": "deformable_detr", "DABDETRHead": "dab_detr", "ConditionalDETRHead": "conditional_detr",
         "DETRHead": "detr",

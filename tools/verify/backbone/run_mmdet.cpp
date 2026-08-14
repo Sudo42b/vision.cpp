@@ -431,6 +431,26 @@ int main(int argc, char** argv) {
         std::sort(dets.begin(), dets.end(),
                   [](detection const& a, detection const& b) { return a.score > b.score; });
         if ((int)dets.size() > dp.max_per_img) dets.resize(dp.max_per_img);
+    } else if (hc.kind == head_kind::yolox) {
+        // 격자 단위 (dx,dy,log w,log h) + 별도 objectness. 코더가 없어 `c.det` 의 앵커
+        // 파라미터가 안 실리고, 그대로 두면 detect_anchor 가 후보 0개를 낸다.
+        // ⚠️ obj 는 `out.ctr` 로 온다(프론트엔드가 conv_obj 를 centerness_head 로 싣는다).
+        //    비면 점수가 cls 만 남아 **박스는 맞고 점수만** 높게 나온다.
+        yolox_params yp;
+        yp.strides = dp.strides;
+        yp.prior_offset = hc.center_offset;   // YOLOX 의 MlvlPointGenerator 는 offset=0
+        yp.num_classes = dp.num_classes;
+        yp.score_thr = dp.score_thr;
+        yp.nms_thr = dp.nms_thr;
+        yp.max_per_img = dp.max_per_img;
+        yp.input_w = dp.input_w;
+        yp.input_h = dp.input_h;
+        if ((int)ctr_v.size() < L) {
+            fprintf(stderr, "YOLOX 인데 objectness 갈래가 %zu 레벨뿐이다 (필요 %d)\n",
+                    ctr_v.size(), L);
+            return 4;
+        }
+        dets = detect_yolox(cls_v, box_v, ctr_v, feat_hw, yp);
     } else if (distance_box) {
         fcos_params fp;
         fp.strides = dp.strides;

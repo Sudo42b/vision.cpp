@@ -78,8 +78,10 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     det = init_detector(cfg, ckpt, device="cpu")
     det.eval()
     dp = det.data_preprocessor
-    mean = dp.mean.view(3).numpy()
-    std = dp.std.view(3).numpy()
+    # ⚠️ **정규화를 안 하는 계열이 있다** — YOLOX 는 `mean`/`std` 자체를 안 갖는다.
+    #    그때 파라미터 헤더도 mean 0 / std 1 을 싣는다(둘이 같아야 같은 픽셀이 된다).
+    mean = dp.mean.view(3).numpy() if hasattr(dp, "mean") else np.zeros(3, np.float32)
+    std = dp.std.view(3).numpy() if hasattr(dp, "std") else np.ones(3, np.float32)
 
     im = np.asarray(Image.open(image).convert("RGB").resize((size, size), Image.BILINEAR),
                     dtype=np.float32)

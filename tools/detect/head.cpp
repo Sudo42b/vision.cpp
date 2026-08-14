@@ -1303,6 +1303,7 @@ void mmdet_head_forward(model_ref m, std::vector<tensor> const& feats,
                         anchor_head_cfg const& c, tensor dcn_base, head_outputs& out) {
     switch (c.kind) {
         case head_kind::anchor:
+        case head_kind::yolox:      // 조립은 anchor 와 같다(디코드만 다르다)
         case head_kind::fcos:
         case head_kind::gfl:
             tower_head_forward(m, feats, c, out);

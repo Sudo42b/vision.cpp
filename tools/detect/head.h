@@ -15,6 +15,10 @@ namespace visp {
 // 어느 조립기를 쓸지. 계열이 늘어도 러너는 안 바뀐다 — mmdet_head_forward 가 갈라준다.
 enum class head_kind {
     anchor,     // RetinaNet · ATSS · PAA — cls/reg(+centerness) 타워, Delta 디코드
+    // 타워 조립은 anchor 와 같다(레벨별 타워 + obj 갈래). **디코드가 다르다** — 코더가
+    // 없고 격자 단위 (dx,dy,log w,log h) 를 내며 점수는 cls×obj 다. 조립만 보고 anchor 로
+    // 두면 Delta 디코더로 떨어져 박스가 통째로 틀린다.
+    yolox,
     fcos,       // + bbox 에 scale·clamp·stride (anchor-free 거리 디코드)
     gfl,        // + DFL(분포 → 거리 기댓값). cls 가 품질까지 겸한다
     vfnet,      // star deformable refine (전용 함수)
