@@ -313,6 +313,41 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ── 최종 디코드: 마지막 단계의 cls/box → 박스 ───────────────────────────
+    // `detect_roi` 는 **softmax 를 마친** 점수를 기대한다(postproc.h). SubB 가 내는 것은
+    // 로짓이므로(실측: 한 행의 합이 -0.41) 여기서 건다. 안 걸면 크래시 없이 점수만 틀린다.
+    std::vector<detection> dets;
+    if (!cls_st.empty() && !box_st.empty()) {
+        const int last = (int)cls_st.size() - 1;
+        const int NCLS = (int)(cls_st[last].size() / M) - 1;   // 배경 제외
+        std::vector<float> prob(cls_st[last].size());
+        for (int i = 0; i < M; ++i) {
+            float const* row = cls_st[last].data() + (size_t)i * (NCLS + 1);
+            float* dst = prob.data() + (size_t)i * (NCLS + 1);
+            float mx = row[0];
+            for (int c = 1; c <= NCLS; ++c) mx = std::max(mx, row[c]);
+            float sum = 0.0f;
+            for (int c = 0; c <= NCLS; ++c) { dst[c] = std::exp(row[c] - mx); sum += dst[c]; }
+            for (int c = 0; c <= NCLS; ++c) dst[c] /= sum;
+        }
+        roi_params rp2;
+        const std::vector<float> rm = J.arr("rcnn_means"), rs = J.arr("rcnn_stds");
+        for (int k = 0; k < 4; ++k) {
+            if (rm.size() >= 4) rp2.means[k] = rm[k];
+            if (rs.size() >= 4) rp2.stds[k] = rs[k];
+        }
+        rp2.num_classes = NCLS;
+        rp2.class_agnostic = J.num("class_agnostic", 0.0f) != 0.0f;
+        rp2.score_thr = J.num("rcnn_score_thr", 0.05f);
+        rp2.nms_thr = J.num("rcnn_nms_thr", 0.5f);
+        rp2.max_per_img = (int)J.num("rcnn_max", 100.0f);
+        rp2.input_w = SZ;
+        rp2.input_h = SZ;
+        // 마지막 단계의 박스는 그 단계에 **들어간** RoI 기준이다. 캐스케이드에서 `rois` 는
+        // 이미 다음 단계용으로 갱신되지 않으므로(마지막 단계는 정제를 건너뛴다) 그대로 쓴다.
+        dets = detect_roi(prob.data(), box_st[last].data(), rois.data(), M, rp2);
+    }
+
     // ── 덤프 (torch 대조용) ─────────────────────────────────────────────────
     dump_bin(pref + ".props.bin", props);
     dump_bin(pref + ".roi.bin", roi);
@@ -328,6 +363,23 @@ int main(int argc, char** argv) {
         dump_bin(pref + ".rpncls." + std::to_string(l) + ".bin", rpn_cls[l]);
         dump_bin(pref + ".rpnbox." + std::to_string(l) + ".bin", rpn_box[l]);
     }
+    // 최종 박스도 낸다 — 여기까지 와서 개수만 알려주면 결과를 수치로 확인할 방법이 없다.
+    // `run_mmdet` 과 같은 규약: `<prefix>.boxes.bin` 에 박스당 6값(x1,y1,x2,y2,score,label).
+    {
+        std::vector<float> flat;
+        flat.reserve(dets.size() * 6);
+        for (detection const& d : dets) {
+            flat.insert(flat.end(), {d.x1, d.y1, d.x2, d.y2, d.score, (float)d.label});
+        }
+        dump_bin(pref + ".boxes.bin", flat);
+    }
     printf("- frcnn: 2패스 (proposal %d · roi %dx%d) → %s.*.bin\n", M, O, O, pref.c_str());
+    printf("  %4s %9s %9s %9s %9s %8s  class\n", "#", "x1", "y1", "x2", "y2", "score");
+    for (size_t i = 0; i < dets.size() && i < 10; ++i) {
+        detection const& d = dets[i];
+        printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d\n", i, d.x1, d.y1, d.x2, d.y2,
+               d.score, d.label);
+    }
+    if (dets.size() > 10) printf("   ... (%zu more)\n", dets.size() - 10);
     return 0;
 }
