@@ -80,27 +80,36 @@ def fold_head_bn(bh):
     """
     import copy
     import torch
-    folded, seen = 0, set()
+    folded = 0
+    # ⚠️ **conv 를 레벨끼리 공유하는 head 가 있다**(RTMDetSepBNHead(share_conv=True),
+    #    RetinaSepBNHead: conv 는 하나인데 BN 만 레벨별로 따로다). 그대로 접으면 같은
+    #    conv 에 BN 을 여러 번 겹쳐 접는다.
+    #
+    # ⚠️ **사본을 만드는 것만으로는 모자란다.** 두 번째 레벨에서 복사하는 그 conv 는
+    #    **이미 0번 BN 이 접힌** 값이다 — 사본에 1번 BN 을 또 접으면 두 번 접힌다.
+    #    레벨이 올라갈수록 어긋남이 커지는 것이 그 증상이다(efficientnet 실측:
+    #    레벨0 1e-4 → 레벨4 3.8). 그래서 **접기 전 값을 따로 들고** 매번 거기서 접는다.
+    pristine = {}                       # id(conv) -> 접기 전 (weight, bias)
     for mod in bh.modules():
         bn = getattr(mod, "bn", None)
         conv = getattr(mod, "conv", None)
         if not isinstance(bn, nn.modules.batchnorm._BatchNorm) or conv is None:
             continue
-        # ⚠️ **conv 를 레벨끼리 공유하는 head 가 있다**(RTMDetSepBNHead: share_conv=True 라
-        #    conv 는 하나인데 BN 만 레벨별로 따로다). 그대로 접으면 같은 conv 에 BN 을
-        #    여러 번 겹쳐 접어 **전 레벨이 다 틀린다**(실측 cls 배율 0.89).
-        #    두 번째부터는 그 ConvModule 전용 사본을 만들어 접는다.
-        if id(conv) in seen:
-            conv = copy.deepcopy(conv)
+        key = id(conv)
+        if key not in pristine:
+            pristine[key] = (conv.weight.detach().clone(),
+                             None if conv.bias is None else conv.bias.detach().clone())
+        else:
+            conv = copy.deepcopy(conv)  # 이 ConvModule 전용 사본(값은 아래에서 덮는다)
             mod.conv = conv
-        seen.add(id(conv))
+        w0, b0 = pristine[key]
         with torch.no_grad():
             std = (bn.running_var + bn.eps).sqrt()
             scale = bn.weight / std
-            w = conv.weight * scale.reshape(-1, 1, 1, 1)
+            w = w0 * scale.reshape(-1, 1, 1, 1)
             b = bn.bias - bn.running_mean * scale
-            if conv.bias is not None:
-                b = b + conv.bias * scale
+            if b0 is not None:
+                b = b + b0 * scale
             conv.weight.copy_(w)
             if conv.bias is None:
                 conv.bias = nn.Parameter(b)
