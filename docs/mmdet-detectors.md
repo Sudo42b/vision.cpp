@@ -89,8 +89,9 @@ Outputs:
     they are compiled into the runner rather than read at run time.
     See [Configuration reference](#configuration-reference).
 
-The `.pt` file pickles by module name `mmdet_wrap`, so the export directory must be on
-`PYTHONPATH` when it is loaded again.
+The `.pt` pickles by module name `mmdet_wrap`. The export writes `mmdet_wrap.py` and
+`mmdet_compat.py` beside it, and the compiler's loader puts the `.pt`'s own directory on the
+import path, so the file opens anywhere with nothing set in the environment.
 
 ### Step 2 — Compile the backbone
 
@@ -270,17 +271,18 @@ cmake --build vision.cpp/build -j4
 
 `--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
 is NMS-free — so the result comes back as boxes: `vision-cli` draws them and prints their
-coordinates and scores. The `.bin` rule described under *Output* above belongs to `run_mmdet`;
-a registered detector writes an image whatever the output path is called. Without it the graph outputs are written as
-raw `float32` files instead, which is what a numerical comparison needs.
+coordinates and scores. Registered without the flag, the same command writes the graph
+outputs as raw `float32` files instead, which is what a numerical comparison needs. The `.bin`
+rule described under *Output* above belongs to `run_mmdet`; a registered detector writes an
+image whatever the output path is called.
 
 The full version of this route — options, failure modes, how to measure it — is
-[`../docs/vision-cpp-mmdet-guide-en.md`](../docs/vision-cpp-mmdet-guide-en.md), in the
-compiler checkout beside this one.
+`docs/vision-cpp-mmdet-guide-en.md` in the compiler checkout that carries this repository
+as a submodule.
 
 Measured on `yolo26m` at 640, against ultralytics on the same pixels: the three detections
 above 0.25 agree in class and score (cat 0.918, couch 0.771, tv 0.681) with box coordinates
-within 0.09 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxes and
+within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxes and
 4.7e-04 on the class logits.
 
 ## Detection heads
@@ -523,6 +525,7 @@ Head reconstruction (`c.head`) — maps onto `anchor_head_cfg`.
 | `cls_convs_prefix`, `reg_convs_prefix` | Weight-name prefixes of the towers. |
 | `cls_head`, `reg_head` | Names of the final convolutions. |
 | `head_has_norm` | Whether the tower contains normalisation layers. |
+| `num_base` | Anchors per location, `len(octave_scales) * len(ratios)`. |
 
 Decoding (`c.det`) — maps onto `det_params`.
 
@@ -530,7 +533,6 @@ Decoding (`c.det`) — maps onto `det_params`.
 | :--- | :--- |
 | `strides` | Stride per FPN level; its length defines the level count `L`. |
 | `octave_base_scale`, `octave_scales`, `ratios`, `center_offset` | Anchor generator. |
-| `num_base` | Anchors per location, `len(octave_scales) * len(ratios)`. |
 | `means`, `stds` | Delta coder statistics. |
 | `num_classes`, `use_sigmoid` | Classification output layout and activation. |
 
