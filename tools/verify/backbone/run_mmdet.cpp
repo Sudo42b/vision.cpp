@@ -338,15 +338,81 @@ int main(int argc, char** argv) {
         cls_v[l] = to_vec(cls_t[l]);
         box_v[l] = to_vec(box_t[l]);
     }
-    // centerness 갈래가 있으면 score factor 로 넘긴다(ATSS·PAA·DDOD…). mmdet 은 이걸
+    // centerness 갈래가 있으면 score factor 로 넘긴다(ATSS·PAA·DDOD·FCOS…). mmdet 은 이걸
     // top-k 뒤에 곱한다 — 안 넘기면 **박스는 맞고 점수만** 높게 나온다(실측 Δ0.071).
     // ⚠️ YOLACT 의 coeff 갈래는 점수가 아니다 — `ctr_tanh` 로 가른다.
     if ((int)ho.ctr.size() >= L && !hc.ctr_tanh) {
         ctr_v.resize(L);
         for (int l = 0; l < L; ++l) ctr_v[l] = to_vec(ho.ctr[l]);
     }
-    std::vector<detection> dets =
-        detect_anchor(cls_v, box_v, feat_hw, dp, ctr_v.empty() ? nullptr : &ctr_v);
+
+    // 디코드는 **조립과 다른 축**이다. 조립은 타워 모양(head_kind)으로 갈리지만, 디코드는
+    // 박스가 무엇이냐로 갈린다 — 앵커 대비 delta 냐, 격자점 대비 거리냐.
+    //   · anchor(Delta 코더)      → detect_anchor
+    //   · fcos·gfl·vfnet          → detect_fcos (조립기가 이미 픽셀 거리로 만들어 놨다)
+    //   · anchor 인데 거리 예측    → 같은 거리 경로 (RTMDet 의 bbox_mul_stride 가 그 표시)
+    // 앵커 파라미터가 안 실린 계열은 `octave_scales` 가 비어 있어 detect_anchor 가
+    // 후보 0개를 낸다 — 그건 "조용히 틀린 박스" 가 아니라 안전한 정지다.
+    const bool distance_box = hc.kind == head_kind::fcos || hc.kind == head_kind::gfl ||
+                              hc.kind == head_kind::vfnet || hc.bbox_mul_stride;
+
+    std::vector<detection> dets;
+    if (hc.kind == head_kind::tood) {
+        // TOOD 는 조립기가 이미 `distance2bbox` 까지 그래프로 펴서 **격자 좌표계 xyxy** 를
+        // 낸다(head.cpp:1260) — stride 만 곱하면 픽셀이다.
+        // ⚠️ cls 는 `sqrt(σ(logits)·σ(align))` 라 **이미 확률**이다(head.cpp:1218).
+        //    시그모이드를 또 걸면 박스는 그대로인데 점수만 낮아진다 — 눈에 안 띈다.
+        std::vector<detection> cand;
+        for (int l = 0; l < L; ++l) {
+            const int fh = feat_hw[l].first, fw = feat_hw[l].second, npos = fh * fw;
+            const float stride = dp.strides[l];
+            float const* cs = cls_v[l].data();
+            float const* bx = box_v[l].data();
+            for (int pos = 0; pos < npos; ++pos) {
+                float const* c1 = cs + (size_t)pos * dp.num_classes;
+                int best = 0;
+                for (int j = 1; j < dp.num_classes; ++j)
+                    if (c1[j] > c1[best]) best = j;
+                if (c1[best] <= dp.score_thr) continue;
+                float const* b1 = bx + (size_t)pos * 4;
+                detection d{b1[0] * stride, b1[1] * stride, b1[2] * stride, b1[3] * stride,
+                            c1[best], best};
+                if (dp.input_w > 0) {
+                    d.x1 = std::min(std::max(d.x1, 0.0f), (float)dp.input_w);
+                    d.x2 = std::min(std::max(d.x2, 0.0f), (float)dp.input_w);
+                    d.y1 = std::min(std::max(d.y1, 0.0f), (float)dp.input_h);
+                    d.y2 = std::min(std::max(d.y2, 0.0f), (float)dp.input_h);
+                }
+                cand.push_back(d);
+            }
+        }
+        int maxlabel = 0;
+        for (auto const& c : cand) maxlabel = std::max(maxlabel, c.label);
+        for (int lab = 0; lab <= maxlabel; ++lab) {
+            std::vector<detection> per;
+            for (auto const& c : cand) if (c.label == lab) per.push_back(c);
+            if (per.empty()) continue;
+            for (int k : nms(per, dp.nms_thr)) dets.push_back(per[k]);
+        }
+        std::sort(dets.begin(), dets.end(),
+                  [](detection const& a, detection const& b) { return a.score > b.score; });
+        if ((int)dets.size() > dp.max_per_img) dets.resize(dp.max_per_img);
+    } else if (distance_box) {
+        fcos_params fp;
+        fp.strides = dp.strides;
+        fp.num_classes = dp.num_classes;
+        fp.score_thr = dp.score_thr;
+        fp.nms_thr = dp.nms_thr;
+        fp.nms_pre = dp.nms_pre;
+        fp.max_per_img = dp.max_per_img;
+        fp.input_w = dp.input_w;
+        fp.input_h = dp.input_h;
+        // FCOS 만 MlvlPointGenerator(0.5) 다. 나머지는 AnchorGenerator(center_offset=0).
+        fp.point_offset = hc.kind == head_kind::fcos ? 0.5f : hc.center_offset;
+        dets = detect_fcos(cls_v, box_v, ctr_v, feat_hw, fp);
+    } else {
+        dets = detect_anchor(cls_v, box_v, feat_hw, dp, ctr_v.empty() ? nullptr : &ctr_v);
+    }
 
     // An image by default, as with every other entry point here. Raw numbers on request.
     std::string out_s(outp);

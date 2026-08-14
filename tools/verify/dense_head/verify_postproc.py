@@ -64,6 +64,17 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     """mmdet 자신의 predict_by_feat — 앵커·디코드·NMS 의 정본."""
     from mmdet.apis import init_detector
 
+    # mmdet v3 체크포인트는 학습 메타(HistoryBuffer)를 함께 담고 있어 torch 2.6 의
+    # weights_only=True 기본값에서 로드가 거부된다(rtmdet 이 그랬다). 프론트엔드가
+    # 이미 쓰는 우회를 그대로 쓴다 — 필요한 클래스만 이름으로 허용한다.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "..", "frontend", "mmdet"))
+    try:
+        import mmdet_wrap
+        mmdet_wrap.allow_mmengine_checkpoint_globals()
+    except Exception as e:                       # 실패는 조용히 넘기지 않는다
+        print(f"  ⚠️ 체크포인트 허용 목록 설정 실패: {type(e).__name__}: {e}")
+
     det = init_detector(cfg, ckpt, device="cpu")
     det.eval()
     dp = det.data_preprocessor

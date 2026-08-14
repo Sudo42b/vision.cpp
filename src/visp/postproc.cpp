@@ -216,16 +216,25 @@ std::vector<detection> detect_fcos(
     for (int l = 0; l < nlev; ++l) {
         int fh = feat_hw[l].first, fw = feat_hw[l].second, npos = fh * fw;
         float stride = p.strides[l];
-        auto pts = gen_points(fh, fw, stride);
+        // 격자 중심 오프셋은 **계열마다 다르다.** FCOS 의 MlvlPointGenerator 는 0.5,
+        // GFL·VFNet·RTMDet 은 AnchorGenerator(center_offset=0) 라 0 이다. 0.5 를 잘못
+        // 쓰면 전 레벨에서 박스가 반 칸씩 밀린다 — 오차가 stride 에 비례해 커지는 것이
+        // 그 증상이다(실측 사례: TOOD 에서 어느 레벨이나 +0.47).
+        auto pts = gen_points(fh, fw, stride, p.point_offset);
         float const* cls = cls_scores[l].data();  // HWC: pos*nc + j
         float const* box = bbox_preds[l].data();   // HWC: pos*4 + k
-        float const* ctr = centerness[l].data();    // HWC: pos*1
+        // centerness 갈래가 없는 계열이 있다(GFL 은 cls 가 품질을 겸하고, VFNet 은 IoU-aware).
+        // 0 벡터를 넘기면 sigmoid(0)=0.5 라 점수가 **정확히 절반**이 되므로, 없으면 곱하지 않는다.
+        float const* ctr = (l < (int)centerness.size() && !centerness[l].empty())
+                               ? centerness[l].data()
+                               : nullptr;
         std::vector<std::tuple<float, int, int>> lvl;
         for (int pos = 0; pos < npos; ++pos) {
-            float cen = sigmoidf(ctr[pos]);
             float const* cs = cls + (size_t)pos * nc;
             for (int j = 0; j < nc; ++j) {
-                float sc = sigmoidf(cs[j]) * cen;
+                // 임계값과 top-k 는 **cls 점수만** 보고 건다 — mmdet 의
+                // `filter_scores_and_topk` 가 그렇고, centerness 는 그 뒤에 곱한다.
+                float sc = sigmoidf(cs[j]);
                 if (sc > p.score_thr) lvl.emplace_back(sc, j, pos);
             }
         }
@@ -237,14 +246,15 @@ std::vector<detection> detect_fcos(
         for (auto const& t : lvl) {
             int pos = std::get<2>(t);
             float dist[4];
-            // bbox_pred 는 traced head(forward_single) 가 이미 scale·relu·*stride 적용한 최종
-            // distance 다 → 여기선 그대로 사용(재적용 금지). norm_on_bbox=false 면 raw*stride.
-            for (int k = 0; k < 4; ++k)
-                dist[k] = box[(size_t)pos * 4 + k] * (p.norm_on_bbox ? 1.0f : stride);
-            (void)stride;
+            // bbox_pred 는 조립기(head.cpp)가 이미 scale·relu·exp·×stride 를 적용한
+            // **최종 픽셀 거리**다 → 여기서 다시 곱하지 않는다. 곱하면 레벨마다
+            // 8~128배 커진다.
+            for (int k = 0; k < 4; ++k) dist[k] = box[(size_t)pos * 4 + k];
             float outb[4];
             distance2bbox(pts.data() + (size_t)pos * 2, dist, 1, outb, p.input_w, p.input_h);
-            cand.push_back({outb[0], outb[1], outb[2], outb[3], std::get<0>(t), std::get<1>(t)});
+            float sc = std::get<0>(t);
+            if (ctr) sc *= sigmoidf(ctr[pos]);
+            cand.push_back({outb[0], outb[1], outb[2], outb[3], sc, std::get<1>(t)});
         }
     }
     std::vector<detection> out;

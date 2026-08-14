@@ -181,6 +181,21 @@ def _tolist(v):
         return [v]
 
 
+def _center_offset(pg):
+    """격자 중심 오프셋. 생성기마다 **속성 이름이 다르다.**
+
+    AnchorGenerator 는 `center_offset`(기본 0), MlvlPointGenerator 는 `offset`(기본 0.5)다
+    (`point_generator.py:107`). 하나만 보면 point 계열이 전부 0.0 으로 나가 박스가 반 칸씩
+    밀린다 — 오차가 stride 에 비례해 커지는 것이 그 증상이다.
+    """
+    if pg is None:
+        return 0.0
+    v = getattr(pg, "center_offset", None)
+    if v is None:
+        v = getattr(pg, "offset", None)
+    return float(v or 0.0)
+
+
 def postproc_cfg(det):
     """검출 head 의 decode/anchor **config** + head-conv **구조**를 dict 로 추출(→ .postproc.json).
 
@@ -460,7 +475,10 @@ def postproc_cfg(det):
         "octave_base_scale": obs,
         "octave_scales": [s / obs for s in scales],   # =2^(i/n)
         "ratios": ratios,
-        "center_offset": float(getattr(pg, "center_offset", 0.0) or 0.0) if pg is not None else 0.0,
+        # ⚠️ 속성 이름이 생성기마다 다르다. AnchorGenerator 는 `center_offset`,
+        #    MlvlPointGenerator 는 **`offset`** 이다(point_generator.py:107).
+        #    하나만 보면 point 계열이 전부 0.0 으로 나가 박스가 반 칸씩 밀린다.
+        "center_offset": _center_offset(pg),
         "means": [float(v) for v in getattr(bc, "means", [0.0] * 4)],
         "stds": [float(v) for v in getattr(bc, "stds", [1.0] * 4)],
         "can_decode": can_decode and uniform_priors,

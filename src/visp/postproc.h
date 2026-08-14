@@ -68,7 +68,10 @@ void distance2bbox(float const* points, float const* distance, int n, float* out
 
 struct fcos_params {
     std::vector<float> strides;       // 8,16,32,64,128
-    bool norm_on_bbox = true;         // bbox_pred *= stride
+    // 격자 중심 오프셋. FCOS 의 MlvlPointGenerator 는 0.5, GFL·VFNet·RTMDet 은
+    // AnchorGenerator(center_offset=0) 라 0 이다. 틀리면 박스가 반 칸씩 밀리는데,
+    // 오차가 stride 에 비례해 커지는 것이 그 증상이다.
+    float point_offset = 0.5f;
     int num_classes = 80;
     float score_thr = 0.05f;
     float nms_thr = 0.5f;
@@ -76,7 +79,9 @@ struct fcos_params {
     int max_per_img = 100;
     int input_w = 0, input_h = 0;
 };
-// cls_scores[l]=[nc,W,H]HWC · bbox_preds[l]=[4,W,H]HWC · centerness[l]=[1,W,H]HWC.
+// cls_scores[l]=[nc,W,H]HWC · bbox_preds[l]=[4,W,H]HWC.
+// bbox_preds 는 조립기가 이미 픽셀 거리로 만든 값이다 — 여기서 stride 를 곱하지 않는다.
+// centerness 는 **비어 있어도 된다**(GFL·VFNet 은 cls 가 품질을 겸한다). 비면 안 곱한다.
 std::vector<detection> detect_fcos(
     std::vector<std::vector<float>> const& cls_scores,
     std::vector<std::vector<float>> const& bbox_preds,
