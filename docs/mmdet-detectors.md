@@ -365,14 +365,25 @@ The nineteen that do not agree split four ways, and the split matters more than 
   so there is no `bbox_pred` to decode.
 - **Something before the decoder disagrees**, the same category as `dyhead` above: `carafe`,
   `pafpn`, `libra_rcnn`, `dynamic_rcnn`, `res2net` and `gcnet` return the right *number* of
-  boxes with the right labels but coordinates 6–37 px out. Every one of them replaces or
-  augments the plain FPN. `gn` and `gn+ws` are the sharper version of the same point — they use
+  boxes with the right labels but coordinates 6–37 px out. The shared symptom is tempting to
+  read as a shared cause; it is not one. Only three replace the neck (`FPN_CARAFE`, `PAFPN`,
+  and the `FPN`+`BFP` pair). `res2net` and `gcnet` run a plain FPN and differ in the backbone
+  (hierarchical scales, `ContextBlock` plugins). `dynamic_rcnn` differs in neither: plain
+  ResNet, plain FPN, `Shared2FCBBoxHead`, the same RCNN test config as `faster_rcnn`, which
+  passes at 0.10 px. Its one difference is an RPN NMS threshold of 0.85 against 0.7, which
+  keeps far more overlapping candidates and makes the proposal set correspondingly sensitive
+  to small score differences — so it is the family to diagnose first, and what it turns up
+  applies to the fifteen that already pass.
+
+  `gn` and `gn+ws` are the sharper version of the same point — they use
   `Shared4Conv1FCBBoxHead`, but so does `resnest`, which passes at 0.12 px, so the head layout
   is exonerated and GroupNorm/weight-standardisation is what is left.
 
-`swin` (the SubA gguf fails to load), `tridentnet` (the runner returns no boxes at all) and
-`seesaw_loss` (an LVIS-class config, 3 reference boxes against 300) are not yet sorted into
-those four.
+`seesaw_loss` belongs with the third group rather than here: it classifies through a
+`NormedLinear` layer at temperature 20 over 1203 LVIS classes with a score threshold of
+0.0001, so its scores are not computed the way `detect_roi` assumes. `swin` (the SubA gguf
+fails to load) and `tridentnet` (the runner returns no boxes at all) are the two that remain
+unsorted.
 
 `rpn` decodes proposals rather than detections, so a worst case over the whole set says little:
 of 185 proposals the median is 0.09 px and 182 are within 1 px, with one proposal of 186
