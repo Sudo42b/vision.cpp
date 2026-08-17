@@ -73,11 +73,23 @@ struct tiny_json {
         if (s.find("false", p) == p || s.find("false", p + 1) == p + 1) return 0.0f;
         return strtof(s.c_str() + p, nullptr);
     }
+    // ⚠️ **중첩 배열을 평탄화해서 읽는다.** `stage_stds` 는 단계마다 4개씩 담은
+    //    `[[...],[...],[...]]` 꼴이다. 닫는 대괄호를 `find(']')` 로 찾으면 **첫 안쪽 배열
+    //    끝**에서 멈춰 4개만 읽힌다. 그러면 `st_stds.size() >= (st+1)*4` 가 st=0 만
+    //    통과하고, **2단계부터는 stds 가 조용히 안 걸린다**(캐스케이드 실측: 0→1 정제는
+    //    맞고 1→2 만 틀렸다 — 그래서 마지막 단계 텐서가 상대 L1 1.685 로 깨졌다).
+    //    괄호 깊이를 세어 **짝이 맞는** 닫는 괄호까지 읽는다.
     std::vector<float> arr(const std::string& k) const {
         std::vector<float> out;
         size_t p = find_key(k);
         if (p == std::string::npos) return out;
-        size_t l = s.find('[', p), r = s.find(']', l);
+        size_t l = s.find('[', p);
+        if (l == std::string::npos) return out;
+        size_t r = l;
+        for (int depth = 0; r < s.size(); ++r) {
+            if (s[r] == '[') ++depth;
+            else if (s[r] == ']' && --depth == 0) break;
+        }
         const char* c = s.c_str() + l + 1;
         while (c < s.c_str() + r) {
             char* e = nullptr;
@@ -303,6 +315,12 @@ int main(int argc, char** argv) {
                     if (has_s) d[k] *= st_stds[(size_t)st * 4 + k];
                     if (has_m) d[k] += st_means[(size_t)st * 4 + k];
                 }
+                // ⚠️ mmdet 은 dw/dh 를 **±|log(wh_ratio_clip)|** 로 자른다
+                //    (delta_xywh_bbox_coder.py:345-350, 기본 16/1000 → 4.135).
+                //    안 자르면 `exp(dw)` 가 폭주해 박스가 수백 px 로 튄다.
+                const float MAXR = 4.13516655f;   // |log(16/1000)|
+                d[2] = std::min(std::max(d[2], -MAXR), MAXR);
+                d[3] = std::min(std::max(d[3], -MAXR), MAXR);
                 const float x1 = rois[(size_t)i * 4 + 0], y1 = rois[(size_t)i * 4 + 1];
                 const float x2 = rois[(size_t)i * 4 + 2], y2 = rois[(size_t)i * 4 + 3];
                 const float pw = x2 - x1, ph = y2 - y1;
