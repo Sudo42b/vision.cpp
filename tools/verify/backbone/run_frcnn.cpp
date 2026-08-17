@@ -223,7 +223,11 @@ int main(int argc, char** argv) {
     auto with_reg_half = [&](std::vector<float> rf, std::vector<float> const& boxes) {
         if (RSF <= 0.0f) return rf;
         std::vector<float> bx = rescale_boxes(boxes);
-        std::vector<float> rg = roi_align(feats, feat_hw, bx.data(), M, ap);
+        // ⚠️ **레벨은 키우기 전 박스(`boxes`)로 고른다.** mmdet 은 `map_roi_levels` 를
+        //    `roi_rescale` **앞**에서 부른다(single_level_roi_extractor.py:97-100).
+        //    키운 박스로 레벨까지 고르면 경계 상자가 한 레벨 위에서 읽혀 조용히 밀린다
+        //    (실측: double_heads fp32 8.56px — fp16 잡음이 이걸 가리고 있었다).
+        std::vector<float> rg = roi_align(feats, feat_hw, bx.data(), M, ap, boxes.data());
         rf.insert(rf.end(), rg.begin(), rg.end());
         return rf;
     };
@@ -313,21 +317,45 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ── 최종 디코드: 마지막 단계의 cls/box → 박스 ───────────────────────────
+    // ── 최종 디코드: cls/box → 박스 ─────────────────────────────────────────
     // `detect_roi` 는 **softmax 를 마친** 점수를 기대한다(postproc.h). SubB 가 내는 것은
     // 로짓이므로(실측: 한 행의 합이 -0.41) 여기서 건다. 안 걸면 크래시 없이 점수만 틀린다.
+    //
+    // ⚠️ **캐스케이드는 마지막 단계만 쓰면 안 된다.** mmdet 은 전 단계의 cls 를 모아
+    //    평균한 뒤 디코드한다(`cascade_roi_head.py:517`
+    //    `sum([score[i] for score in ms_scores]) / float(len(ms_scores))`).
+    //    마지막 단계만 쓰면 크래시 없이 점수가 틀리고, 점수가 틀리면 NMS 가 남기는 집합이
+    //    달라져 박스까지 어긋난다(실측: cascade_rcnn 607px).
+    //
+    // ⚠️ **평균은 로짓에서 한다. softmax 를 먼저 걸면 안 된다.** mmdet 이 `ms_scores` 에
+    //    담는 것은 `_bbox_forward` 의 **날 cls_score** 이고, softmax 는 그 평균 뒤
+    //    `bbox_head.py:526` 에서 한 번만 걸린다. 순서를 바꾸면 값이 달라진다
+    //    (softmax 는 선형이 아니다 — mean∘softmax ≠ softmax∘mean).
+    //
+    //    박스는 평균하지 않는다. mmdet 도 `bbox_preds` 는 마지막 단계 것을 그대로 쓴다.
     std::vector<detection> dets;
     if (!cls_st.empty() && !box_st.empty()) {
         const int last = (int)cls_st.size() - 1;
         const int NCLS = (int)(cls_st[last].size() / M) - 1;   // 배경 제외
+        // 캐스케이드 단계들만 평균한다. 다중 인스턴스(CrowdDet)는 단계가 아니라 **쌍**이라
+        // 평균 대상이 아니다 — 위에서 (NS>1 && NPAIR>1) 을 막아 뒀으므로 여기서는
+        // `NS > 1` 일 때만 여러 원소가 단계를 뜻한다.
+        const int NAVG = (NS > 1) ? (int)cls_st.size() : 1;
         std::vector<float> prob(cls_st[last].size());
         for (int i = 0; i < M; ++i) {
-            float const* row = cls_st[last].data() + (size_t)i * (NCLS + 1);
             float* dst = prob.data() + (size_t)i * (NCLS + 1);
-            float mx = row[0];
-            for (int c = 1; c <= NCLS; ++c) mx = std::max(mx, row[c]);
+            // ① 단계별 로짓 평균
+            for (int c = 0; c <= NCLS; ++c) {
+                float acc = 0.0f;
+                for (int s = 0; s < NAVG; ++s)
+                    acc += cls_st[(NAVG == 1) ? last : s][(size_t)i * (NCLS + 1) + c];
+                dst[c] = acc / (float)NAVG;
+            }
+            // ② 그 다음에 softmax
+            float mx = dst[0];
+            for (int c = 1; c <= NCLS; ++c) mx = std::max(mx, dst[c]);
             float sum = 0.0f;
-            for (int c = 0; c <= NCLS; ++c) { dst[c] = std::exp(row[c] - mx); sum += dst[c]; }
+            for (int c = 0; c <= NCLS; ++c) { dst[c] = std::exp(dst[c] - mx); sum += dst[c]; }
             for (int c = 0; c <= NCLS; ++c) dst[c] /= sum;
         }
         roi_params rp2;

@@ -512,13 +512,17 @@ static float bilinear_cwhn(float const* feat, int C, int W, int H, int c, float 
 std::vector<float> roi_align(
     std::vector<std::vector<float>> const& feats,
     std::vector<std::pair<int, int>> const& feat_hw,
-    float const* rois, int m, roi_align_params const& p) {
+    float const* rois, int m, roi_align_params const& p,
+    float const* level_rois) {
 
     int C = p.channels, out = p.output_size, L = (int)feats.size();
     std::vector<float> res((size_t)m * C * out * out, 0.0f);
     for (int i = 0; i < m; ++i) {
         float const* roi = rois + (size_t)i * 4;
-        float rw = roi[2] - roi[0], rh = roi[3] - roi[1];
+        // ⚠️ 레벨은 **키우기 전 박스**로 고른다(mmdet 은 map_roi_levels 를 roi_rescale 보다
+        //    먼저 부른다). 안 그러면 경계 상자가 다른 레벨에서 읽혀 조용히 몇 px 밀린다.
+        float const* lroi = level_rois ? level_rois + (size_t)i * 4 : roi;
+        float rw = lroi[2] - lroi[0], rh = lroi[3] - lroi[1];
         float scale = std::sqrt(std::max(rw, 0.0f) * std::max(rh, 0.0f));
         int lvl = (int)std::floor(std::log2(scale / p.finest_scale + 1e-6f));
         if (lvl < 0) lvl = 0;

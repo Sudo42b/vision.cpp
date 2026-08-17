@@ -202,10 +202,18 @@ struct roi_align_params {
 };
 // feats[l] = [C, W, H] CWHN flat · rois[M*4] 이미지좌표.
 // 반환 roi_feat [M*C*out*out] = NCHW flat(idx=((m*C+c)*out+ph)*out+pw). (SubB 입력용으로 permute 는 러너가)
+//
+// `level_rois` — **피라미드 레벨을 고를 때만** 쓸 박스(없으면 `rois` 로 고른다).
+// ⚠️ Double-Head 처럼 회귀용 RoI 를 키워서 다시 자르는 계열이 있는데, mmdet 은
+//    **키우기 전 박스로 레벨을 정하고 키운 박스로 샘플링한다**
+//    (`single_level_roi_extractor.py:97-100` — `map_roi_levels` 가 `roi_rescale` 보다 먼저다).
+//    키운 박스로 레벨까지 고르면 경계에 있던 상자가 한 레벨 위로 올라가 **다른 feature 를
+//    읽는다.** 크래시는 없고 박스만 몇 px 밀린다.
 std::vector<float> roi_align(
     std::vector<std::vector<float>> const& feats,
     std::vector<std::pair<int, int>> const& feat_hw,
-    float const* rois, int m, roi_align_params const& p);
+    float const* rois, int m, roi_align_params const& p,
+    float const* level_rois = nullptr);
 
 // ── 전처리: 이미지(HWC u8) → 모델 입력 텐서(CWHN f32) ───────────────────────
 // resize(size×size) + normalize((v-mean)/std). BGR/RGB·mean/std 는 인자.
