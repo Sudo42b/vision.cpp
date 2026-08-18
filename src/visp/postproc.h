@@ -51,6 +51,9 @@ struct det_params {
     std::vector<float> base_edge;
     // mmdet DeltaXYWHBBoxCoder 의 `add_ctr_clamp`(YOLOF). 0 이면 기본 경로.
     float ctr_clamp = 0.0f;
+    // YOLOv3 의 (w,h) 앵커(레벨별)와 objectness 선필터. 비면 안 쓴다.
+    std::vector<std::vector<float>> base_sizes;
+    float conf_thr = 0.0f;
 };
 
 // per-level 원시출력: cls_scores[level] = [num_base*num_classes, feat_w, feat_h](CWHN flat),
@@ -142,6 +145,29 @@ struct yolo_dense_params {
 std::vector<detection> detect_yolo_dense(
     float const* box, float const* score,
     std::vector<std::pair<int, int>> const& feat_hw, yolo_dense_params const& p);
+
+// ── YOLOv3 (레벨당 한 갈래: na×(5+nc) 채널) ─────────────────────────────────
+struct yolov3_params {
+    // ⚠️ YOLOv3 는 stride 가 **내림차순**이다(32,16,8). FPN 순서와 반대라 뒤집어 쓰면
+    //    레벨마다 4배씩 어긋난다. 프론트엔드가 config 순서 그대로 싣는다.
+    std::vector<float> strides;
+    // 레벨별 앵커를 **(w,h) 쌍**으로 받는다 — scales×ratios 가 아니다.
+    // base_sizes[l] = {w0,h0, w1,h1, ...} (레벨당 num_base 쌍).
+    std::vector<std::vector<float>> base_sizes;
+    int num_classes = 80;
+    float conf_thr = 0.005f;   // objectness 선필터(mmdet test_cfg.conf_thr)
+    float score_thr = 0.05f;
+    float nms_thr = 0.45f;
+    int nms_pre = 1000;
+    int max_per_img = 100;
+    int input_w = 0, input_h = 0;
+};
+// pred[l] = [na*(5+nc), W, H] CWHN flat. 채널 = a*(5+nc) + {tx,ty,tw,th,obj,cls...}.
+// 디코드(YOLOBBoxCoder): 중심 = 앵커중심 + (sigmoid(t)-0.5)·stride,
+//                        반폭 = 앵커반폭 · exp(t).  앵커중심은 격자 중심(=stride/2 오프셋).
+std::vector<detection> detect_yolov3(
+    std::vector<std::vector<float>> const& pred,
+    std::vector<std::pair<int, int>> const& feat_hw, yolov3_params const& p);
 
 // ── DETR (set prediction, NMS 없음) ─────────────────────────────────────────
 struct detr_params {

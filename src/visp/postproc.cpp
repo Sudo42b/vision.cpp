@@ -697,4 +697,80 @@ std::vector<detection> detect_yolo_dense(
     return dets;
 }
 
+// ── YOLOv3 ───────────────────────────────────────────────────────────────────
+// mmdet `YOLOV3Head.predict_by_feat` + `YOLOBBoxCoder.decode`.
+//
+// 다른 계열과 다른 점 셋:
+//  ① 레벨당 출력이 **한 갈래**다 — na×(5+nc) 채널에 tx,ty,tw,th,obj,cls 가 붙어 있다.
+//  ② 앵커가 scales×ratios 가 아니라 **(w,h) 쌍 목록**이다(base_sizes).
+//  ③ objectness 로 **먼저 거른다**(conf_thr). 안 걸면 후보가 수만 개로 불어난다.
+std::vector<detection> detect_yolov3(
+    std::vector<std::vector<float>> const& pred,
+    std::vector<std::pair<int, int>> const& feat_hw, yolov3_params const& p) {
+
+    const int nc = p.num_classes, attrib = 5 + nc;
+    const int nlev = (int)feat_hw.size();
+    std::vector<detection> cand;
+    for (int l = 0; l < nlev; ++l) {
+        if (l >= (int)p.base_sizes.size() || l >= (int)p.strides.size()) break;
+        const int fh = feat_hw[l].first, fw = feat_hw[l].second;
+        const float stride = p.strides[l];
+        std::vector<float> const& bs = p.base_sizes[l];
+        const int na = (int)(bs.size() / 2);
+        const int C = na * attrib;
+        float const* pm = pred[l].data();
+
+        std::vector<std::tuple<float, int, int, int>> lvl;   // score, label, pos, anchor
+        for (int pos = 0; pos < fh * fw; ++pos) {
+            for (int a = 0; a < na; ++a) {
+                float const* q = pm + (size_t)pos * C + (size_t)a * attrib;
+                const float conf = sigmoidf(q[4]);
+                if (conf < p.conf_thr) continue;      // ③ objectness 선필터
+                for (int j = 0; j < nc; ++j) {
+                    const float sc = conf * sigmoidf(q[5 + j]);
+                    if (sc > p.score_thr) lvl.emplace_back(sc, j, pos, a);
+                }
+            }
+        }
+        if (p.nms_pre > 0 && (int)lvl.size() > p.nms_pre) {
+            std::nth_element(lvl.begin(), lvl.begin() + p.nms_pre, lvl.end(),
+                             [](auto const& x, auto const& y) {
+                                 return std::get<0>(x) > std::get<0>(y);
+                             });
+            lvl.resize(p.nms_pre);
+        }
+        for (auto const& t : lvl) {
+            const int pos = std::get<2>(t), a = std::get<3>(t);
+            const int gy = pos / fw, gx = pos % fw;
+            float const* q = pm + (size_t)pos * C + (size_t)a * attrib;
+            // 앵커 중심은 격자 **중심**이다(YOLOAnchorGenerator 의 centers = stride/2).
+            const float acx = (gx + 0.5f) * stride, acy = (gy + 0.5f) * stride;
+            const float hw = bs[a * 2] * 0.5f, hh = bs[a * 2 + 1] * 0.5f;
+            const float cx = acx + (sigmoidf(q[0]) - 0.5f) * stride;
+            const float cy = acy + (sigmoidf(q[1]) - 0.5f) * stride;
+            const float w2 = hw * std::exp(q[2]), h2 = hh * std::exp(q[3]);
+            float x1 = cx - w2, y1 = cy - h2, x2 = cx + w2, y2 = cy + h2;
+            if (p.input_w > 0) {
+                x1 = std::min(std::max(x1, 0.0f), (float)p.input_w);
+                x2 = std::min(std::max(x2, 0.0f), (float)p.input_w);
+                y1 = std::min(std::max(y1, 0.0f), (float)p.input_h);
+                y2 = std::min(std::max(y2, 0.0f), (float)p.input_h);
+            }
+            cand.push_back({x1, y1, x2, y2, std::get<0>(t), std::get<1>(t)});
+        }
+    }
+    // 클래스별 NMS
+    std::vector<detection> kept;
+    for (int j = 0; j < nc; ++j) {
+        std::vector<detection> per;
+        for (auto const& d : cand) if (d.label == j) per.push_back(d);
+        if (per.empty()) continue;
+        for (int k : nms(per, p.nms_thr)) kept.push_back(per[k]);
+    }
+    std::sort(kept.begin(), kept.end(),
+              [](detection const& a, detection const& b) { return a.score > b.score; });
+    if (p.max_per_img > 0 && (int)kept.size() > p.max_per_img) kept.resize(p.max_per_img);
+    return kept;
+}
+
 }  // namespace visp

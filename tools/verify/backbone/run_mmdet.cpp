@@ -335,8 +335,13 @@ int main(int argc, char** argv) {
                          hc.kind == head_kind::deformable_detr ||
                          hc.kind == head_kind::dino;
 
+    // YOLOv3 는 레벨당 **한 갈래**다(na×(5+nc) 한 텐서에 box·obj·cls 가 다 들어 있다).
+    // box 갈래가 없는 게 정상이라 아래 검사에서 빼야 한다 — 안 빼면 조립은 됐는데
+    // "레벨에 못 미친다" 로 멈춘다.
+    const bool single_branch = hc.kind == head_kind::yolo;
+
     // 조립기가 레벨 수를 못 채우면 아래 인덱싱이 널을 읽는다. 여기서 말한다.
-    if (!is_detr && ((int)cls_t.size() < L || (int)box_t.size() < L)) {
+    if (!is_detr && !single_branch && ((int)cls_t.size() < L || (int)box_t.size() < L)) {
         fprintf(stderr, "head 출력이 %d 레벨에 못 미친다 (cls %zu, box %zu)\n",
                 L, cls_t.size(), box_t.size());
         return 4;
@@ -349,7 +354,8 @@ int main(int argc, char** argv) {
     for (int l = 0; l < NL; ++l) {
         feat_hw[l] = { (int)cls_t[l]->ne[2], (int)cls_t[l]->ne[1] };  // (fh, fw)
         cls_v[l] = to_vec(cls_t[l]);
-        box_v[l] = to_vec(box_t[l]);
+        // 한 갈래 계열(YOLOv3)은 box 텐서가 없다 — 읽으면 널 참조다.
+        if (!single_branch) box_v[l] = to_vec(box_t[l]);
     }
     // centerness 갈래가 있으면 score factor 로 넘긴다(ATSS·PAA·DDOD·FCOS…). mmdet 은 이걸
     // top-k 뒤에 곱한다 — 안 넘기면 **박스는 맞고 점수만** 높게 나온다(실측 Δ0.071).
@@ -455,6 +461,21 @@ int main(int argc, char** argv) {
         dets = detect_rpn(cls_v, box_v, feat_hw, rp);
         // `label` 은 레벨 번호로 돌아온다. 밖에서는 클래스 자리라 0(유일한 클래스)으로 둔다.
         for (auto& d : dets) d.label = 0;
+    } else if (hc.kind == head_kind::yolo) {
+        // YOLOv3: 레벨당 **한 갈래**(na×(5+nc))라 조립기가 `out.cls` 에만 담는다.
+        // 앵커가 (w,h) 쌍이고 objectness 로 먼저 거른다 — 전용 디코더로 보낸다.
+        yolov3_params yp;
+        yp.strides = dp.strides;
+        yp.base_sizes = dp.base_sizes;
+        yp.num_classes = dp.num_classes;
+        yp.conf_thr = dp.conf_thr;
+        yp.score_thr = dp.score_thr;
+        yp.nms_thr = dp.nms_thr;
+        yp.nms_pre = dp.nms_pre;
+        yp.max_per_img = dp.max_per_img;
+        yp.input_w = dp.input_w;
+        yp.input_h = dp.input_h;
+        dets = detect_yolov3(cls_v, feat_hw, yp);
     } else if (hc.kind == head_kind::yolox) {
         // 격자 단위 (dx,dy,log w,log h) + 별도 objectness. 코더가 없어 `c.det` 의 앵커
         // 파라미터가 안 실리고, 그대로 두면 detect_anchor 가 후보 0개를 낸다.

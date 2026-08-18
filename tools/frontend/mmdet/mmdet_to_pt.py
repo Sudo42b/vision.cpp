@@ -108,6 +108,12 @@ def emit_params(cfg, config_name):
             "    // per-level tensors, and only the anchor(Delta) path fills c.det here.\n",
         ]
         out.append("    c.det.strides = {" + ", ".join(_f(v) for v in cfg["strides"]) + "};\n")
+        # YOLOv3 의 (w,h) 앵커. 레벨별로 하나씩 싣는다 — 순서가 곧 레벨 순서다.
+        for i, lvl in enumerate(cfg.get("base_sizes") or []):
+            out.append(f"    c.det.base_sizes.push_back({{"
+                       + ", ".join(_f(v) for v in lvl) + "});\n")
+        if cfg.get("conf_thr"):
+            out.append(f"    c.det.conf_thr = {_f(cfg['conf_thr'])};\n")
         # FoveaBox 만 채운다. 비어 있으면 디코더가 조립기가 낸 값을 그대로 거리로 쓴다.
         if cfg.get("bbox_base_edge"):
             out.append("    c.det.base_edge = {"

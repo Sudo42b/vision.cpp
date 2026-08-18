@@ -190,6 +190,22 @@ def _tolist(v):
         return [v]
 
 
+def _yolo_base_sizes(pg):
+    """YOLOAnchorGenerator 의 레벨별 (w,h) 앵커만 평탄화해서 돌려준다.
+
+    `AnchorGenerator` 도 같은 이름의 속성을 갖지만 그건 **정수 리스트**라 쌍이 아니다.
+    안쪽 원소가 순회 가능할 때만 YOLO 쌍으로 본다 — 이름이 같다고 뜻이 같지 않다.
+    """
+    out = []
+    for lvl in (getattr(pg, "base_sizes", None) or []):
+        try:
+            flat = [float(v) for wh in lvl for v in wh]
+        except TypeError:
+            return []                      # AnchorGenerator — YOLO 앵커가 아니다
+        out.append(flat)
+    return out
+
+
 def _center_offset(pg):
     """격자 중심 오프셋. 생성기마다 **속성 이름이 다르다.**
 
@@ -519,6 +535,16 @@ def postproc_cfg(det):
         "stds": [float(v) for v in getattr(bc, "stds", [1.0] * 4)],
         "can_decode": can_decode and uniform_priors,
         "ctr_clamp": ctr_clamp,
+        # YOLOv3: 앵커가 (w,h) 쌍 목록이다. `base_sizes[l]` = [(w,h), ...] → 평탄화.
+        # ⚠️ **레벨 순서를 건드리지 않는다** — YOLOv3 는 stride 가 내림차순(32,16,8)이고
+        #    그 순서가 head 출력 순서와 같다. 정렬하면 레벨마다 4배씩 어긋난다.
+        # ⚠️ **`base_sizes` 는 생성기마다 뜻이 다르다.** `YOLOAnchorGenerator` 는
+        #    레벨별 `[(w,h), ...]` 쌍 목록이지만 **`AnchorGenerator` 는 정수 리스트**다
+        #    (32,64,128,…). 구분 없이 쌍으로 순회하면 `TypeError: 'int' object is not
+        #    iterable` 로 **retinanet 계열 export 가 통째로 죽는다**(실제로 그랬다).
+        #    안쪽이 순회 가능한 경우에만 YOLO 쌍으로 본다.
+        "base_sizes": _yolo_base_sizes(pg),
+        "conf_thr": float((getattr(det, "test_cfg", None) or {}).get("conf_thr", 0.0) or 0.0),
         # ── C++ head 부품(anchor_head_forward)용 구조 ──
         "num_base": num_base,
         "stacked_convs": stacked,

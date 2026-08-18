@@ -86,7 +86,11 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     im = np.asarray(Image.open(image).convert("RGB").resize((size, size), Image.BILINEAR),
                     dtype=np.float32)
     x = im[:, :, ::-1] if to_rgb else im       # 러너 규약에 맞춘다
-    x = (np.ascontiguousarray(x) - mean) / std
+    # ⚠️ **float32 로 못 박는다.** mean/std 가 float64 로 오는 계열이 있어(YOLOv3)
+    #    나눗셈에서 배열이 double 로 승격되고, conv2d 가
+    #    `expected scalar type Double but found Float` 로 죽는다. 계열 탓처럼 보이지만
+    #    전처리 dtype 문제다.
+    x = ((np.ascontiguousarray(x) - mean) / std).astype(np.float32)
     t = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0)
 
     meta = {"img_shape": (size, size), "ori_shape": (size, size),
