@@ -829,10 +829,15 @@ int main(int argc, char** argv) {
                 ix2.push_back(GP - GS + i);
                 iy2.push_back((i + 1) * GS - 1);
             }
-            dets[n].x1 = std::min(std::max(vote(ix1, ax), 0.0f), (float)SZ);
-            dets[n].y1 = std::min(std::max(vote(iy1, ay), 0.0f), (float)SZ);
-            dets[n].x2 = std::min(std::max(vote(ix2, ax), 0.0f), (float)SZ);
-            dets[n].y2 = std::min(std::max(vote(iy2, ay), 0.0f), (float)SZ);
+            // ⚠️ **자르지 않는다.** mmdet 에 clamp 가 있지만 **동작하지 않는다** —
+            //    `bboxes[:, [0, 2]].clamp_(...)` 는 팬시 인덱싱이라 복사본을 자르고 버린다
+            //    (grid_head.py:482-483). 여기서 진짜로 자르면 경계에 걸친 상자만
+            //    어긋난다(실측 801.3 vs 800.0 → 1.30px). 라이브러리의 **실제 동작**이
+            //    정본이지 주석이나 의도가 아니다.
+            dets[n].x1 = vote(ix1, ax);
+            dets[n].y1 = vote(iy1, ay);
+            dets[n].x2 = vote(ix2, ax);
+            dets[n].y2 = vote(iy2, ay);
             heat_all.insert(heat_all.end(), hm.begin(), hm.end());
         }
         dump_bin(pref + ".gridheat.bin", heat_all);

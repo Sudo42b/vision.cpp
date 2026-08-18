@@ -294,18 +294,6 @@ def frcnn_cfg(det, size=800):
     # 두 곳이 갈린다(`calc_sub_regions` 는 정수 절단이 섞여 있어 특히 위험하다).
     gh = getattr(det.roi_head, "grid_head", None)
     if gh is not None:
-        # ⚠️ **grid head 의 deconv 는 grouped + padded 다**(groups=grid_points=9,
-        #    padding=(k-2)//2=1). ggml 이 가진 것은 `ggml_conv_transpose_2d_p0` 하나이고
-        #    이름 그대로 padding 0 · groups 1 전용이다. 그대로 태우면 출력이 2px 크고
-        #    채널 묶음이 섞여 `add_bias_2d` 에서 `ggml_can_repeat` 로 죽는다.
-        #    **크래시로 두면 "우리 버그" 처럼 보인다** — 왜 안 되는지 여기서 말한다.
-        d1 = gh.deconv1
-        if getattr(d1, "groups", 1) != 1 or any(v != 0 for v in getattr(d1, "padding", (0, 0))):
-            raise NotImplementedError(
-                f"GridHead.deconv: groups={getattr(d1, 'groups', 1)} · "
-                f"padding={tuple(getattr(d1, 'padding', (0, 0)))} — ggml 의 conv_transpose 는 "
-                "padding 0 · groups 1 만 한다(ggml_conv_transpose_2d_p0). 그룹별로 쪼개 돌리고 "
-                "가장자리를 잘라내는 분해가 필요하다 — 디코드가 아니라 연산 부족이다")
         gext = det.roi_head.grid_roi_extractor
         if isinstance(gext, nn.ModuleList):
             gext = gext[0]

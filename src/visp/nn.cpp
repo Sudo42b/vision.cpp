@@ -184,7 +184,7 @@ tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
     return x;
 }
 
-tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad) {
+tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad, int groups) {
     tensor weight = m.weights("weight");
     // ⚠️ **커널은 F16 이어야 한다.** `ggml_compute_forward_conv_transpose_2d` 는
     //    `GGML_ASSERT(src0->type == GGML_TYPE_F16)` 로 시작한다(ggml-cpu/ops.cpp).
@@ -197,7 +197,29 @@ tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad) {
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
     }
-    x = ggml_conv_transpose_2d_p0(m, weight, x, stride);
+    if (groups <= 1) {
+        x = ggml_conv_transpose_2d_p0(m, weight, x, stride);
+    } else {
+        // ⚠️ **ggml 에는 grouped conv_transpose 가 없다.** 그냥 통과시키면 groups 가
+        //    조용히 무시되어 채널이 섞인 채 돈다(크래시 없음). 그룹마다 커널과 입력을
+        //    잘라 따로 돌리고 채널 축으로 이어붙인다 — 정의 그대로다.
+        //    커널 ne = [KW, KH, OC/g, IC] 이므로 IC 는 ne3, 입력 채널은 ne2 다.
+        const int64_t icg = weight->ne[3] / groups;   // 그룹당 입력 채널(커널 쪽)
+        const int64_t xcg = x->ne[2] / groups;        // 그룹당 입력 채널(피처 쪽)
+        GGML_ASSERT(icg > 0 && xcg > 0);
+        tensor acc = nullptr;
+        for (int g = 0; g < groups; ++g) {
+            tensor wg = ggml_cont(m, ggml_view_4d(
+                m, weight, weight->ne[0], weight->ne[1], weight->ne[2], icg,
+                weight->nb[1], weight->nb[2], weight->nb[3], (size_t)g * icg * weight->nb[3]));
+            tensor xg = ggml_cont(m, ggml_view_4d(
+                m, x, x->ne[0], x->ne[1], xcg, x->ne[3],
+                x->nb[1], x->nb[2], x->nb[3], (size_t)g * xcg * x->nb[2]));
+            tensor og = ggml_conv_transpose_2d_p0(m, wg, xg, stride);
+            acc = acc ? ggml_concat(m, acc, og, 2) : og;
+        }
+        x = acc;
+    }
 
     // ⚠️ **`ggml_conv_transpose_2d_p0` 은 이름 그대로 padding 0 전용이다.**
     //    transposed conv 의 padding p 는 "출력 가장자리를 p 픽셀씩 버린다" 와 같으므로
