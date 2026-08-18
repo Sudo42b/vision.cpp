@@ -288,8 +288,9 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-Assembling a head and decoding its output are separate steps, and a family can pass the first
-and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
+**Fifty-nine families produce the same boxes MMDetection does** — thirty-two single-stage
+below, twenty-seven two-stage further down. Assembling a head and decoding its output are
+separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
 nothing like it.
@@ -301,31 +302,37 @@ no label mismatch and no difference in how many boxes survive.
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
+| `cornernet` | `detect_corner` (embedding pairing) | 0.03 px | 0.003 |
+| `ddq` | `detect_detr` (distinct queries) | 0.06 px | 0.018 |
+| `yolof` | `detect_anchor` (ctr_clamp) | 0.12 px | 0.002 |
+| `centernet` | `detect_centernet` (heatmap peaks) | 0.13 px | 0.001 |
 | `atss` | `detect_anchor` | 0.14 px | 0.000 |
 | `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
 | `pisa` | `detect_anchor` | 0.18 px | 0.005 |
-| `retinanet` | `detect_anchor` | 0.27 px | 0.000 |
-| `ddod` | `detect_anchor` | 0.41 px | 0.001 |
-| `ghm` | `detect_anchor` | 0.46 px | 0.005 |
-| `nas_fpn` | `detect_anchor` | 1.04 px | 0.004 |
-| `yolof` | `detect_anchor` (ctr_clamp) | 0.12 px | 0.002 |
-| `pvt` | `detect_anchor` (PVT-Tiny) | 0.55 px | 0.005 |
-| `sabl` | `detect_sabl` (buckets) | 0.55 px | 0.003 |
 | `nas_fcos` | `detect_fcos` | 0.19 px | 0.001 |
-| `reppoints` | `detect_fcos` (xyxy offset) | 0.25 px | 0.006 |
-| `autoassign` | `detect_fcos` | 0.30 px | 0.006 |
-| `foveabox` | `detect_fcos` (base_edge) | 0.40 px | 0.002 |
 | `gfl` | `detect_fcos` | 0.23 px | 0.004 |
-| `fcos` | `detect_fcos` | 0.32 px | 0.004 |
-| `vfnet` | `detect_fcos` | 0.46 px | 0.003 |
-| `rtmdet` | `detect_fcos` | 0.68 px | 0.002 |
-| `ld` | `detect_fcos` | 0.30 px | 0.006 |
-| `yolox` | `detect_yolox` | 0.41 px | 0.002 |
 | `yolo` | `detect_yolov3` | 0.23 px | 0.005 |
+| `reppoints` | `detect_fcos` (xyxy offset) | 0.25 px | 0.006 |
+| `retinanet` | `detect_anchor` | 0.27 px | 0.000 |
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
 | `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
 | `dino` | `detect_detr` | 0.28 px | 0.004 |
-| `ddq` | `detect_detr` (distinct queries) | 0.06 px | 0.018 |
+| `autoassign` | `detect_fcos` | 0.30 px | 0.006 |
+| `ld` | `detect_fcos` | 0.30 px | 0.006 |
+| `fcos` | `detect_fcos` | 0.32 px | 0.004 |
+| `foveabox` | `detect_fcos` (base_edge) | 0.40 px | 0.002 |
+| `ddod` | `detect_anchor` | 0.41 px | 0.001 |
+| `yolox` | `detect_yolox` | 0.41 px | 0.002 |
+| `ssd` | `detect_anchor` (per-level anchors) | 0.42 px | 0.003 |
+| `ghm` | `detect_anchor` | 0.46 px | 0.005 |
+| `vfnet` | `detect_fcos` | 0.46 px | 0.003 |
+| `paa` | `detect_paa` (score voting) | 0.54 px | 0.011 |
+| `pvt` | `detect_anchor` (PVT-Tiny) | 0.55 px | 0.005 |
+| `sabl` | `detect_sabl` (buckets) | 0.55 px | 0.003 |
+| `fsaf` | `detect_anchor` (TBLR coder) | 0.56 px | 0.003 |
+| `rtmdet` | `detect_fcos` | 0.68 px | 0.002 |
+| `lad` | `detect_paa` (score voting) | 0.74 px | 0.001 |
+| `nas_fpn` | `detect_anchor` | 1.04 px | 0.004 |
 | `detr` | `detect_detr` | 1.85 px | 0.044 |
 
 Every row above was re-measured together in one run, so the numbers are comparable with each
@@ -340,6 +347,16 @@ representative config from `metafile.yml` instead picks PVTv2-B5, a different ar
 (overlapping patch embedding, linear spatial reduction), which lands at 15.74 px and is not
 covered. Two variants of one family can disagree completely; naming the variant is not
 optional.
+
+Six of those rows were added after the first pass, and every one of them had been recorded as
+out of scope. That is worth saying plainly: **"needs its own decoder" is not the same as
+"cannot be done"** — the six closed in a day. What they needed was reading the family's own
+config rather than assuming defaults. `ssd` lays down a different number of anchors per level;
+`yolact` gives base sizes and centres separately from the strides, so the usual
+stride-times-scale reconstruction lands 0.859× small and half a cell off; `paa` and `lad` rank
+by anchor rather than by (anchor, class) and re-average boxes by score voting, which is
+selected by the `with_score_voting` attribute and not by the class name — `lad` subclasses
+`PAAHead`, so matching on the name misses it.
 
 `ld` needs its command run from the MMDetection root. Distillation configs name the teacher as
 `teacher_config='configs/gfl/...'`, relative to the working directory rather than to the config
@@ -479,12 +496,16 @@ Three groups do not decode, and they fail for different reasons:
   never had a chance). `MMDET_DUMP_HEAD` writes the neck output beside the head output for
   exactly this split — a family whose `feat` dumps match and whose `cls`/`box` dumps do not is
   a head problem, and the reverse is a compiler problem.
-- **The family post-processes its own way**: `paa` and `lad` combine class score and IoU as
-  `sqrt(cls * iou)` and then re-average boxes by score voting; `yolact` uses fast NMS and mask
-  coefficients. Their boxes already agree — `paa` to 9 px — but far fewer survive the threshold.
-- **The priors or the coder are outside `det_params`**: `ssd` uses a different number of anchors
-  per level, `fsaf` a TBLR coder, and `cornernet`, `centripetalnet`, `centernet` and `yolov3`
-  decode from heatmaps or corner pairs.
+- **The family post-processes its own way.** This group is down to `yolact`, and it is a
+  boundary case rather than a decode failure: fast NMS is implemented and the boxes agree to
+  0.74 px, but one box sits either side of the harness's own 0.30 cut (mmdet 0.3013, compiled
+  0.2951). It is counted with `free_anchor` and `double_heads`, not with the failures.
+- **The priors or the coder are outside `det_params`.** This group is now empty. `ssd`,
+  `fsaf`, `paa`, `lad`, `cornernet` and `centernet` all decode, and `yolov3` did earlier.
+  `centripetalnet` decodes too but lands at 3.80 px on one of two boxes, where a single
+  top-k rank flips between two nearly-equal heatmap peaks; running mmdet's own
+  `_decode_heatmap` on our tensors returns the same answer (0.4387 against 0.4393), so the
+  formula is equivalent and what remains is half-precision, not the decoder.
 
 A family in the first group is not silently wrong: without anchor parameters `detect_anchor`
 generates no candidates and the runner reports zero boxes.
