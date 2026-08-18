@@ -288,7 +288,7 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Sixty-one families produce the same boxes MMDetection does** — thirty-two single-stage
+**Sixty-two families produce the same boxes MMDetection does** — thirty-three single-stage
 below, twenty-nine two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
@@ -310,6 +310,7 @@ no label mismatch and no difference in how many boxes survive.
 | `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
 | `pisa` | `detect_anchor` | 0.18 px | 0.005 |
 | `nas_fcos` | `detect_fcos` | 0.19 px | 0.001 |
+| `condinst` | `detect_fcos` (mask branch ignored) | 0.19 px | 0.003 |
 | `gfl` | `detect_fcos` | 0.23 px | 0.004 |
 | `yolo` | `detect_yolov3` | 0.23 px | 0.005 |
 | `reppoints` | `detect_fcos` (xyxy offset) | 0.25 px | 0.006 |
@@ -362,6 +363,33 @@ selected by the `with_score_voting` attribute and not by the class name — `lad
 `teacher_config='configs/gfl/...'`, relative to the working directory rather than to the config
 file, so running from anywhere else fails to find it and the family looks broken.
 
+`condinst` was added without writing a line of code, and finding it was an accounting exercise
+rather than an engineering one. Every table in this chapter classifies the families the two
+harnesses *run* — thirty-four single-stage plus forty two-stage — but `configs/` holds a
+hundred. Subtracting gives twenty-six that neither harness has ever touched, and a family that
+is never run cannot appear as a failure. Most of the twenty-six are legitimately outside the
+question: seven trackers that wrap a detector rather than being one, five mask-only families
+that emit no boxes at all, the three text-conditioned families, `reid`, and the five already
+discussed above. Two were not: `condinst` and `boxinst` both have an ordinary box branch, and
+both were already listed in `verify_heads.py` with their checkpoints downloaded. Nobody had
+run them.
+
+`condinst` passes because `CondInstBboxHead` extends `FCOSHead` and leaves the box path alone.
+Its `forward_single` adds a fourth branch — a `controller` convolution predicting 169 mask
+parameters — and its `_predict_by_feat_single` carries `param_pred`, `points` and `strides`
+alongside the boxes, but every one of those feeds the mask head. The decode is the FCOS decode:
+`DistancePointBBoxCoder` against grid points, sigmoid centerness as the score factor,
+`filter_scores_and_topk`, the standard `_bbox_post_process`. The harness classified it as
+`kind fcos` on its own and `detect_fcos` was already right.
+
+`boxinst` should follow for free — `BoxInstBboxHead` subclasses `CondInstBboxHead` and
+overrides neither `forward_single` nor either `predict_by_feat`, so it runs the decoder above
+verbatim; only `num_params` changes, from 169 to 593. It is blocked instead by
+`BoxInstDataPreprocessor.__init__`, which raises unconditionally when `scikit-image` is absent.
+The only use of `skimage` in that class is inside an `if training:` branch, computing LAB colour
+similarity for the pseudo-masks that box-supervised *training* needs; inference never reaches
+it. That is a constructor guard on a training-only dependency, not a limit of the family.
+
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
@@ -399,13 +427,26 @@ and the thresholds are the same. Twenty-nine of the forty families with a `roi_h
 | `dcn` | `detect_roi` | 0.37 px | 0.0002 |
 | `instaboost` | `detect_roi` | 0.39 px | 0.0079 |
 
-`panoptic_fpn` is not in the table any more, and the reason is worth stating plainly: it
-cannot be measured in this environment, because `panopticapi` is not installed and
-`init_detector` builds the dataset pipeline before it builds the model. It was previously
-recorded at 0.04 px. That number came from a run whose export step had already failed — the
-harness checked only that `frcnn.json` existed, so a file left by an earlier run carried it
-through. The harness now deletes each stage's outputs before that stage runs, which is what
-made the failure visible. Treat the old number as unverified rather than wrong.
+`panoptic_fpn` is not in the table any more, and the reason is worth stating precisely: the
+interpreter the harness runs under does not have `panopticapi`, and `init_detector` builds the
+dataset pipeline before it builds the model. Naming the interpreter matters more than naming
+the environment, because two virtualenvs on this machine disagree: the one the harness uses has
+a working `import mmdet.models` but no `panopticapi`, while the other has `panopticapi` and
+cannot import `mmdet.models` at all — a stale `mmpretrain` install makes its
+`reid_data_preprocessor` raise `TypeError` at class-definition time. The harness resolves child
+processes through `sys.executable`, so which Python starts it decides the answer.
+
+Checking this needs the failing call, not an import. `import panopticapi` and even
+`import mmdet.datasets.coco_panoptic` both succeed without the package, because the check is
+deferred to `LoadPanopticAnnotations.__init__` (`mmdet/datasets/transforms/loading.py:572`).
+The discriminating command is
+`python -c "from mmdet.datasets.transforms.loading import LoadPanopticAnnotations as L; L()"`.
+
+`panoptic_fpn` was previously recorded at 0.04 px. That number came from a run whose export
+step had already failed — the harness checked only that `frcnn.json` existed, so a file left by
+an earlier run carried it through. The harness now deletes each stage's outputs before that
+stage runs, which is what made the failure visible. Treat the old number as unverified rather
+than wrong.
 
 `fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
