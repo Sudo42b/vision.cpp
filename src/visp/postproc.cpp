@@ -270,7 +270,21 @@ std::vector<detection> detect_fcos(
                 dist[k] = fovea ? be * std::exp(v) : v;
             }
             float outb[4];
-            distance2bbox(pts.data() + (size_t)pos * 2, dist, 1, outb, p.input_w, p.input_h);
+            if (p.box_xyxy_offset) {
+                // RepPoints: 네 값 모두 중심에 **더한다**(격자 단위 → ×stride).
+                const float px = pts[(size_t)pos * 2], py = pts[(size_t)pos * 2 + 1];
+                const float st = l < (int)p.strides.size() ? p.strides[l] : 1.0f;
+                outb[0] = px + dist[0] * st; outb[1] = py + dist[1] * st;
+                outb[2] = px + dist[2] * st; outb[3] = py + dist[3] * st;
+                if (p.input_w > 0) {
+                    outb[0] = std::min(std::max(outb[0], 0.0f), (float)p.input_w);
+                    outb[2] = std::min(std::max(outb[2], 0.0f), (float)p.input_w);
+                    outb[1] = std::min(std::max(outb[1], 0.0f), (float)p.input_h);
+                    outb[3] = std::min(std::max(outb[3], 0.0f), (float)p.input_h);
+                }
+            } else {
+                distance2bbox(pts.data() + (size_t)pos * 2, dist, 1, outb, p.input_w, p.input_h);
+            }
             float sc = std::get<0>(t);
             if (ctr) sc *= sigmoidf(ctr[pos]);
             cand.push_back({outb[0], outb[1], outb[2], outb[3], sc, std::get<1>(t)});

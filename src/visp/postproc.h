@@ -93,6 +93,11 @@ struct fcos_params {
     //    그리고 곱하는 값은 stride 가 아니라 `base_edge_list` 다 — 기본값이 stride 의
     //    2배(16,32,… vs 8,16,…)라 stride 로 두면 박스가 레벨마다 정확히 절반이 된다.
     std::vector<float> base_edge;
+    // RepPoints: 조립기가 `points2bbox` 로 만든 값은 **거리가 아니라 중심 기준 xyxy
+    // 오프셋**이고 단위가 격자다. mmdet 은 `bboxes = pred·stride + [cx,cy,cx,cy]` 로
+    // 픽셀화한다(reppoints_head.py `_predict_by_feat_single`). 거리 디코드처럼
+    // l·t 를 빼면 박스가 중심 반대편으로 뒤집힌다.
+    bool box_xyxy_offset = false;
 };
 // cls_scores[l]=[nc,W,H]HWC · bbox_preds[l]=[4,W,H]HWC.
 // bbox_preds 는 조립기가 이미 픽셀 거리로 만든 값이다 — 여기서 stride 를 곱하지 않는다.

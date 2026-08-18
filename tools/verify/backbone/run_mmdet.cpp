@@ -366,8 +366,11 @@ int main(int argc, char** argv) {
     //   · anchor 인데 거리 예측    → 같은 거리 경로 (RTMDet 의 bbox_mul_stride 가 그 표시)
     // 앵커 파라미터가 안 실린 계열은 `octave_scales` 가 비어 있어 detect_anchor 가
     // 후보 0개를 낸다 — 그건 "조용히 틀린 박스" 가 아니라 안전한 정지다.
+    // RepPoints 도 이 경로를 탄다 — 격자점을 깔고 top-k·NMS 하는 부분이 같다.
+    // 박스 해석만 다르다(`box_xyxy_offset`).
     const bool distance_box = hc.kind == head_kind::fcos || hc.kind == head_kind::gfl ||
-                              hc.kind == head_kind::vfnet || hc.bbox_mul_stride;
+                              hc.kind == head_kind::vfnet || hc.kind == head_kind::reppoints ||
+                              hc.bbox_mul_stride;
 
     std::vector<detection> dets;
     if (is_detr) {
@@ -485,6 +488,7 @@ int main(int argc, char** argv) {
         fp.base_edge = dp.base_edge;   // FoveaBox 만 채워져 온다
         // FCOS 만 MlvlPointGenerator(0.5) 다. 나머지는 AnchorGenerator(center_offset=0).
         fp.point_offset = hc.kind == head_kind::fcos ? 0.5f : hc.center_offset;
+        fp.box_xyxy_offset = hc.kind == head_kind::reppoints;
         dets = detect_fcos(cls_v, box_v, ctr_v, feat_hw, fp);
     } else {
         dets = detect_anchor(cls_v, box_v, feat_hw, dp, ctr_v.empty() ? nullptr : &ctr_v);
