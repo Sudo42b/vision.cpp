@@ -211,6 +211,8 @@ int main(int argc, char** argv) {
     rpn_params rp;
     rp.strides = J.arr("rpn_strides");
     rp.octave_base_scale = J.num("rpn_scale", 8.0f);
+    // 한 레벨에 스케일이 여럿인 계열(C4)이 있다. 목록이 있으면 그게 정본이다.
+    if (std::vector<float> sc = J.arr("rpn_scales"); !sc.empty()) rp.octave_scales = sc;
     rp.ratios = J.arr("rpn_ratios");
     rp.nms_pre = (int)J.num("rpn_nms_pre", 1000);
     rp.nms_thr = J.num("rpn_nms_thr", 0.7f);
@@ -221,9 +223,18 @@ int main(int argc, char** argv) {
     rp.cls_out_channels = (int)J.num("rpn_cls_out_channels", 1.0f);
     rp.input_w = rp.input_h = SZ;
     std::vector<float> props = rpn_proposals(rpn_cls, rpn_box, rpn_hw, rp);
-    const int M = (int)(props.size() / 4);
-    fprintf(stderr, "[frcnn] proposal %d 개 (nms %.2f)\n", M, rp.nms_thr);
-    if (M == 0) {
+    const int M_real = (int)(props.size() / 4);
+    // ⚠️ **proposal 이 상한보다 적게 나오는 계열이 있다.** SubB 는 상한(rpn_max)으로
+    //    구워지고 그 안의 `flatten` 이 `ggml_reshape_2d(…, 2048, 1000)` 처럼 **행 수를
+    //    상수로 박는다** — 적게 넣으면 `ggml_nelements(a) == ne0*ne1` 로 죽는다.
+    //    FPN 계열은 후보가 많아 항상 상한을 채우지만, C4 계열(TridentNet)은 레벨이
+    //    하나뿐이라 NMS 뒤 107개만 남았다. 상한까지 0 으로 채우고 **디코드는 앞
+    //    `M_real` 행만** 쓴다(0 박스는 RoIAlign 이 레벨 0 의 (0,0) 을 읽을 뿐 무해하다).
+    const int M = std::max(M_real, rp.max_per_img);
+    props.resize((size_t)M * 4, 0.0f);
+    fprintf(stderr, "[frcnn] proposal %d 개 (상한 %d 까지 채움, nms %.2f)\n",
+            M_real, M, rp.nms_thr);
+    if (M_real == 0) {
         fprintf(stderr, "proposal 이 0 개다 — RPN 출력/규약 확인\n");
         return 4;
     }
@@ -489,7 +500,7 @@ int main(int argc, char** argv) {
         }
         struct cand { float x1, y1, x2, y2, score; int roi; };
         std::vector<cand> cs;
-        for (int i = 0; i < M; ++i) {
+        for (int i = 0; i < M_real; ++i) {
             const float px1 = rois[(size_t)i * 4 + 0], py1 = rois[(size_t)i * 4 + 1];
             const float px2 = rois[(size_t)i * 4 + 2], py2 = rois[(size_t)i * 4 + 3];
             const float pw = px2 - px1, ph = py2 - py1;
@@ -596,7 +607,7 @@ int main(int argc, char** argv) {
         rp2.input_h = SZ;
         // 마지막 단계의 박스는 그 단계에 **들어간** RoI 기준이다. 캐스케이드에서 `rois` 는
         // 이미 다음 단계용으로 갱신되지 않으므로(마지막 단계는 정제를 건너뛴다) 그대로 쓴다.
-        dets = detect_roi(prob.data(), box_st[last].data(), rois.data(), M, rp2);
+        dets = detect_roi(prob.data(), box_st[last].data(), rois.data(), M_real, rp2);
     }
 
 #if defined(ARCH_C) && defined(ARCH_D)

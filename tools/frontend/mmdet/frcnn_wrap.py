@@ -333,7 +333,15 @@ def frcnn_cfg(det, size=800):
         "img_size": int(size),
         # RPN
         "rpn_strides": [float(s) for s in strides],
-        "rpn_scale": float(scales[0]),
+        # ⚠️ **스케일은 목록 전체를 싣는다.** FPN RPN 은 레벨마다 스케일이 하나라
+        #    `scales[0]` 으로 충분했지만, C4 계열(TridentNet)은 **한 레벨에 5개**다
+        #    (`scales=[2,4,8,16,32]`, stride 16). 첫 개만 쓰면 앵커가 15개가 아니라 3개가 되고,
+        #    RPN cls 채널 15개를 3개로 읽어 **엉뚱한 자리를 objectness 로 오해한다**.
+        #    실측: 그래서 proposal 이 전부 빗나가 최종 박스가 0건이었다.
+        #    base_size 는 stride 로 두고(mmdet 의 `base_sizes` 기본값) 배율을 스케일 목록으로
+        #    준다 — 스케일이 하나인 계열은 결과가 완전히 같다.
+        "rpn_scale": 1.0,
+        "rpn_scales": [float(v) for v in scales],
         "rpn_ratios": [float(r) for r in pg.ratios.tolist()],
         "rpn_means": [float(v) for v in bc.means], "rpn_stds": [float(v) for v in bc.stds],
         "rpn_nms_pre": int(rpn_c.nms_pre), "rpn_nms_thr": float(rpn_c.nms.iou_threshold),
