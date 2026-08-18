@@ -288,7 +288,7 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Sixty-four families produce the same boxes MMDetection does** — thirty-five single-stage
+**Sixty-five families produce the same boxes MMDetection does** — thirty-six single-stage
 below, twenty-nine two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
@@ -313,6 +313,7 @@ no label mismatch and no difference in how many boxes survive.
 | `condinst` | `detect_fcos` (mask branch ignored) | 0.19 px | 0.003 |
 | `gfl` | `detect_fcos` | 0.23 px | 0.004 |
 | `yolo` | `detect_yolov3` | 0.23 px | 0.005 |
+| `boxinst` | `detect_fcos` (mask branch ignored) | 0.25 px | 0.001 |
 | `reppoints` | `detect_fcos` (xyxy offset) | 0.25 px | 0.006 |
 | `retinanet` | `detect_anchor` | 0.27 px | 0.000 |
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
@@ -384,13 +385,15 @@ alongside the boxes, but every one of those feeds the mask head. The decode is t
 `filter_scores_and_topk`, the standard `_bbox_post_process`. The harness classified it as
 `kind fcos` on its own and `detect_fcos` was already right.
 
-`boxinst` should follow for free — `BoxInstBboxHead` subclasses `CondInstBboxHead` and
+`boxinst` followed for free, at 0.25 px — `BoxInstBboxHead` subclasses `CondInstBboxHead` and
 overrides neither `forward_single` nor either `predict_by_feat`, so it runs the decoder above
-verbatim; only `num_params` changes, from 169 to 593. It is blocked instead by
-`BoxInstDataPreprocessor.__init__`, which raises unconditionally when `scikit-image` is absent.
-The only use of `skimage` in that class is inside an `if training:` branch, computing LAB colour
-similarity for the pseudo-masks that box-supervised *training* needs; inference never reaches
-it. That is a constructor guard on a training-only dependency, not a limit of the family.
+verbatim; only `num_params` changes, from 169 to 593. What had blocked it was not the family
+but `BoxInstDataPreprocessor.__init__`, which raises unconditionally when `scikit-image` is
+absent. The only use of `skimage` in that class is inside an `if training:` branch, computing
+LAB colour similarity for the pseudo-masks that box-supervised *training* needs; inference
+never reaches it. Installing the package was the whole fix — no code changed. A constructor
+guard on a training-only dependency reads exactly like an unsupported architecture in a results
+table, and the two deserve different columns.
 
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
