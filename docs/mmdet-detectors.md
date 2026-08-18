@@ -382,7 +382,7 @@ and the thresholds are the same. Twenty-five of the forty families with a `roi_h
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The twenty that do not agree split five ways, and the split matters more than the count:
+The fifteen that do not agree split five ways, and the split matters more than the count:
 
 - **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
   `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
@@ -398,9 +398,13 @@ The twenty that do not agree split five ways, and the split matters more than th
   into torch changed nothing, while substituting the *box deltas* reproduced the full 10.25 px
   from a maximum delta error of 0.0023. Do not replace these numbers with their fp32 twins;
   they are what the deployment precision produces.
-- **Cascade stages beyond the first are still incomplete**: `htc` (94 px), `detectors` (30 px)
-  and `scnet` (29 px). `cascade_rcnn` itself now agrees at 0.09 px, so the shared three-stage
-  path is right; what remains is each family's mask or semantic branch.
+- **Neither the graph nor the decoder is at fault.** `double_heads` agrees at 0.16 px and
+  differs by exactly one box: mmdet scores it 0.2954 and the compiled graph 0.3010, on either
+  side of the 0.30 cut the harness itself applies. That is the fp16 score error landing on a
+  threshold, not a decode difference, so the harness now prints how many boxes sit in the
+  0.30–0.35 band beside every count mismatch. `fast_rcnn` is not measured at all — its
+  metafile lists no weights, and random initialisation cannot judge a decoder, so it is
+  recorded as untried rather than failing.
 - **The family post-processes its own way**: `crowddet` predicts two instances per proposal and
   needs set-NMS (without it nothing is suppressed — 500 boxes against 1), `ms_rcnn` rescales
   scores by a predicted mask IoU (its boxes are exact at 0.07 px; only the scores differ),
@@ -423,8 +427,19 @@ The twenty that do not agree split five ways, and the split matters more than th
   shape-correct code, which passes compilation and every shape assertion while returning wrong
   values.
 
-`swin` (the SubA gguf fails to load) and `tridentnet` (the runner returns no boxes at all) are
-the two that remain unsorted.
+  The three cascade families joined them later, and each was a different missing piece rather
+  than a shared cascade bug. `htc` (94 px → 0.12 px) feeds a semantic segmentation branch back
+  into every RoI: RoIAlign at stride 8 onto a 14×14 grid, average-pooled to 7×7 and added to
+  the box features **at every stage**, not only the first. `scnet` (29 px → 0.18 px) adds a
+  global-context vector to all RoI positions the same way. `detectors` (30 px → 0.03 px) was
+  not a fusion at all — its switchable atrous convolution ran at one dilation. `swin`
+  (0.22 px) failed earlier still, at load: `GGML_MAX_NAME` was 64 and its tensor names are
+  longer, and separately the shifted-window attention mask is built by slice assignment that
+  tracing drops, which silently zeroes the mask instead of crashing.
+
+`tridentnet` is the one family that remains unsorted: the runner returns no boxes at all. It
+is also the only C4 detector here — no FPN neck — so the level assignment host RoIAlign
+performs has nothing to choose between.
 
 `rpn` decodes proposals rather than detections, so a worst case over the whole set says little:
 of 185 proposals the median is 0.09 px and 182 are within 1 px, with one proposal of 186
