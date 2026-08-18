@@ -574,7 +574,11 @@ from shared.compile.pipeline import main; main()
     r = run([PY, FE + "/append_head_weights.py", os.path.join(d, "bb.pt"),
              os.path.join(d, "out", "Fam.gguf")], d,
             {"PYTHONPATH": f"{d}:{FE}"}, phase="2b_weights")
-    if "추가" not in (r.stdout or ""):
+    # ⚠️ **성공 판정을 출력 문구로 하지 마라.** 여기서 `"추가"` 를 찾고 있었는데 스크립트는
+    #    영어로 `"appended N weights…"` 를 찍는다. 문구가 바뀐 걸 아무도 못 봐서 **one-stage
+    #    계열 전부가 WEIGHTS_FAIL 로 떨어지고 있었다** — 계열 탓처럼 보이지만 하네스 탓이다.
+    #    종료코드로 판정하고, 문구는 참고로만 쓴다.
+    if r.returncode != 0:
         return fam, "WEIGHTS_FAIL", _last_error(r.stderr)[:70]
 
     # 3) run_mmdet 빌드 (백본 .cpp + head.cpp 를 함께 컴파일)

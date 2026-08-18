@@ -96,8 +96,11 @@ def append(pt_path: str, gguf_path: str, prefixes=None) -> int:
         return 0
 
     tmp = gguf_path + ".tmp"
+    # ⚠️ `GGUFWriter(path, arch=...)` 가 이미 `general.architecture` 를 쓴다. 여기서
+    #    `add_architecture()` 를 또 부르면 최신 gguf-py 가 stderr 로
+    #    `Duplicated key name 'general.architecture'` 를 뱉는다. 값이 같아 산출물은 멀쩡한데
+    #    그 줄이 상위 하네스의 "실패 이유" 로 잡혀 원인을 오도한다.
     writer = gguf.GGUFWriter(tmp, arch=arch)
-    writer.add_architecture()
     for name, arr in existing + extra:
         writer.add_tensor(name, arr)
     writer.write_header_to_file()
