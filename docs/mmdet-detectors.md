@@ -308,11 +308,13 @@ no label mismatch and no difference in how many boxes survive.
 | `ddod` | `detect_anchor` | 0.41 px | 0.001 |
 | `ghm` | `detect_anchor` | 0.46 px | 0.005 |
 | `nas_fpn` | `detect_anchor` | 1.04 px | 0.004 |
+| `pvt` | `detect_anchor` (PVT-Tiny) | 0.55 px | 0.005 |
 | `nas_fcos` | `detect_fcos` | 0.19 px | 0.001 |
 | `gfl` | `detect_fcos` | 0.23 px | 0.004 |
 | `fcos` | `detect_fcos` | 0.32 px | 0.004 |
 | `vfnet` | `detect_fcos` | 0.46 px | 0.003 |
 | `rtmdet` | `detect_fcos` | 0.68 px | 0.002 |
+| `ld` | `detect_fcos` | 0.30 px | 0.006 |
 | `yolox` | `detect_yolox` | 0.41 px | 0.002 |
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
 | `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
@@ -326,9 +328,15 @@ chosen instead silently pairs a compiled graph with someone else's checkpoint. T
 families differ between those two choices, and the mismatch reads as a decode failure —
 `retinanet` looked 20 px out and `dino` looked like a regression until the pairing was fixed.
 
-`pvt` was in this table at 1.93 px and is no longer here: re-measuring puts it at 15.74 px
-with three boxes too many. Its old number sat just under the 2 px threshold, so it was always
-a marginal pass. The cause has not been established.
+`pvt` is measured on PVT-Tiny, the variant the table has always used. Selecting the family's
+representative config from `metafile.yml` instead picks PVTv2-B5, a different architecture
+(overlapping patch embedding, linear spatial reduction), which lands at 15.74 px and is not
+covered. Two variants of one family can disagree completely; naming the variant is not
+optional.
+
+`ld` needs its command run from the MMDetection root. Distillation configs name the teacher as
+`teacher_config='configs/gfl/...'`, relative to the working directory rather than to the config
+file, so running from anywhere else fails to find it and the family looks broken.
 
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
