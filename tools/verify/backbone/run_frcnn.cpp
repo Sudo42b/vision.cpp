@@ -160,6 +160,14 @@ int main(int argc, char** argv) {
                 outs.size(), NF + 2 * L, NF, L);
         return 3;
     }
+    // HTC 의 시맨틱 융합 feature 는 rpn 출력 **뒤에** 하나 더 붙어 온다.
+    const bool has_sem = J.num("has_semantic", 0.0f) != 0.0f;
+    std::vector<float> sem_feat;
+    std::pair<int, int> sem_hw{0, 0};
+    if (has_sem && (int)outs.size() > NF + 2 * L) {
+        sem_feat = outs[NF + 2 * L];
+        sem_hw = all_hw[NF + 2 * L];
+    }
     std::vector<std::vector<float>> feats(outs.begin(), outs.begin() + NF);
     std::vector<std::vector<float>> rpn_cls(outs.begin() + NF, outs.begin() + NF + L);
     std::vector<std::vector<float>> rpn_box(outs.begin() + NF + L, outs.begin() + NF + 2 * L);
@@ -193,6 +201,39 @@ int main(int argc, char** argv) {
     ap.sampling_ratio = (int)J.num("roi_sampling_ratio", 0);
     ap.aligned = J.num("roi_aligned", 1.0f) != 0.0f;
     std::vector<float> roi = roi_align(feats, feat_hw, props.data(), M, ap);
+
+    // ── HTC: 시맨틱 feature 를 RoIAlign 해서 bbox_feats 에 **더한다** ──────────
+    // mmdet `htc_roi_head.py:99-104`. 안 더하면 크래시 없이 박스만 밀린다
+    // (실측: 이걸 뺀 torch 가 우리 결과와 0.07px 로 일치했다 — 유일한 차이였다).
+    // ⚠️ 시맨틱 RoI 출력 크기가 **14** 라 bbox 쪽 7 과 다르다. mmdet 은 그때
+    //    `adaptive_avg_pool2d` 로 줄인다. 14→7 은 정수배라 2×2 평균이면 정확하다.
+    auto fuse_semantic = [&](std::vector<float>& rf, float const* boxes, int m) {
+        if (!has_sem || sem_feat.empty()) return;
+        roi_align_params sp;
+        sp.output_size = (int)J.num("sem_roi_out", 14.0f);
+        sp.channels = (int)J.num("sem_channels", 256.0f);
+        sp.strides = {J.num("sem_stride", 8.0f)};
+        sp.finest_scale = ap.finest_scale;
+        sp.sampling_ratio = (int)J.num("sem_sampling_ratio", 0.0f);
+        sp.aligned = J.num("sem_aligned", 1.0f) != 0.0f;
+        std::vector<std::vector<float>> sf{sem_feat};
+        std::vector<std::pair<int, int>> shw{sem_hw};
+        std::vector<float> s = roi_align(sf, shw, boxes, m, sp);
+        const int C = sp.channels, SO = sp.output_size, O = ap.output_size;
+        const int k = SO / O;                       // 14/7 = 2
+        if (k < 1 || SO != k * O) return;           // 정수배가 아니면 건너뛴다
+        for (int i = 0; i < m; ++i)
+            for (int c = 0; c < C; ++c)
+                for (int y = 0; y < O; ++y)
+                    for (int x = 0; x < O; ++x) {
+                        float acc = 0.0f;
+                        for (int dy = 0; dy < k; ++dy)
+                            for (int dx = 0; dx < k; ++dx)
+                                acc += s[(((size_t)i * C + c) * SO + y * k + dy) * SO + x * k + dx];
+                        rf[(((size_t)i * C + c) * O + y) * O + x] += acc / (k * k);
+                    }
+    };
+    fuse_semantic(roi, props.data(), M);
 
     // 캐스케이드는 단계마다 박스를 정제하고 **그 박스로 RoIAlign 을 다시** 한다.
     // 단계 수와 단계별 정규화 상수는 프론트엔드가 frcnn.json 에 실어 준다.
@@ -245,9 +286,16 @@ int main(int argc, char** argv) {
     };
 
     for (int st = 0; st < NS; ++st) {
-        std::vector<float> roi_st = with_reg_half(
-            (st == 0) ? roi : roi_align(feats, feat_hw, rois.data(), M, ap),
-            (st == 0) ? props : rois);
+        // ⚠️ 시맨틱 융합은 **단계마다** 건다. mmdet 의 `_bbox_forward(stage, …, semantic_feat)`
+        //    가 매 단계 부른다 — 0단계만 더하면 뒤 단계가 융합 없이 돈다.
+        std::vector<float> base_st;
+        if (st == 0) {
+            base_st = roi;                       // 위에서 이미 융합했다
+        } else {
+            base_st = roi_align(feats, feat_hw, rois.data(), M, ap);
+            fuse_semantic(base_st, rois.data(), M);
+        }
+        std::vector<float> roi_st = with_reg_half(base_st, (st == 0) ? props : rois);
         const int MB = (RSF > 0.0f) ? 2 * M : M;   // SubB 에 넣는 행 수
 
         model_file fb = model_load(gbs[st].c_str());

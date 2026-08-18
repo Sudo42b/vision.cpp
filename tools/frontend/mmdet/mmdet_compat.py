@@ -155,6 +155,87 @@ def patch_ops():
         _tood.sigmoid_geometric_mean = sigmoid_geometric_mean
 
     _patch_carafe()
+    _patch_swin_mask()
+
+
+def _patch_swin_mask():
+    """Swin 의 shifted-window 어텐션 마스크를 **버퍼로 미리 굽는다.**
+
+    `ShiftWindowMSA.forward` 는 `torch.zeros` 로 img_mask 를 만들고 **슬라이스 대입**
+    (`img_mask[:, h, w, :] = cnt`, swin.py:201-212)으로 9개 영역 번호를 채우는데, trace 에서
+    이 in-place 대입(`aten::index_put_`)이 그래프에 안 실려 **마스크가 전부 0** 이 된다.
+    0 마스크는 크래시가 없다 — shifted 블록마다 경계 윈도가 roll 로 이어붙은 반대편 픽셀에
+    어텐션하고 값만 조용히 틀린다(swin-t 실측: shifted 블록당 rel L1 +0.004~0.06,
+    stage 가 깊을수록 경계 윈도 비율이 10%→56% 로 커져 최종 rpn 출력 0.82).
+
+    입력 크기가 고정이면 이 마스크는 **상수**다. eager (export dry-run) forward 에서
+    mmdet 원식 그대로 계산해 버퍼로 등록해 두고, trace 는 버퍼를 읽게 한다 —
+    `relative_position_index` 와 같은 경로로 GGUF 에 실린다. 값은 동일하므로 torch
+    기준값 쪽도 이 패치를 지나도 결과가 같다.
+    """
+    try:
+        from mmdet.models.backbones.swin import ShiftWindowMSA
+    except Exception:
+        return                                  # swin 이 없는 환경 — 조용히 넘어간다
+    if getattr(ShiftWindowMSA, "_visp_mask_patched", False):
+        return
+    import torch
+    import torch.nn.functional as F
+
+    def forward(self, query, hw_shape):
+        B, L, C = query.shape
+        H, W = hw_shape
+        assert L == H * W, 'input feature has wrong size'
+        query = query.view(B, H, W, C)
+        ws, ss = self.window_size, self.shift_size
+        pad_r = (ws - W % ws) % ws
+        pad_b = (ws - H % ws) % ws
+        query = F.pad(query, (0, 0, 0, pad_r, 0, pad_b))
+        H_pad, W_pad = query.shape[1], query.shape[2]
+
+        if ss > 0:
+            shifted_query = torch.roll(query, shifts=(-ss, -ss), dims=(1, 2))
+            # 원식 그대로 — 단 한 번(eager)만 계산하고 결과를 버퍼에 박는다.
+            if getattr(self, "_visp_mask_hw", None) != (H_pad, W_pad):
+                with torch.no_grad():
+                    img_mask = torch.zeros((1, H_pad, W_pad, 1), device=query.device)
+                    sl = (slice(0, -ws), slice(-ws, -ss), slice(-ss, None))
+                    cnt = 0
+                    for h in sl:
+                        for w in sl:
+                            img_mask[:, h, w, :] = cnt
+                            cnt += 1
+                    mask_windows = self.window_partition(img_mask)
+                    mask_windows = mask_windows.view(-1, ws * ws)
+                    attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+                    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)
+                                                      ).masked_fill(attn_mask == 0, float(0.0))
+                if hasattr(self, "_visp_attn_mask"):
+                    del self._visp_attn_mask
+                self.register_buffer("_visp_attn_mask", attn_mask, persistent=True)
+                self._visp_mask_hw = (H_pad, W_pad)
+            attn_mask = self._visp_attn_mask
+        else:
+            shifted_query = query
+            attn_mask = None
+
+        query_windows = self.window_partition(shifted_query)
+        query_windows = query_windows.view(-1, ws**2, C)
+        attn_windows = self.w_msa(query_windows, mask=attn_mask)
+        attn_windows = attn_windows.view(-1, ws, ws, C)
+        shifted_x = self.window_reverse(attn_windows, H_pad, W_pad)
+        if ss > 0:
+            x = torch.roll(shifted_x, shifts=(ss, ss), dims=(1, 2))
+        else:
+            x = shifted_x
+        if pad_r > 0 or pad_b:
+            x = x[:, :H, :W, :].contiguous()
+        x = x.view(B, H * W, C)
+        x = self.drop(x)
+        return x
+
+    ShiftWindowMSA.forward = forward
+    ShiftWindowMSA._visp_mask_patched = True
 
 
 def _patch_carafe():

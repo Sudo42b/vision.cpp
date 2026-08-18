@@ -68,6 +68,15 @@ def main(argv=None):
     # 클래스가 `frcnn_wrap` 이름으로 절여진다 → 로더가 import 할 수 있게 같이 둔다.
     for f in mmdet_compat.install_loader_modules(a.out, "frcnn_wrap"):
         print(f"  → loader module: {f}")
+    # ⚠️ **저장 전에 dummy forward 를 한 번 돈다.** eager forward 가 있어야 만들어지는
+    #    상수 버퍼가 있다 — swin 의 shifted-window 어텐션 마스크(`_visp_attn_mask`,
+    #    mmdet_compat._patch_swin_mask)가 그렇다. 저장을 먼저 하면 버퍼가 .pt 에 안 실리고,
+    #    trace 가 마스크를 0 으로 만들어 **크래시 없이 값만 틀린다**(swin 실측 L1 0.82).
+    #    feat_hw 도 같은 forward 에서 얻는다(neck 없는 C4 계열은 건너뛴다 — 아래 참고).
+    with torch.no_grad():
+        feats = det.backbone(torch.zeros(1, 3, a.size, a.size))
+        if getattr(det, "neck", None) is not None:
+            feats = det.neck(feats)
     torch.save(FRCNN_SubA(det).eval(), f"{a.out}/FRCNN_SubA.pt")   # 이미지 → 14 출력
     from frcnn_wrap import num_bbox_stages
     ns = num_bbox_stages(det)
@@ -80,13 +89,7 @@ def main(argv=None):
     cfg = frcnn_cfg(det, a.size)
     if cfg.get("has_mask"):
         torch.save(MaskRCNN_SubC(det).eval(), f"{a.out}/MaskRCNN_SubC.pt")   # mask_feat → mask_logits
-    # feat_hw (P2-P6) — 러너 CWHN flat 해석용. dummy forward 로 크기 취득.
-    # ⚠️ neck 이 **없는** 계열이 있다(C4 계열 TridentNet). `FRCNN_SubA` 와 같은 규약으로
-    #    건너뛴다 — 여기만 빼먹으면 `frcnn.json` 이 안 나와 "two-stage 아님" 으로 오분류된다.
-    with torch.no_grad():
-        feats = det.backbone(torch.zeros(1, 3, a.size, a.size))
-        if getattr(det, "neck", None) is not None:
-            feats = det.neck(feats)
+    # feat_hw (P2-P6) — 러너 CWHN flat 해석용. 위 dummy forward 에서 얻었다.
     cfg["feat_hw"] = [[int(f.shape[2]), int(f.shape[3])] for f in feats]
     json.dump(cfg, open(f"{a.out}/frcnn.json", "w"), indent=2)
     print(f"  → {a.out}/FRCNN_SubA.pt, FRCNN_SubB.pt, frcnn.json (feat_hw={cfg['feat_hw']})")

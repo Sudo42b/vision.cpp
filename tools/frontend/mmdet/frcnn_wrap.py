@@ -39,13 +39,24 @@ class FRCNN_SubA(nn.Module):
         self.neck = getattr(det, "neck", None)
         self.rpn_head = det.rpn_head
         self.n_roi = _n_roi_levels(det)
+        # HTC 계열의 **시맨틱 갈래**. FPN 위에 FCN 을 따로 돌려 나온 융합 feature 를
+        # RoIAlign 해서 `bbox_feats` 에 더한다(htc_roi_head.py:99-104).
+        # ⚠️ **별도 그래프로 빼지 않는다.** 입력이 FPN 전 레벨이라 다중 입력 그래프가 되는데,
+        #    컴파일 경로가 단일 입력만 받는다. 같은 그래프의 **출력 하나**로 붙이면
+        #    백본을 두 번 돌 필요도 없다.
+        self.semantic_head = getattr(det.roi_head, "semantic_head", None)
 
     def forward(self, x):
         feats = self.backbone(x)
         if getattr(self, "neck", None) is not None:
             feats = self.neck(feats)                 # tuple len 5: P2..P6
         rpn_cls, rpn_bbox = self.rpn_head(feats)     # (listL, listL)
-        return tuple(feats[:getattr(self, "n_roi", 4)]) + tuple(rpn_cls) + tuple(rpn_bbox)
+        out = tuple(feats[:getattr(self, "n_roi", 4)]) + tuple(rpn_cls) + tuple(rpn_bbox)
+        if getattr(self, "semantic_head", None) is not None:
+            # `(mask_preds, fused)` 중 **fused** 가 bbox 융합에 쓰이는 쪽이다.
+            _, sem = self.semantic_head(feats)
+            out = out + (sem,)
+        return out
 
 
 class FRCNN_SubB(nn.Module):
@@ -155,10 +166,22 @@ def frcnn_cfg(det, size=800):
             "mask_finest_scale": int(getattr(mext, "finest_scale", 56)),
             "mask_thr_binary": float(rcnn_c.mask_thr_binary),
         }
+    # HTC 의 시맨틱 융합 파라미터. 없으면 안 싣는다.
+    sem = {}
+    if getattr(det.roi_head, "semantic_head", None) is not None:
+        sext = det.roi_head.semantic_roi_extractor
+        sem = {
+            "has_semantic": True,
+            "sem_roi_out": int(sext.roi_layers[0].output_size[0]),      # 14
+            "sem_stride": float(sext.featmap_strides[0]),               # 8
+            "sem_channels": int(sext.out_channels),
+            "sem_sampling_ratio": int(sext.roi_layers[0].sampling_ratio),
+            "sem_aligned": bool(sext.roi_layers[0].aligned),
+        }
     ns = num_bbox_stages(det)
     heads = det.roi_head.bbox_head
     heads = list(heads) if ns > 1 else [heads]
-    return {**mask,
+    return {**mask, **sem,
         # 캐스케이드: 단계 수와 **단계별 bbox 정규화 상수**. 단계마다 다르다
         # (예: [0.1,0.1,0.2,0.2] → [0.05,0.05,0.1,0.1] → [0.033,0.033,0.067,0.067]).
         "num_bbox_stages": ns,
