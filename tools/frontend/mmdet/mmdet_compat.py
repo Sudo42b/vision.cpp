@@ -156,7 +156,90 @@ def patch_ops():
 
     _patch_carafe()
     _patch_swin_mask()
+    _patch_sac_dilation()
 
+
+
+def _patch_sac_dilation():
+    """SAC(DetectoRS)의 dilation-3 deform conv 를 **오프셋 상수 이동**으로 등가 변환한다.
+
+    `SAConv2d.forward` 의 out_l 갈래는 `deform_conv2d(x, offset, w, stride, 3·pad, 3·dil)`
+    인데, ggml `conv_2d_deform` 과 mmcv-Function 렌더러는 **dilation 인자가 없다** —
+    pad=(k-1)//2 · dil=1 로 추론해 렌더하므로 out_l 의 base 샘플링 격자가 통째로 어긋난다.
+    크래시는 없고 out_l 만 조용히 틀린다(detectors 실측: out_s 0.001 vs **out_l 0.753**,
+    layer3 까지 0.94 로 증폭).
+
+    deform conv 의 탭 (i,j) 샘플 위치는 `h0·s − p + i·d + Δh` 다. (p→3p, d→3d) 는
+    오프셋에 상수 `2·d·i − 2·p` 를 더한 (p, d) 와 **정확히 같은 위치**를 읽는다
+    (출력 크기도 같다: (H+6−6−1)/s+1 = (H+2−2−1)/s+1). 그래서 탭별 상수를 버퍼로 구워
+    offset 에 더하고 dilation 1 로 부른다 — 렌더러의 가정이 참이 되고 torch 값은 불변이다.
+    버퍼는 첫 eager forward 에서 등록된다(→ export 는 저장 전 dummy forward 필수,
+    frcnn_to_pt.py 가 이미 그렇게 한다).
+    """
+    try:
+        from mmcv.ops.saconv import SAConv2d
+    except Exception:
+        return                                  # SAC 를 안 쓰는 환경 — 조용히 넘어간다
+    if getattr(SAConv2d, "_visp_sac_patched", False):
+        return
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from mmcv.ops.deform_conv import deform_conv2d
+
+    def forward(self, x):
+        # pre-context (원식 그대로)
+        avg_x = F.adaptive_avg_pool2d(x, output_size=1)
+        avg_x = self.pre_context(avg_x)
+        avg_x = avg_x.expand_as(x)
+        x = x + avg_x
+        # switch (원식 그대로)
+        avg_x = F.pad(x, pad=(2, 2, 2, 2), mode='reflect')
+        avg_x = F.avg_pool2d(avg_x, kernel_size=5, stride=1, padding=0)
+        switch = self.switch(avg_x)
+        # sac
+        weight = self._get_weight(self.weight)
+        zero_bias = torch.zeros(
+            self.out_channels, device=weight.device, dtype=weight.dtype)
+        if self.use_deform:
+            offset = self.offset_s(avg_x)
+            out_s = deform_conv2d(x, offset, weight, self.stride, self.padding,
+                                  self.dilation, self.groups, 1)
+        else:
+            out_s = nn.Conv2d._conv_forward(self, x, weight, zero_bias)
+        weight = weight + self.weight_diff
+        if self.use_deform:
+            # dilation·padding 3배 대신: 탭 (i,j) 마다 offset 에 (2·d·i−2·p, 2·d·j−2·p)
+            # 를 더한다. 값은 원식과 정확히 같고, 그래프에는 dilation 1 conv 만 남는다.
+            if getattr(self, "_visp_dil_shift", None) is None:
+                kh, kw = self.kernel_size
+                d0, p0 = self.dilation, self.padding
+                sh = torch.zeros(2 * kh * kw, 1, 1)
+                for i in range(kh):
+                    for j in range(kw):
+                        sh[2 * (i * kw + j) + 0] = 2.0 * d0[0] * i - 2.0 * p0[0]
+                        sh[2 * (i * kw + j) + 1] = 2.0 * d0[1] * j - 2.0 * p0[1]
+                self.register_buffer("_visp_dil_shift", sh, persistent=True)
+            offset = self.offset_l(avg_x) + self._visp_dil_shift
+            out_l = deform_conv2d(x, offset, weight, self.stride, self.padding,
+                                  self.dilation, self.groups, 1)
+        else:
+            # 비-deform 은 평범한 conv 라 dilation 을 렌더러가 받는다 — 원식 그대로.
+            ori_p, ori_d = self.padding, self.dilation
+            self.padding = tuple(3 * p for p in self.padding)
+            self.dilation = tuple(3 * d for d in self.dilation)
+            out_l = nn.Conv2d._conv_forward(self, x, weight, zero_bias)
+            self.padding, self.dilation = ori_p, ori_d
+        out = switch * out_s + (1 - switch) * out_l
+        # post-context (원식 그대로)
+        avg_x = F.adaptive_avg_pool2d(out, output_size=1)
+        avg_x = self.post_context(avg_x)
+        avg_x = avg_x.expand_as(out)
+        out = out + avg_x
+        return out
+
+    SAConv2d.forward = forward
+    SAConv2d._visp_sac_patched = True
 
 def _patch_swin_mask():
     """Swin 의 shifted-window 어텐션 마스크를 **버퍼로 미리 굽는다.**
