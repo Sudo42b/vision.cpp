@@ -301,6 +301,12 @@ def main():
     ap.add_argument("--image", default=os.path.join(V, "tests", "input", "cat-and-hat.jpg"))
     ap.add_argument("--workdir", default="/tmp/visp-postproc-roi")
     ap.add_argument("--keep", action="store_true", help="중간 산출물(.pt·gguf·러너)을 남긴다")
+    # ⚠️ **이미 통과한 계열을 다시 굽지 마라.** 계열 하나가 40~90초이고 그중 42% 가 g2c
+    #    컴파일이다. 40계열 전체 스윕은 35분인데, 대개 고친 것은 두세 계열뿐이라
+    #    나머지는 같은 답을 다시 계산하는 데 30분을 쓴다.
+    #    수정이 특정 조건에서만 도는 코드면(예: `NS>1`·`RSF>0`) 영향 계열만 골라 재라.
+    ap.add_argument("--skip-pass", metavar="results.json",
+                    help="이전 결과에서 PASS 였던 계열은 건너뛴다")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
 
@@ -308,6 +314,12 @@ def main():
     if not fams:
         print(__doc__)
         return 2
+    if a.skip_pass:
+        prev = {r[0]: r[1] for r in json.load(open(a.skip_pass))}
+        done = [f for f in fams if prev.get(f) == "PASS"]
+        fams = [f for f in fams if prev.get(f) != "PASS"]
+        # 건너뛴 것을 **말한다.** 조용히 줄이면 다음 사람이 "전부 쟀다" 로 읽는다.
+        print(f"이전 PASS {len(done)}계열 건너뜀: {' '.join(done)}\n")
     os.makedirs(a.workdir, exist_ok=True)
     print(f"size={a.size} · image={os.path.basename(a.image)} · thr={THR}"
           f" · 판정: 박스<{BOX_TOL}px 점수<{SCORE_TOL} 라벨0 개수차0")
