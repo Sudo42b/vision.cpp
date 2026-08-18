@@ -292,6 +292,9 @@ def postproc_cfg(det):
     # 디코드 지원은 **별개 판단**이다. head 조립은 되는데 박스 코더가 다른 계열이 있다
     # (FSAF 는 RetinaHead 인데 TBLRBBoxCoder 를 쓴다). 하나로 묶으면 조립까지 같이 막힌다.
     can_decode = bc is not None and "Delta" in type(bc).__name__
+    # FSAF 의 TBLRBBoxCoder — 디코더가 따로 있다(detect_anchor 의 tblr 분기). 계수만 싣는다.
+    tblr_normalizer = (float(getattr(bc, "normalizer", 4.0) or 4.0)
+                       if type(bc).__name__ == "TBLRBBoxCoder" else 0.0)
     # mmdet DeltaXYWHBBoxCoder 의 `add_ctr_clamp`(YOLOF). 켜지면 중심 이동을 픽셀 단위로
     # 자르고 dw/dh 는 상한만 자른다 — 기본 경로와 결과가 다르다. 0 이면 기본 경로.
     ctr_clamp = float(getattr(bc, "ctr_clamp", 0)) if getattr(bc, "add_ctr_clamp", False) else 0.0
@@ -328,6 +331,27 @@ def postproc_cfg(det):
     num_base = int(nbp[0])
     # 레벨마다 anchor 수가 다르면(SSD: 4·6·6·6·4·4) 하나의 num_base 로 디코드할 수 없다.
     uniform_priors = len(set(int(x) for x in nbp)) <= 1
+    # 그런 계열은 **base 앵커를 통째로 싣는다** — 생성기의 `base_anchors`(레벨별
+    # (x1,y1,x2,y2)·n, 중심 (0,0) 부근)가 정본이고, 격자 이동은 디코더가 한다.
+    # octave/ratio 재현식을 SSD 생성기까지 일반화하는 것보다 값이 틀릴 여지가 없다.
+    # ⚠️ **재현식이 성립하지 않는 생성기가 있다.** 우리 `gen_anchors` 는
+    #    `base_size = stride·octave_base_scale`, `중심 = center_offset·base_size` 를 가정하는데,
+    #    YOLACT 는 `base_sizes=[8,16,…]` 를 **stride 와 따로** 주고(stride 는 550/69 처럼
+    #    나눠떨어지지 않는다) `centers=(stride/2, stride/2)` 를 직접 준다. 그대로 재현식을
+    #    쓰면 박스가 배율만큼 작아지고(실측 0.859 = 110·3 / 128·3) 반 칸씩 밀린다.
+    #    그런 계열은 생성기의 **base_anchors 를 그대로 싣는다** — 값이 곧 정본이다.
+    base_anchor_boxes = []
+    if pg is not None:
+        odd = not uniform_priors or getattr(pg, "centers", None) is not None
+        if not odd:
+            bs = [float(v) for v in (getattr(pg, "base_sizes", None) or [])]
+            odd = bool(bs) and any(abs(b - s) > 1e-6 for b, s in zip(bs, strides))
+        if odd:
+            try:
+                base_anchor_boxes = [[float(v) for v in ba.reshape(-1)]
+                                     for ba in pg.base_anchors]
+            except Exception:
+                base_anchor_boxes = []
 
     # head-conv 구조 (C++ 조립기가 소비) — 최종 cls/reg conv 이름 **자동 탐지**.
     # 계열마다 이름이 다르다(retina_cls / atss_cls / gfl_cls / conv_cls …). 이름 표를 두는 대신
@@ -515,9 +539,12 @@ def postproc_cfg(det):
     _nms = _tc("nms", {}) or {}
     thresholds = {
         "score_thr": float(_tc("score_thr", 0.05)),
-        "nms_thr": float(_nms.get("iou_threshold", 0.5)),
+        # YOLACT 는 `nms` dict 대신 평평한 `iou_thr` 를 쓴다 — 있으면 그것이 정본이다.
+        "nms_thr": float(_tc("iou_thr", 0.0) or _nms.get("iou_threshold", 0.5)),
         "nms_pre": int(_tc("nms_pre", 1000)),
         "max_per_img": int(_tc("max_per_img", 100)),
+        # SSD 계열: 경계 클램프로 변이 0 이 된 박스를 NMS 전에 버리는 기준. 없으면 -1(끔).
+        "min_bbox_size": float(_tc("min_bbox_size", -1.0)),
     }
 
     return {
@@ -543,6 +570,14 @@ def postproc_cfg(det):
         "stds": [float(v) for v in getattr(bc, "stds", [1.0] * 4)],
         "can_decode": can_decode and uniform_priors,
         "ctr_clamp": ctr_clamp,
+        "tblr_normalizer": tblr_normalizer,
+        "base_anchor_boxes": base_anchor_boxes,
+        # PAA·LAD 의 sqrt(cls×iou) 점수 + score voting. **속성으로 판단한다** — LAD 는
+        # PAAHead 상속이라 이름으로 가르면 빠진다.
+        "score_voting": bool(getattr(bh, "with_score_voting", False)),
+        # YOLACT 의 fast NMS. test_cfg 에 `nms` dict 가 없고 iou_thr/top_k 가 따로 있다.
+        "fast_nms": any(c.__name__ == "YOLACTHead" for c in type(bh).__mro__),
+        "nms_top_k": int(_tc("top_k", 0) or 0),
         # YOLOv3: 앵커가 (w,h) 쌍 목록이다. `base_sizes[l]` = [(w,h), ...] → 평탄화.
         # ⚠️ **레벨 순서를 건드리지 않는다** — YOLOv3 는 stride 가 내림차순(32,16,8)이고
         #    그 순서가 head 출력 순서와 같다. 정렬하면 레벨마다 4배씩 어긋난다.
@@ -579,6 +614,10 @@ def postproc_cfg(det):
         "ctr_tanh": ctr_tanh,
         "corner_emb": corner_emb,
         "corner_centripetal": corner_centripetal,
+        # 코너 디코드 파라미터. 계열 기본값이 아니라 **test_cfg 가 정본**이다.
+        "corner_topk": int(_tc("corner_topk", 100)),
+        "local_max_kernel": int(_tc("local_maximum_kernel", 3)),
+        "corner_distance_thr": float(_tc("distance_threshold", 0.5)),
         **detr_dims,
         "centerness_on_reg": is_autoassign or bool(getattr(bh, "centerness_on_reg", True)),
         "scales_prefix": "bbox_head.scales" if hasattr(bh, "scales") else "",

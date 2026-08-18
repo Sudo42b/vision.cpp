@@ -614,6 +614,13 @@ from shared.compile.pipeline import main; main()
 
     # 최적화 수준은 **수치와 무관**하다 — 실제 계산은 libggml(사전 빌드)이 한다.
     # 이 코드는 그래프를 짜기만 하므로 -O1 이면 충분하고, 컴파일이 훨씬 빠르다.
+    # ⚠️ **먼저 지운다.** 존재 검사만 하면 빌드가 실패해도 **지난 실행의 바이너리**로
+    #    계속 가고, 낡은 코드가 낸 숫자가 PASS 로 보고된다(실제로 겪었다: 코너 디코드를
+    #    새로 붙였는데 goto 컴파일 에러였고, 하네스는 PASS 를 냈다).
+    try:
+        os.remove(os.path.join(gen, "run_mmdet"))
+    except FileNotFoundError:
+        pass
     b = run(["g++", "-std=c++20", OPT, "-DARCH=Fam",
              '-DVISP_ARCH_HEADER="visp/arch/Fam.h"',
              f'-DMMDET_PARAMS_HEADER="{ph}"',

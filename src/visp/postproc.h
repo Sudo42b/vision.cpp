@@ -345,6 +345,22 @@ std::vector<float> rpn_proposals(
     std::vector<std::vector<float>> const& rpn_bbox,
     std::vector<std::pair<int, int>> const& feat_hw, rpn_params const& p);
 
+// ── CenterNet (heatmap 중심점 디코드) ────────────────────────────────────────
+// 앵커가 없다. 클래스별 heatmap 의 **국소 최대점**을 중심으로 보고, 같은 자리의
+// wh/offset 으로 상자를 만든다. 단일 레벨(stride 4)이다.
+struct centernet_params {
+    int num_classes = 80;
+    int topk = 100;                 // test_cfg.topk
+    int local_max_kernel = 3;       // test_cfg.local_maximum_kernel
+    int input_w = 0, input_h = 0;   // 네트워크 입력 크기(heatmap 을 여기로 늘린다)
+};
+// heat/wh/off 는 CWHN flat: idx = (y*W + x)*C + c. heat 는 **이미 sigmoid 를 거친** 값이다
+// (`CenterNetHead.forward_single` 이 head 안에서 건다 — 여기서 또 걸면 안 된다).
+// ⚠️ mmdet 의 `predict_by_feat` 은 기본이 `with_nms=False` 다 — NMS 를 걸지 않는다.
+std::vector<detection> detect_centernet(
+    std::vector<float> const& heat, std::vector<float> const& wh,
+    std::vector<float> const& off, int fh, int fw, centernet_params const& p);
+
 // ── RoIAlign (mmcv RoIAlign, aligned=True, sampling_ratio=0) ─────────────────
 // FPN feats(레벨별 CWHN flat: idx=(y*W+x)*C+c) + rois(이미지좌표) → roi_feat.
 // 레벨 배정 = clamp(floor(log2(sqrt(w*h)/finest_scale + 1e-6)), 0, L-1).

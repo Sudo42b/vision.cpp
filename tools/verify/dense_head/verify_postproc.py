@@ -77,6 +77,12 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
 
     det = init_detector(cfg, ckpt, device="cpu")
     det.eval()
+    # ⚠️ SSDHead 는 `loss_cls` 를 모듈로 안 만든다(손실을 inline CE 로 계산). 그런데
+    #    mmdet 자신의 `_predict_by_feat_single` 이 v3det 분기에서
+    #    `getattr(self.loss_cls, 'custom_cls_channels', …)` 를 만져 AttributeError 로
+    #    죽는다 — 기준값 쪽 문제지 우리 쪽이 아니다. 추론 경로에서는 None 이면 충분하다.
+    if getattr(det, "bbox_head", None) is not None and not hasattr(det.bbox_head, "loss_cls"):
+        det.bbox_head.loss_cls = None
     dp = det.data_preprocessor
     # ⚠️ **정규화를 안 하는 계열이 있다** — YOLOX 는 `mean`/`std` 자체를 안 갖는다.
     #    그때 파라미터 헤더도 mean 0 / std 1 을 싣는다(둘이 같아야 같은 픽셀이 된다).
@@ -94,7 +100,13 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     t = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0)
 
     meta = {"img_shape": (size, size), "ori_shape": (size, size),
-            "scale_factor": (1.0, 1.0), "batch_input_shape": (size, size)}
+            "scale_factor": (1.0, 1.0), "batch_input_shape": (size, size),
+            # ⚠️ CenterNet 의 `_predict_by_feat_single` 은 `img_meta['border']` 를 읽는다
+            #    (`RandomCenterCropPad` 가 남기는 값 — crop/pad 로 생긴 여백을 박스에서
+            #    빼는 데 쓴다). 우리는 정사각으로 한 번 리사이즈만 하므로 여백이 0 이고
+            #    항등이다. 없으면 `KeyError: 'border'` 로 **기준값 쪽이** 죽는데,
+            #    그건 계열이 안 되는 게 아니라 하네스가 못 재는 것이다.
+            "border": (0.0, 0.0, 0.0, 0.0)}
 
     with torch.no_grad():
         try:

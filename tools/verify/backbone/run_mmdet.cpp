@@ -321,6 +321,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    std::vector<detection> dets;
     head_outputs ho;
     mmdet_head_forward(m, feats, hc, dcn_base, ho);
     std::vector<tensor>&cls_t = ho.cls, &box_t = ho.box;
@@ -373,9 +374,61 @@ int main(int argc, char** argv) {
                ho.ctr.empty() ? "" : ",ctr");
     }
 
-    // 코너 계열은 anchor 디코드가 아예 없다(코너 짝짓기 + embedding 그룹핑). 조립·덤프까지가
-    // 이 러너의 몫이고, 그 뒤를 억지로 detect_anchor 에 넣으면 의미 없는 박스가 나온다.
-    if (hc.kind == head_kind::cornernet) return 0;
+    // ── CornerNet / CentripetalNet ─────────────────────────────────────────
+    // 앵커가 없다 — 코너 heatmap 두 장에서 top-k 를 뽑아 쌍을 만든다. 갈래가 6~8개라
+    // out.extra 를 쓰고, **마지막 레벨만** 쓴다(mmdet 도 `tl_heats[-1]` 이다).
+    bool corner_done = false;
+    if (hc.kind == head_kind::cornernet) {
+        if (ho.cls.empty() || ho.box.empty() || ho.ctr.empty() || ho.extra.empty()) {
+            fprintf(stderr, "corner head 출력이 비었다\n");
+            return 4;
+        }
+        auto last = [](std::vector<tensor> const& v) { return v.back(); };
+        auto named = [&](const char* tag) -> std::vector<float> {
+            for (auto const& e : ho.extra)
+                if (e.first == tag && !e.second.empty()) return to_vec(e.second.back());
+            return {};
+        };
+        tensor t_cls = last(ho.cls);
+        const int cfh = (int)t_cls->ne[2], cfw = (int)t_cls->ne[1];
+        corner_params cp;
+        cp.num_classes = dp.num_classes;
+        cp.topk = hc.corner_topk;
+        cp.local_max_kernel = hc.local_max_kernel;
+        cp.distance_threshold = hc.corner_distance_thr;
+        cp.score_thr = dp.score_thr;
+        cp.nms_thr = dp.nms_thr;
+        cp.max_per_img = dp.max_per_img;
+        cp.input_w = SZ;
+        cp.input_h = SZ;
+        cp.centripetal = hc.corner_centripetal;
+        dets = detect_corner(to_vec(t_cls), to_vec(last(ho.box)),
+                             to_vec(last(ho.ctr)), named("brof"),
+                             named("tlemb"), named("bremb"),
+                             named("tlcs"), named("brcs"),
+                             cfh, cfw, cp);
+        corner_done = true;   // 아래 레벨별 수집·디스패치를 건너뛴다
+    }
+
+    // ── CenterNet ──────────────────────────────────────────────────────────
+    // 앵커가 없고 레벨도 하나다. heatmap 의 국소 최대점이 중심이고, 같은 자리의
+    // wh/offset 이 상자를 만든다. heat 는 head 안에서 이미 sigmoid 를 거쳤다.
+    if (hc.kind == head_kind::centernet) {
+        if (ho.cls.empty() || ho.box.empty() || ho.ctr.empty()) {
+            fprintf(stderr, "centernet head 출력이 비었다(heatmap/wh/offset 필요)\n");
+            return 4;
+        }
+        tensor t = ho.cls.back();
+        centernet_params cp;
+        cp.num_classes = dp.num_classes;
+        cp.topk = hc.corner_topk;                 // test_cfg.topk (헤더가 같은 칸을 쓴다)
+        cp.local_max_kernel = hc.local_max_kernel;
+        cp.input_w = SZ;
+        cp.input_h = SZ;
+        dets = detect_centernet(to_vec(t), to_vec(ho.box.back()), to_vec(ho.ctr.back()),
+                                (int)t->ne[2], (int)t->ne[1], cp);
+        corner_done = true;   // 레벨별 수집·디스패치를 건너뛴다(같은 이유)
+    }
 
     // DETR 계열은 출력 인덱스가 **decoder 층**이라 레벨 수와 무관하다 — 아래 레벨 검사와
     // 레벨별 수집을 건너뛴다(head.h:172-175).
@@ -391,14 +444,16 @@ int main(int argc, char** argv) {
     const bool single_branch = hc.kind == head_kind::yolo;
 
     // 조립기가 레벨 수를 못 채우면 아래 인덱싱이 널을 읽는다. 여기서 말한다.
-    if (!is_detr && !single_branch && ((int)cls_t.size() < L || (int)box_t.size() < L)) {
+    if (!corner_done && !is_detr && !single_branch &&
+        ((int)cls_t.size() < L || (int)box_t.size() < L)) {
         fprintf(stderr, "head 출력이 %d 레벨에 못 미친다 (cls %zu, box %zu)\n",
                 L, cls_t.size(), box_t.size());
         return 4;
     }
 
     // 6) raw cls/box(+ctr) → 계열별 디코드
-    const int NL = is_detr ? 0 : L;
+    // 코너 계열은 위에서 이미 디코드했다 — 레벨별 수집을 돌 필요가 없다.
+    const int NL = (is_detr || corner_done) ? 0 : L;
     std::vector<std::vector<float>> cls_v(NL), box_v(NL), ctr_v;
     std::vector<std::pair<int, int>> feat_hw(NL);
     for (int l = 0; l < NL; ++l) {
@@ -410,7 +465,7 @@ int main(int argc, char** argv) {
     // centerness 갈래가 있으면 score factor 로 넘긴다(ATSS·PAA·DDOD·FCOS…). mmdet 은 이걸
     // top-k 뒤에 곱한다 — 안 넘기면 **박스는 맞고 점수만** 높게 나온다(실측 Δ0.071).
     // ⚠️ YOLACT 의 coeff 갈래는 점수가 아니다 — `ctr_tanh` 로 가른다.
-    if ((int)ho.ctr.size() >= L && !hc.ctr_tanh) {
+    if (!corner_done && (int)ho.ctr.size() >= L && !hc.ctr_tanh) {
         ctr_v.resize(L);
         for (int l = 0; l < L; ++l) ctr_v[l] = to_vec(ho.ctr[l]);
     }
@@ -428,8 +483,9 @@ int main(int argc, char** argv) {
                               hc.kind == head_kind::vfnet || hc.kind == head_kind::reppoints ||
                               hc.bbox_mul_stride;
 
-    std::vector<detection> dets;
-    if (is_detr) {
+    if (corner_done) {
+        // 위에서 채웠다 — 아무것도 안 한다.
+    } else if (is_detr) {
         // ⚠️ DETR 계열은 out.cls/out.box 의 인덱스가 **FPN 레벨이 아니라 decoder 층**이다
         //    (head.h:172-175). mmdet 도 `all_layers_*[-1]` 만 쓴다 — 앞 층을 쓰면 shape 가
         //    맞아 안 죽고 **더 거친 박스**가 나온다. 그림만 보면 알 수 없다.
@@ -584,6 +640,16 @@ int main(int argc, char** argv) {
         fp.point_offset = hc.center_offset;
         fp.box_xyxy_offset = hc.kind == head_kind::reppoints;
         dets = detect_fcos(cls_v, box_v, ctr_v, feat_hw, fp);
+    } else if (dp.score_voting) {
+        // PAA·LAD — 점수가 sqrt(cls×iou) 라 iou 갈래(ctr) 없이는 못 디코드한다.
+        if ((int)ctr_v.size() < L) {
+            fprintf(stderr, "PAA 인데 iou 갈래가 %zu 레벨뿐이다 (필요 %d)\n", ctr_v.size(), L);
+            return 4;
+        }
+        dets = detect_paa(cls_v, box_v, ctr_v, feat_hw, dp);
+    } else if (dp.fast_nms) {
+        // YOLACT — softmax + fast NMS. coeff 갈래(ctr_tanh)는 박스 검증에서 안 쓴다.
+        dets = detect_yolact(cls_v, box_v, feat_hw, dp);
     } else {
         dets = detect_anchor(cls_v, box_v, feat_hw, dp, ctr_v.empty() ? nullptr : &ctr_v);
     }

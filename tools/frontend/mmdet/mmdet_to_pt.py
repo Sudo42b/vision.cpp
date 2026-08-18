@@ -71,7 +71,7 @@ def emit_params(cfg, config_name):
 
     out.append(f"    c.head.kind = head_kind::{h};\n")
     for k in ("stacked_convs", "reg_stacked_convs", "feat_channels", "num_base",
-              "num_classes", "gn_groups", "reg_max",
+              "num_classes", "gn_groups", "reg_max", "corner_topk", "local_max_kernel",
               "embed_dims", "n_heads", "enc_layers", "dec_layers", "n_points", "num_queries"):
         if k in cfg:
             out.append(f"    c.head.{k} = {int(cfg[k])};\n")
@@ -89,6 +89,8 @@ def emit_params(cfg, config_name):
         out.append("    c.head.reg_denoms = {" + ", ".join(_f(v) for v in cfg["reg_denoms"]) + "};\n")
     # 격자 중심. anchor 계열(AnchorGenerator)은 0, point 계열은 0.5 — 조립기가 TOOD 에 쓴다.
     out.append(f"    c.head.head_leaky = {_f(cfg.get('head_leaky', 0.0))};\n")
+    out.append("    c.head.corner_distance_thr = "
+               f"{_f(cfg.get('corner_distance_thr', 0.5))};\n")
     out.append(f"    c.head.ddq_iou_thr = {_f(cfg.get('ddq_iou_thr', 0.8))};\n")
     out.append(f"    c.head.center_offset = {_f(cfg.get('center_offset', 0.0))};\n\n")
 
@@ -99,6 +101,18 @@ def emit_params(cfg, config_name):
     out.append(f"    c.det.nms_thr = {_f(cfg.get('nms_thr', 0.5))};\n")
     out.append(f"    c.det.nms_pre = {int(cfg.get('nms_pre', 1000))};\n")
     out.append(f"    c.det.max_per_img = {int(cfg.get('max_per_img', 100))};\n")
+    out.append(f"    c.det.min_bbox_size = {_f(cfg.get('min_bbox_size', -1.0))};\n")
+    # 레벨별 앵커가 재현식으로 안 나오는 계열(SSD 는 레벨마다 개수가 다르고, YOLACT 는
+    # base_size·중심을 stride 와 따로 준다). **분기 앞에** 둔다 — 디코드 가능/불가 어느
+    # 쪽이든 필요하다(yolact 는 Delta 코더라 아래 분기로 가는데, 여기 없으면 안 실린다).
+    if cfg.get("base_anchor_boxes"):
+        for lvl in cfg["base_anchor_boxes"]:
+            out.append("    c.det.base_anchor_boxes.push_back({"
+                       + ", ".join(_f(v) for v in lvl) + "});\n")
+        for i, v in enumerate(cfg.get("means", [0.0] * 4)):
+            out.append(f"    c.det.means[{i}] = {_f(v)};\n")
+        for i, v in enumerate(cfg.get("stds", [1.0] * 4)):
+            out.append(f"    c.det.stds[{i}] = {_f(v)};\n")
 
     # anchor(Delta) 디코드가 되는 계열만 c.det 의 **앵커 파라미터**를 채운다. 조립은
     # 되는데 코더가 다른 계열(FSAF 의 TBLRBBoxCoder 등)은 head 원시 출력까지만 낸다.
@@ -120,6 +134,13 @@ def emit_params(cfg, config_name):
             out.append(f"    c.det.num_buckets = {int(cfg['num_buckets'])};\n")
             out.append(f"    c.det.bucket_scale = {_f(cfg.get('bucket_scale', 3.0))};\n")
             out.append(f"    c.det.anchor_scale = {_f(cfg.get('anchor_scale') or 4.0)};\n")
+        # FSAF(TBLR). 앵커 생성 파라미터도 같이 실어야 디코더가 앵커를 만든다.
+        if cfg.get("tblr_normalizer"):
+            out.append(f"    c.det.tblr_normalizer = {_f(cfg['tblr_normalizer'])};\n")
+            out.append(f"    c.det.octave_base_scale = {_f(cfg.get('octave_base_scale', 1.0))};\n")
+            out.append(_arr("octave_scales", cfg["octave_scales"]))
+            out.append(_arr("ratios", cfg["ratios"]))
+            out.append(f"    c.det.center_offset = {_f(cfg.get('center_offset', 0.0))};\n")
         # FoveaBox 만 채운다. 비어 있으면 디코더가 조립기가 낸 값을 그대로 거리로 쓴다.
         if cfg.get("bbox_base_edge"):
             out.append("    c.det.base_edge = {"
@@ -148,9 +169,18 @@ def emit_params(cfg, config_name):
         out.append(f"    c.det.means[{i}] = {_f(v)};\n")
     for i, v in enumerate(cfg.get("stds", [1.0] * 4)):
         out.append(f"    c.det.stds[{i}] = {_f(v)};\n")
-    out.append(f"    c.det.num_classes = {int(cfg.get('num_classes', 80))};\n")
+    # ⚠️ 배경을 뺀 **의미상 클래스 수**다. softmax head(YOLACT)는 채널이 하나 더 많은데
+    #    (cls_out_channels = nc+1) 그 폭은 `c.head.num_classes` 가 들고 간다 — 디코더는
+    #    use_sigmoid 로 채널 폭을 스스로 계산한다(nc + (use_sigmoid?0:1)).
+    out.append("    c.det.num_classes = "
+               f"{int(cfg.get('num_classes_semantic', cfg.get('num_classes', 80)))};\n")
     out.append(f"    c.det.use_sigmoid = {str(bool(cfg.get('use_sigmoid', True))).lower()};\n")
-    out.append(f"    c.det.ctr_clamp = {_f(cfg.get('ctr_clamp', 0.0))};\n\n")
+    out.append(f"    c.det.ctr_clamp = {_f(cfg.get('ctr_clamp', 0.0))};\n")
+    out.append(f"    c.det.score_voting = {str(bool(cfg.get('score_voting', False))).lower()};\n")
+    out.append(f"    c.det.fast_nms = {str(bool(cfg.get('fast_nms', False))).lower()};\n")
+    if cfg.get("nms_top_k"):
+        out.append(f"    c.det.nms_top_k = {int(cfg['nms_top_k'])};\n")
+    out.append("\n")
 
     for i, v in enumerate(cfg.get("img_mean", [0.0] * 3)):
         out.append(f"    c.img_mean[{i}] = {_f(v)};\n")

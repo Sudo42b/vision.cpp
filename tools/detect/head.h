@@ -87,6 +87,10 @@ struct anchor_head_cfg {
     bool corner_emb = false;
     // CentripetalNet: emb 대신 guiding/centripetal shift 갈래 + DCNv1 feature adaption.
     bool corner_centripetal = false;
+    // 코너 디코드 파라미터(test_cfg). 조립기는 안 쓰고 러너가 디코더에 넘긴다.
+    int corner_topk = 100;
+    int local_max_kernel = 3;
+    float corner_distance_thr = 0.5f;
 
     // ── DETR ──────────────────────────────────────────────────────────────
     // 출력이 공간 격자가 아니다 — decoder 층마다 (query, ch) 하나씩 나온다.

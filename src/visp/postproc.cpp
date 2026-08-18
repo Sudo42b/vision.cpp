@@ -1336,4 +1336,57 @@ std::vector<detection> detect_corner(
     return out;
 }
 
+
+// ── CenterNet (heatmap 중심점 디코드) ────────────────────────────────────────
+std::vector<detection> detect_centernet(
+    std::vector<float> const& heat, std::vector<float> const& wh,
+    std::vector<float> const& off, int fh, int fw, centernet_params const& p) {
+
+    const int C = p.num_classes;
+    const int HW = fh * fw;
+    const int pad = (p.local_max_kernel - 1) / 2;
+    // ① 국소 최대만 남긴다(mmcv `get_local_maximum`: maxpool(k, stride 1, pad) == heat).
+    //    ⚠️ **maxpool 의 패딩은 0 이 아니라 -inf 다.** 0 으로 채우면 경계에서 음수 값이
+    //    최대가 못 되어 중심점이 통째로 사라진다. 여기서는 범위 밖을 아예 안 본다.
+    std::vector<std::pair<float, int>> cand;   // (score, flat idx = c*HW + y*fw + x)
+    cand.reserve((size_t)HW);
+    for (int c = 0; c < C; ++c)
+        for (int y = 0; y < fh; ++y)
+            for (int x = 0; x < fw; ++x) {
+                const float v = heat[((size_t)y * fw + x) * C + c];
+                bool is_max = true;
+                for (int dy = -pad; dy <= pad && is_max; ++dy)
+                    for (int dx = -pad; dx <= pad; ++dx) {
+                        const int ny = y + dy, nx = x + dx;
+                        if (ny < 0 || ny >= fh || nx < 0 || nx >= fw) continue;
+                        if (heat[((size_t)ny * fw + nx) * C + c] > v) { is_max = false; break; }
+                    }
+                if (is_max) cand.emplace_back(v, c * HW + y * fw + x);
+            }
+    // ② 전체(클래스 포함)에서 top-k. torch.topk 는 내림차순이고 동점은 인덱스 순이다.
+    const int k = std::min((int)cand.size(), std::max(1, p.topk));
+    std::partial_sort(cand.begin(), cand.begin() + k, cand.end(),
+                      [](auto const& a, auto const& b) {
+                          return a.first != b.first ? a.first > b.first : a.second < b.second;
+                      });
+    // ③ 같은 자리의 wh/offset 으로 상자를 만들고 입력 해상도로 늘린다.
+    const float sx = fw > 0 ? (float)p.input_w / (float)fw : 1.0f;
+    const float sy = fh > 0 ? (float)p.input_h / (float)fh : 1.0f;
+    std::vector<detection> out;
+    out.reserve(k);
+    for (int i = 0; i < k; ++i) {
+        const int idx = cand[i].second;
+        const int cls = idx / HW, rem = idx % HW;
+        const int y = rem / fw, x = rem % fw;
+        const size_t o2 = ((size_t)y * fw + x) * 2;
+        const float cx = (float)x + off[o2 + 0], cy = (float)y + off[o2 + 1];
+        const float w = wh[o2 + 0], h = wh[o2 + 1];
+        out.push_back({(cx - w * 0.5f) * sx, (cy - h * 0.5f) * sy,
+                       (cx + w * 0.5f) * sx, (cy + h * 0.5f) * sy,
+                       cand[i].first, cls});
+    }
+    return out;
+}
+
+
 }  // namespace visp
