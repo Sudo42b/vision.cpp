@@ -325,6 +325,7 @@ no label mismatch and no difference in how many boxes survive.
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
 | `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
 | `dino` | `detect_detr` | 0.28 px | 0.004 |
+| `ddq` | `detect_detr` (distinct queries) | 0.06 px | 0.018 |
 | `detr` | `detect_detr` | 1.85 px | 0.044 |
 
 Every row above was re-measured together in one run, so the numbers are comparable with each
