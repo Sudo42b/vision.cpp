@@ -171,7 +171,8 @@ def main():
 
     to_rgb = False
     hdr = [f for f in os.listdir(os.path.dirname(cfg) or ".") if f.endswith(".postproc.h")]
-    for d in (gen, os.path.dirname(gen)):
+    # ⚠️ 상대경로로 주면 `os.path.dirname(gen)` 이 빈 문자열이라 `os.listdir("")` 로 죽는다.
+    for d in (gen, os.path.dirname(gen) or "."):
         for f in os.listdir(d):
             if f.endswith(".postproc.h"):
                 txt = open(os.path.join(d, f), encoding="utf-8").read()

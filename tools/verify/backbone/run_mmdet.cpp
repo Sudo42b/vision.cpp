@@ -268,6 +268,56 @@ int main(int argc, char** argv) {
             for (size_t l = 0; l < box_out.size(); ++l) dump("box", l, box_out[l]);
             printf("- ddq: %d 패스 (호스트 NMS %d 회)\n", hc.dec_layers + 1, hc.dec_layers);
         }
+
+        // ── 최종 디코드 — mmdet `DDQDETRHead.predict_by_feat` ─────────────────
+        // 마지막 층 출력에서 **살아남은(distinct) query 만** 골라 DETR top-k 를 탄다.
+        // 최종 NMS 는 없다 — 층 사이 NMS 가 이미 중복을 걸렀고, mmdet 도
+        // `_predict_by_feat_single`(Deformable 상속)로 top-k 만 한다.
+        // ⚠️ 박스는 `box_out.back()`(= s.box, 마지막 층 hidden 에서 낸 sigmoid cxcywh)다.
+        //    r_v(s.ref)는 **다음 층 참조점**이라 미묘하게 다르다 — 섞으면 값만 틀린다.
+        // ⚠️ alive 는 마지막 층에 들어간 마스크 그대로다(mmdet 의
+        //    `distinct_query_mask[-1]` 과 같다 — 갱신이 li+1<dec_layers 에서만 돌므로).
+        {
+            std::vector<float> fcls, fbox;
+            std::vector<float> const& lc = cls_out.back();
+            std::vector<float> const& lb = box_out.back();
+            int n_alive = 0;
+            for (int64_t i = 0; i < NQ; ++i) {
+                if (!alive[(size_t)i]) continue;
+                fcls.insert(fcls.end(), lc.begin() + i * NC, lc.begin() + (i + 1) * NC);
+                fbox.insert(fbox.end(), lb.begin() + i * 4, lb.begin() + (i + 1) * 4);
+                ++n_alive;
+            }
+            detr_params qp;
+            qp.num_queries = n_alive;
+            qp.num_classes = dp.num_classes;   // 배경 제외 수 (프론트엔드 규약)
+            qp.use_sigmoid = true;             // deformable 계열 — 항상 sigmoid+focal
+            qp.max_per_img = dp.max_per_img;
+            qp.input_w = SZ;
+            qp.input_h = SZ;
+            std::vector<detection> dq = detect_detr(fcls.data(), fbox.data(), qp);
+
+            std::string out_s0(outp);
+            bool raw0 = has_ext(out_s0, ".bin") || src0.extent[0] == 0;
+            if (raw0) {
+                FILE* f = fopen(outp, "wb");
+                if (!f) { fprintf(stderr, "cannot write %s\n", outp); return 1; }
+                for (detection const& d : dq) {
+                    float rec[6] = {d.x1, d.y1, d.x2, d.y2, d.score, (float)d.label};
+                    fwrite(rec, sizeof(float), 6, f);
+                }
+                fclose(f);
+            } else {
+                float thr0 = 0.3f;
+                if (const char* e = std::getenv("VISP_DRAW_THRESHOLD")) thr0 = (float)atof(e);
+                float sx = float(src0.extent[0]) / float(SZ);
+                float sy = float(src0.extent[1]) / float(SZ);
+                draw_detections(src0, dq, sx, sy, thr0);
+                image_save(src0, outp);
+            }
+            printf("- detect(ddq): 생존 query %d → %zu boxes → %s\n",
+                   n_alive, dq.size(), outp);
+        }
         return 0;
     }
 
