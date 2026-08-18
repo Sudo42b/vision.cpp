@@ -295,29 +295,40 @@ shape of the tower that produced it. YOLOX and RPN build the same tower as Retin
 nothing like it.
 
 Each row below was measured against MMDetection's own `predict_by_feat` on the same pixels at
-512 (`cat-and-hat.jpg`), with the trained checkpoint the family's `metafile.yml` names.
+512 (`cat-and-hat.jpg`), with the trained checkpoint the harness pairs with that config.
 The harness is `tools/verify/dense_head/verify_postproc.py`; it passes at 2 px, 0.05 score,
 no label mismatch and no difference in how many boxes survive.
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
-| `retinanet` | `detect_anchor` | 0.15 px | 0.006 |
 | `atss` | `detect_anchor` | 0.14 px | 0.000 |
+| `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
+| `pisa` | `detect_anchor` | 0.18 px | 0.005 |
+| `retinanet` | `detect_anchor` | 0.27 px | 0.000 |
 | `ddod` | `detect_anchor` | 0.41 px | 0.001 |
 | `ghm` | `detect_anchor` | 0.46 px | 0.005 |
-| `pisa` | `detect_anchor` | 0.18 px | 0.005 |
-| `pvt` | `detect_anchor` | 1.93 px | 0.003 |
-| `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
-| `nas_fpn` | `detect_anchor` | 0.34 px | 0.004 |
-| `fcos` | `detect_fcos` | 0.13 px | 0.000 |
+| `nas_fpn` | `detect_anchor` | 1.04 px | 0.004 |
+| `nas_fcos` | `detect_fcos` | 0.19 px | 0.001 |
 | `gfl` | `detect_fcos` | 0.23 px | 0.004 |
+| `fcos` | `detect_fcos` | 0.32 px | 0.004 |
 | `vfnet` | `detect_fcos` | 0.46 px | 0.003 |
-| `rtmdet` | `detect_fcos` | 0.66 px | 0.007 |
+| `rtmdet` | `detect_fcos` | 0.68 px | 0.002 |
 | `yolox` | `detect_yolox` | 0.41 px | 0.002 |
-| `detr` | `detect_detr` | 1.85 px | 0.044 |
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
 | `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
-| `dino` | `detect_detr` | 0.41 px | 0.030 |
+| `dino` | `detect_detr` | 0.28 px | 0.004 |
+| `detr` | `detect_detr` | 1.85 px | 0.044 |
+
+Every row above was re-measured together in one run, so the numbers are comparable with each
+other. That matters more than it sounds: the harness picks a representative config per family
+from a hand-written override list, and comparing against the config `metafile.yml` would have
+chosen instead silently pairs a compiled graph with someone else's checkpoint. Thirteen
+families differ between those two choices, and the mismatch reads as a decode failure —
+`retinanet` looked 20 px out and `dino` looked like a regression until the pairing was fixed.
+
+`pvt` was in this table at 1.93 px and is no longer here: re-measuring puts it at 15.74 px
+with three boxes too many. Its old number sat just under the 2 px threshold, so it was always
+a marginal pass. The cause has not been established.
 
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
