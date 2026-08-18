@@ -45,6 +45,10 @@ class FRCNN_SubA(nn.Module):
         #    컴파일 경로가 단일 입력만 받는다. 같은 그래프의 **출력 하나**로 붙이면
         #    백본을 두 번 돌 필요도 없다.
         self.semantic_head = getattr(det.roi_head, "semantic_head", None)
+        # SCNet 의 **전역 컨텍스트**. 최상위 레벨에 conv 몇 개 + AdaptiveAvgPool(1) 이라
+        # 결과가 **이미지당 채널 벡터 하나**이고, 모든 RoI feature 에 채널별로 더해진다
+        # (`scnet_roi_head._fuse_glbctx`). 시맨틱과 같은 방식으로 출력에 붙인다.
+        self.glbctx_head = getattr(det.roi_head, "glbctx_head", None)
 
     def forward(self, x):
         feats = self.backbone(x)
@@ -56,6 +60,10 @@ class FRCNN_SubA(nn.Module):
             # `(mask_preds, fused)` 중 **fused** 가 bbox 융합에 쓰이는 쪽이다.
             _, sem = self.semantic_head(feats)
             out = out + (sem,)
+        if getattr(self, "glbctx_head", None) is not None:
+            # `(mc_pred, x)` 중 **x** 가 융합에 쓰인다. shape 은 (B, C, 1, 1).
+            _, glb = self.glbctx_head(feats)
+            out = out + (glb,)
         return out
 
 
@@ -178,6 +186,8 @@ def frcnn_cfg(det, size=800):
             "sem_sampling_ratio": int(sext.roi_layers[0].sampling_ratio),
             "sem_aligned": bool(sext.roi_layers[0].aligned),
         }
+    if getattr(det.roi_head, "glbctx_head", None) is not None:
+        sem["has_glbctx"] = True
     ns = num_bbox_stages(det)
     heads = det.roi_head.bbox_head
     heads = list(heads) if ns > 1 else [heads]

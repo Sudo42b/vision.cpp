@@ -168,6 +168,13 @@ int main(int argc, char** argv) {
         sem_feat = outs[NF + 2 * L];
         sem_hw = all_hw[NF + 2 * L];
     }
+    // SCNet 의 전역 컨텍스트는 시맨틱 **다음** 자리에 온다(둘 다 있으면 +1, +2).
+    const bool has_glb = J.num("has_glbctx", 0.0f) != 0.0f;
+    std::vector<float> glb_feat;
+    if (has_glb) {
+        const int gi = NF + 2 * L + (has_sem ? 1 : 0);
+        if ((int)outs.size() > gi) glb_feat = outs[gi];
+    }
     std::vector<std::vector<float>> feats(outs.begin(), outs.begin() + NF);
     std::vector<std::vector<float>> rpn_cls(outs.begin() + NF, outs.begin() + NF + L);
     std::vector<std::vector<float>> rpn_box(outs.begin() + NF + L, outs.begin() + NF + 2 * L);
@@ -233,7 +240,24 @@ int main(int argc, char** argv) {
                         rf[(((size_t)i * C + c) * O + y) * O + x] += acc / (k * k);
                     }
     };
+    // ── SCNet: 전역 컨텍스트를 모든 RoI feature 에 **채널별로 더한다** ────────
+    // `scnet_roi_head._fuse_glbctx` — glbctx 는 AdaptiveAvgPool(1) 을 거쳐 이미지당
+    // 채널 벡터 하나다(B,C,1,1). 배치가 1 이므로 그 벡터를 전 RoI·전 위치에 더한다.
+    // 안 더하면 크래시 없이 박스만 밀린다(실측: 이걸 뺀 torch 가 우리 결과와 0.45px).
+    auto fuse_glbctx = [&](std::vector<float>& rf, int m) {
+        if (!has_glb || glb_feat.empty()) return;
+        const int C = ap.channels, O = ap.output_size;
+        if ((int)glb_feat.size() < C) return;
+        for (int i = 0; i < m; ++i)
+            for (int c = 0; c < C; ++c) {
+                const float g = glb_feat[c];
+                for (int y = 0; y < O; ++y)
+                    for (int x = 0; x < O; ++x)
+                        rf[(((size_t)i * C + c) * O + y) * O + x] += g;
+            }
+    };
     fuse_semantic(roi, props.data(), M);
+    fuse_glbctx(roi, M);
 
     // 캐스케이드는 단계마다 박스를 정제하고 **그 박스로 RoIAlign 을 다시** 한다.
     // 단계 수와 단계별 정규화 상수는 프론트엔드가 frcnn.json 에 실어 준다.
@@ -294,6 +318,7 @@ int main(int argc, char** argv) {
         } else {
             base_st = roi_align(feats, feat_hw, rois.data(), M, ap);
             fuse_semantic(base_st, rois.data(), M);
+            fuse_glbctx(base_st, M);
         }
         std::vector<float> roi_st = with_reg_half(base_st, (st == 0) ? props : rois);
         const int MB = (RSF > 0.0f) ? 2 * M : M;   // SubB 에 넣는 행 수
