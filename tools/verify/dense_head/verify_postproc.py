@@ -205,6 +205,17 @@ def main():
     if n_gap:
         print("  ⚠️ 개수가 다르다 — 임계값(score_thr/nms_thr/max_per_img)이 mmdet 과 어긋났을 때"
               " 나는 증상이다. 짝지은 것만 보면 조용히 통과한다.")
+        # ⚠️ **그런데 이 임계값은 우리가 건 것이다.** 양쪽 다 mmdet 의 score_thr(보통 0.05)로
+        #    많은 박스를 내고, 여기서 보기 좋으라고 `thr`(0.30)로 한 번 더 자른다. 그래서
+        #    점수가 그 언저리인 박스 하나가 **한쪽에서만 살아남아** 개수차로 잡힌다.
+        #    fp16 가중치의 점수 오차(실측 0.006~0.025)면 충분히 넘나든다 —
+        #    free_anchor 가 그랬다(mmdet 0.2954 vs C++ 0.301). 디코드 버그가 아니다.
+        #    그래서 **경계에 몰린 게 몇 개인지 같이 낸다** — 안 내면 다음 사람이 여기를 판다.
+        band = 0.05
+        near_ref = int(((ref[:, 4] >= thr) & (ref[:, 4] < thr + band)).sum())
+        near_got = int(((got[:, 4] >= thr) & (got[:, 4] < thr + band)).sum())
+        print(f"     임계값 {thr:.2f}~{thr + band:.2f} 구간: mmdet {near_ref}건 · C++ {near_got}건"
+              f"{'  ← 경계 아티팩트일 수 있다(디코드 아님)' if (near_ref or near_got) else ''}")
     return 0 if (worst_b < 2.0 and worst_s < 0.05 and bad_label == 0 and n_gap == 0) else 1
 
 
