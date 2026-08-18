@@ -288,7 +288,7 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Sixty-two families produce the same boxes MMDetection does** — thirty-three single-stage
+**Sixty-four families produce the same boxes MMDetection does** — thirty-five single-stage
 below, twenty-nine two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
@@ -318,6 +318,7 @@ no label mismatch and no difference in how many boxes survive.
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
 | `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
 | `dino` | `detect_detr` | 0.28 px | 0.004 |
+| `deformable_detr` | `detect_detr` | 0.26 px | 0.002 |
 | `autoassign` | `detect_fcos` | 0.30 px | 0.006 |
 | `ld` | `detect_fcos` | 0.30 px | 0.006 |
 | `fcos` | `detect_fcos` | 0.32 px | 0.004 |
@@ -331,6 +332,7 @@ no label mismatch and no difference in how many boxes survive.
 | `pvt` | `detect_anchor` (PVT-Tiny) | 0.55 px | 0.005 |
 | `sabl` | `detect_sabl` (buckets) | 0.55 px | 0.003 |
 | `fsaf` | `detect_anchor` (TBLR coder) | 0.56 px | 0.003 |
+| `tood` | `detect_tood` (decoded in-graph) | 0.63 px | 0.003 |
 | `rtmdet` | `detect_fcos` | 0.68 px | 0.002 |
 | `lad` | `detect_paa` (score voting) | 0.74 px | 0.001 |
 | `nas_fpn` | `detect_anchor` | 1.04 px | 0.004 |
@@ -531,12 +533,33 @@ box likewise on the boundary.
 
 Three groups do not decode, and they fail for different reasons:
 
-- **Something before the decoder already disagrees with torch**, so there is nothing to judge
-  the decoder against: `tood` (the box branch blows up while the class branch matches at
-  2e-3), `deformable_detr`, and `dyhead` (its neck is already at 0.7 relative L1, so the head
-  never had a chance). `MMDET_DUMP_HEAD` writes the neck output beside the head output for
-  exactly this split — a family whose `feat` dumps match and whose `cls`/`box` dumps do not is
-  a head problem, and the reverse is a compiler problem.
+- **Something before the decoder already disagrees with torch.** This group is now empty, and
+  emptying it took no new code — the three families recorded here (`tood`, `deformable_detr`,
+  `dyhead`) were re-measured after the compiler fixes landed, and two of them simply passed:
+  `tood` at 0.63 px and `deformable_detr` at 0.26 px. The note that `tood`'s "box branch blows
+  up" and that `dyhead`'s neck sat at 0.7 relative L1 described a tree that no longer exists.
+  Re-running a recorded failure after unrelated fixes is cheaper than reading it.
+
+  `dyhead` still disagrees, but not where this entry claimed. Measured level by level on the
+  real image, its neck agrees at 2e-03 relative L1 and its head at 1e-04; the boxes are still
+  112 px out with the score identical to four digits. Feeding the runner's own head dumps into
+  MMDetection's `predict_by_feat` returns MMDetection's box (66.9, 136.2, 468.1, 474.6 at
+  0.4471) rather than the runner's, which places the fault squarely in the host decoder and
+  nowhere else. It is not the coder constants — `target_stds` (0.1, 0.1, 0.2, 0.2), strides,
+  `center_offset` and `octave_base_scale` all match the config, and `atss` passes at 0.14 px
+  with the same anchor generator. A constant shift with an exact score means the right cell won
+  and was placed at the wrong pixel.
+
+  `MMDET_DUMP_HEAD` writes the neck output beside the head output for exactly this split — a
+  family whose `feat` dumps match and whose `cls`/`box` dumps do not is a head problem, and the
+  reverse is a compiler problem. When both match, as here, what is left is the decoder.
+
+- **Beware the pairing when you re-measure by hand.** `tood` first re-measured at 13.89 px with
+  a count mismatch, which looked like a live defect and was not: `verify_heads.py` exports from
+  its hand-written override list (`tood_r50_fpn_1x_coco.py`, the anchor-free variant) while the
+  config that `mmdet_families.resolve()` returns is the anchor-based one. Compiling from one and
+  judging against the other compares a graph with someone else's weights. Take the pair from the
+  harness, never from the config directory.
 - **The family post-processes its own way.** This group is down to `yolact`, and it is a
   boundary case rather than a decode failure: fast NMS is implemented and the boxes agree to
   0.74 px, but one box sits either side of the harness's own 0.30 cut (mmdet 0.3013, compiled
