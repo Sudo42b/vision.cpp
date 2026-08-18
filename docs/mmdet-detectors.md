@@ -322,12 +322,13 @@ no label mismatch and no difference in how many boxes survive.
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Eighteen of the forty families with a `roi_head` agree:
+and the thresholds are the same. Twenty of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
 | `panoptic_fpn` | `detect_roi` | 0.04 px | 0.0001 |
 | `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
+| `carafe` | `detect_roi` | 0.06 px | 0.0007 |
 | `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
 | `mask_rcnn` | `detect_roi` | 0.06 px | 0.0009 |
 | `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
@@ -335,6 +336,7 @@ and the thresholds are the same. Eighteen of the forty families with a `roi_head
 | `gn` | `detect_roi` | 0.09 px | 0.0003 |
 | `empirical_attention` | `detect_roi` | 0.09 px | 0.0003 |
 | `faster_rcnn` | `detect_roi` | 0.10 px | 0.0008 |
+| `libra_rcnn` | `detect_roi` | 0.11 px | 0.0007 |
 | `resnest` | `detect_roi` | 0.12 px | 0.0002 |
 | `albu_example` | `detect_roi` | 0.14 px | 0.0008 |
 | `point_rend` | `detect_roi` | 0.15 px | 0.0012 |
@@ -349,7 +351,7 @@ and the thresholds are the same. Eighteen of the forty families with a `roi_head
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The twenty-two that do not agree split five ways, and the split matters more than the count:
+The twenty that do not agree split five ways, and the split matters more than the count:
 
 - **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
   `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
@@ -374,12 +376,15 @@ The twenty-two that do not agree split five ways, and the split matters more tha
   `grid_rcnn` turns off box regression on the bbox head entirely and regresses in a grid head,
   and `seesaw_loss` classifies through a `NormedLinear` layer at temperature 20 over 1203 LVIS
   classes.
-- **An operator is missing or approximated in the generated graph.** `carafe` (29 px) renders
-  `pixel_shuffle` as a pass-through identity, so CARAFE's upsampling is skipped outright.
-  `libra_rcnn` (12 px) approximates the non-integer `adaptive_max_pool2d` that BFP uses to
-  scatter back to P6 (50 → 13, variable 3–4 wide windows) with a fixed kernel. Both announce
-  themselves in the generated `.cpp` as `TODO` comments — grep for those first. `gcnet` (37 px)
-  is in this group by elimination; its `ContextBlock` emits no TODO and has not been isolated.
+- **An operator is missing or approximated in the generated graph.** `gcnet` (37 px) is the one
+  left here, and it is here by elimination: its `ContextBlock` emits no `TODO` and has not been
+  isolated. The two that were in this group are now fixed — `carafe` rendered `pixel_shuffle`
+  as a pass-through identity, skipping CARAFE's upsampling outright (29 px → 0.06 px), and
+  `libra_rcnn` approximated the non-integer `adaptive_max_pool2d` that BFP uses to scatter back
+  to P6 with a fixed kernel (12 px → 0.11 px). Both announced themselves in the generated
+  `.cpp` as `TODO` comments, so grep for those before reading anything else: a renderer that
+  cannot express an operation still emits shape-correct code, which passes compilation and
+  every shape assertion while returning wrong values.
 
 `swin` (the SubA gguf fails to load) and `tridentnet` (the runner returns no boxes at all) are
 the two that remain unsorted.
