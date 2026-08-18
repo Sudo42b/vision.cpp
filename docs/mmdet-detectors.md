@@ -288,8 +288,8 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Sixty families produce the same boxes MMDetection does** — thirty-two single-stage
-below, twenty-eight two-stage further down. Assembling a head and decoding its output are
+**Sixty-one families produce the same boxes MMDetection does** — thirty-two single-stage
+below, twenty-nine two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
@@ -365,7 +365,7 @@ file, so running from anywhere else fails to find it and the family looks broken
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Twenty-eight of the forty families with a `roi_head` agree:
+and the thresholds are the same. Twenty-nine of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
@@ -377,6 +377,7 @@ and the thresholds are the same. Twenty-eight of the forty families with a `roi_
 | `crowddet` | `detect_roi` (set-NMS, 2 instances) | 0.07 px | 0.0001 |
 | `ms_rcnn` | `detect_roi` (+ mask-IoU rescoring) | 0.07 px | 0.0015 |
 | `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
+| `tridentnet` | `detect_roi` (C4, no neck) | 0.09 px | 0.0013 |
 | `cascade_rcnn` | `detect_roi` (3 stages) | 0.09 px | 0.0025 |
 | `gn` | `detect_roi` | 0.09 px | 0.0003 |
 | `empirical_attention` | `detect_roi` | 0.09 px | 0.0003 |
@@ -410,7 +411,7 @@ made the failure visible. Treat the old number as unverified rather than wrong.
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The twelve that do not agree split four ways, and the split matters more than the count:
+The eleven that do not agree split four ways, and the split matters more than the count:
 
 - **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
   `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
@@ -471,9 +472,16 @@ The twelve that do not agree split four ways, and the split matters more than th
   longer, and separately the shifted-window attention mask is built by slice assignment that
   tracing drops, which silently zeroes the mask instead of crashing.
 
-`tridentnet` is the one family that remains unsorted: the runner returns no boxes at all. It
-is also the only C4 detector here — no FPN neck — so the level assignment host RoIAlign
-performs has nothing to choose between.
+Nothing is left unsorted. `tridentnet` used to return no boxes at all, and it took two
+different C4-only faults to explain that. Its RPN puts five scales on **one** level
+(`scales=[2,4,8,16,32]`, stride 16) where an FPN RPN puts one scale on each of five, so
+reading only `scales[0]` built three anchors instead of fifteen and then read a
+fifteen-channel objectness map as if it had three — every proposal landed somewhere else.
+Fixing that moved the crash rather than removing it: with one level, NMS left 107 proposals
+where the RoI graph had been compiled for 1000, and the `flatten` inside it bakes the row
+count into a reshape. Proposals are now padded up to the cap and only the real rows are
+decoded. A first fix that does not make the symptom go away usually means a second cause,
+not a wrong first fix.
 
 `rpn` decodes proposals rather than detections, so a worst case over the whole set says little:
 of 185 proposals the median is 0.09 px and 182 are within 1 px, with one proposal of 186
