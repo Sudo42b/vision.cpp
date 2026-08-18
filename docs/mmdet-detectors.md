@@ -320,6 +320,7 @@ no label mismatch and no difference in how many boxes survive.
 | `rtmdet` | `detect_fcos` | 0.68 px | 0.002 |
 | `ld` | `detect_fcos` | 0.30 px | 0.006 |
 | `yolox` | `detect_yolox` | 0.41 px | 0.002 |
+| `yolo` | `detect_yolov3` | 0.23 px | 0.005 |
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
 | `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
 | `dino` | `detect_detr` | 0.28 px | 0.004 |
