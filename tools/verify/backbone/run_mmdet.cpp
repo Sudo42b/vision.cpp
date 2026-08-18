@@ -461,6 +461,24 @@ int main(int argc, char** argv) {
         dets = detect_rpn(cls_v, box_v, feat_hw, rp);
         // `label` 은 레벨 번호로 돌아온다. 밖에서는 클래스 자리라 0(유일한 클래스)으로 둔다.
         for (auto& d : dets) d.label = 0;
+    } else if (hc.kind == head_kind::sabl) {
+        // 변마다 버킷 분류 + 오프셋. 두 번째 box 갈래는 `extra[0]`("bcls") 로 온다.
+        sabl_params sp;
+        sp.strides = dp.strides;
+        sp.anchor_scale = dp.anchor_scale;
+        sp.num_buckets = dp.num_buckets;
+        sp.bucket_scale = dp.bucket_scale;
+        sp.num_classes = dp.num_classes;
+        sp.score_thr = dp.score_thr;
+        sp.nms_thr = dp.nms_thr;
+        sp.nms_pre = dp.nms_pre;
+        sp.max_per_img = dp.max_per_img;
+        sp.input_w = dp.input_w;
+        sp.input_h = dp.input_h;
+        std::vector<std::vector<float>> bcls_v(L);
+        if (!ho.extra.empty() && (int)ho.extra[0].second.size() >= L)
+            for (int l = 0; l < L; ++l) bcls_v[l] = to_vec(ho.extra[0].second[l]);
+        dets = detect_sabl(cls_v, bcls_v, box_v, feat_hw, sp);
     } else if (hc.kind == head_kind::yolo) {
         // YOLOv3: 레벨당 **한 갈래**(na×(5+nc))라 조립기가 `out.cls` 에만 담는다.
         // 앵커가 (w,h) 쌍이고 objectness 로 먼저 거른다 — 전용 디코더로 보낸다.

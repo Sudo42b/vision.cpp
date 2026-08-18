@@ -244,6 +244,7 @@ def postproc_cfg(det):
     #    조립이 조용히 틀린다 — verify_heads.py 로 재기 전에는 지원한다고 말하지 마라.
     HEADS = {
         "VFNetHead": "vfnet", "RepPointsHead": "reppoints", "TOODHead": "tood",
+        "SABLRetinaHead": "sabl",
         "GFLHead": "gfl", "FCOSHead": "fcos",
         "RPNHead": "rpn",
         "ATSSHead": "anchor", "PAAHead": "anchor", "RetinaHead": "anchor",
@@ -257,6 +258,13 @@ def postproc_cfg(det):
     kind = next((HEADS[c.__name__] for c in type(bh).__mro__ if c.__name__ in HEADS), None)
     if kind is None:
         return {"head_type": "raw"}   # 모르는 계열 — 백본만 내보낸다
+    # ⚠️ SABL 은 `prior_generator` 가 없다. 생성기가 **둘**이다 —
+    #    `approx_anchor_generator`(라벨 할당용, 학습 전용)와
+    #    `square_anchor_generator`(디코드용, 위치당 1개). 추론이 쓰는 것은 **square** 다.
+    #    approx 를 잡으면 위치당 9개가 되어 채널 해석이 통째로 어긋난다.
+    #    ⚠️ `pg` 는 위에서 **이미 읽혔다** — 여기서 `bh` 에 심어도 늦다. `pg` 를 직접 바꾼다.
+    if kind == "sabl" and pg is None:
+        pg = getattr(bh, "square_anchor_generator", None)
     # ⚠️ prior_generator 는 **앵커 계열에만** 있다. CenterNet 은 heatmap 최대점, CornerNet 은
     #    코너 짝짓기를 쓰므로 없다. 이걸 먼저 검사하면 조립 가능한 계열까지 raw 로 떨어진다.
     #    없다. 이걸 먼저 검사하면 조립 가능한 계열까지 raw 로 떨어진다.
@@ -552,8 +560,13 @@ def postproc_cfg(det):
         "feat_channels": feat_ch,
         "cls_convs_prefix": "bbox_head." + cls_tower,
         "reg_convs_prefix": "bbox_head." + reg_tower,
-        "cls_head": "bbox_head." + (cls_head or "retina_cls"),
-        "reg_head": "bbox_head." + (reg_head or "retina_reg"),
+        # ⚠️ SABL 은 box 갈래가 둘이고 **채널 수가 같다**(side_num*4). 채널 탐지가 둘 다
+        #    못 잡으므로 이름으로 박는다 — 채널로 가르려다 기본값(`retina_reg`)이 남아
+        #    `tensor not found` 로 죽었다.
+        "cls_head": "bbox_head." + (("retina_cls" if kind == "sabl" else None)
+                                    or cls_head or "retina_cls"),
+        "reg_head": "bbox_head." + (("retina_bbox_reg" if kind == "sabl" else None)
+                                    or reg_head or "retina_reg"),
         "head_has_norm": has_norm,
         "gn_groups": gn_groups,
         "per_level_towers": per_level,
@@ -573,6 +586,14 @@ def postproc_cfg(det):
         "bbox_clamp_stride": bbox_clamp_stride,
         "bbox_mul_stride": bbox_mul_stride,
         "bbox_base_edge": bbox_base_edge,
+        # SABL: 두 번째 box 갈래 이름과 버킷 파라미터.
+        "bbox_cls_head": ("bbox_head.retina_bbox_cls" if kind == "sabl" else ""),
+        "num_buckets": int(getattr(bc, "num_buckets", 0) or 0),
+        # ⚠️ **`octave_base_scale` 이 아니다.** SABL 의 square 생성기는 `scales=[4]` 로 크기를
+        #    준다(`octave_base_scale` 은 None). 재사용하면 1.0 으로 떨어져 앵커가 stride 크기가
+        #    되고, 디코드 공식이 맞아도 박스가 통째로 작아진다(실측 146px).
+        "anchor_scale": float((scales or [1.0])[0]) if kind == "sabl" else 0.0,
+        "bucket_scale": float(getattr(bc, "scale_factor", 0.0) or 0.0),
         "head_silu": head_silu,
         "reg_max": reg_max,
         # VFNet 의 레벨별 정규화 범위. stride 에서 유도하면 안 된다 — 마지막 레벨만 두 배다.

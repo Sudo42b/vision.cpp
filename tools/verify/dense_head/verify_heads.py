@@ -251,6 +251,13 @@ elif isinstance(outs, tuple) and len(outs) == 6:
 elif isinstance(outs, tuple) and len(outs) == 1:
     # YOLOv3 는 `return tuple(pred_maps),` — 한 갈래를 **또 튜플로 감싸** 돌려준다.
     cls_l = list(outs[0])
+elif isinstance(outs, tuple) and len(outs) == 2 and isinstance(outs[1][0], tuple):
+    # SABL: `forward_single` 이 `(cls_score, (bbox_cls_pred, bbox_reg_pred))` 를 낸다 —
+    # box 갈래가 **중첩 튜플**이라 그대로 쓰면 `'tuple' object has no attribute 'shape'`.
+    # C++ 조립기와 **같은 이름**(`bcls`)으로 갈라야 덤프가 겹친다.
+    cls_l = list(outs[0])
+    box_l = [b[1] for b in outs[1]]            # bbox_reg_pred
+    extra["bcls"] = [b[0] for b in outs[1]]    # bbox_cls_pred (버킷 분류)
 elif isinstance(outs, tuple) and len(outs) == 3:
     cls_l, box_l, ctr_l = [list(t) for t in outs]
 else:

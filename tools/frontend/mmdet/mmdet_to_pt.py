@@ -76,7 +76,8 @@ def emit_params(cfg, config_name):
         if k in cfg:
             out.append(f"    c.head.{k} = {int(cfg[k])};\n")
     for k in ("cls_convs_prefix", "reg_convs_prefix", "cls_head", "reg_head",
-              "centerness_head", "scales_prefix", "per_level_head_tail", "pre_conv"):
+              "centerness_head", "scales_prefix", "per_level_head_tail", "pre_conv",
+              "bbox_cls_head"):
         if k in cfg:
             out.append(f'    c.head.{k} = "{cfg[k]}";\n')
     for k in ("head_has_norm", "centerness_on_reg", "bbox_exp", "bbox_clamp_stride", "bbox_mul_stride",
@@ -114,6 +115,11 @@ def emit_params(cfg, config_name):
                        + ", ".join(_f(v) for v in lvl) + "});\n")
         if cfg.get("conf_thr"):
             out.append(f"    c.det.conf_thr = {_f(cfg['conf_thr'])};\n")
+        # SABL 의 버킷 파라미터. 0 이면 안 싣는다.
+        if cfg.get("num_buckets"):
+            out.append(f"    c.det.num_buckets = {int(cfg['num_buckets'])};\n")
+            out.append(f"    c.det.bucket_scale = {_f(cfg.get('bucket_scale', 3.0))};\n")
+            out.append(f"    c.det.anchor_scale = {_f(cfg.get('anchor_scale') or 4.0)};\n")
         # FoveaBox 만 채운다. 비어 있으면 디코더가 조립기가 낸 값을 그대로 거리로 쓴다.
         if cfg.get("bbox_base_edge"):
             out.append("    c.det.base_edge = {"

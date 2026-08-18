@@ -54,6 +54,10 @@ struct det_params {
     // YOLOv3 의 (w,h) 앵커(레벨별)와 objectness 선필터. 비면 안 쓴다.
     std::vector<std::vector<float>> base_sizes;
     float conf_thr = 0.0f;
+    // SABL 의 버킷 파라미터. 0 이면 안 쓴다.
+    int num_buckets = 0;
+    float bucket_scale = 3.0f;
+    float anchor_scale = 4.0f;
 };
 
 // per-level 원시출력: cls_scores[level] = [num_base*num_classes, feat_w, feat_h](CWHN flat),
@@ -145,6 +149,30 @@ struct yolo_dense_params {
 std::vector<detection> detect_yolo_dense(
     float const* box, float const* score,
     std::vector<std::pair<int, int>> const& feat_hw, yolo_dense_params const& p);
+
+// ── SABL (Side-Aware Boundary Localization) ─────────────────────────────────
+// 박스를 델타로 한 번에 내지 않는다. **변(l,r,t,d)마다** 앵커를 `num_buckets` 칸으로 나눠
+// ① 어느 칸인지 **분류**하고 ② 그 칸 안의 **오프셋**을 회귀한다. 그래서 box 갈래가 둘이다.
+struct sabl_params {
+    std::vector<float> strides;
+    float anchor_scale = 4.0f;   // square anchor: 한 변 = stride · scale (위치당 1개)
+    int num_buckets = 14;        // side_num = ceil(num_buckets/2)
+    float bucket_scale = 3.0f;   // 디코드 전에 앵커를 이만큼 키운다(coder 의 scale_factor)
+    int num_classes = 80;
+    float score_thr = 0.05f;
+    float nms_thr = 0.5f;
+    int nms_pre = 1000;
+    int max_per_img = 100;
+    int input_w = 0, input_h = 0;
+};
+// cls[l]=[nc,W,H] · bcls[l]=[side_num*4,W,H] · breg[l]=[side_num*4,W,H] (전부 CWHN flat).
+// 채널 순서는 변 우선이다 — [l·side_num, r·side_num, t·side_num, d·side_num].
+// 점수는 `cls_sigmoid × loc_confidence` 이고, **top-k 뒤에** 곱한다(mmdet score_factors 규약).
+std::vector<detection> detect_sabl(
+    std::vector<std::vector<float>> const& cls,
+    std::vector<std::vector<float>> const& bcls,
+    std::vector<std::vector<float>> const& breg,
+    std::vector<std::pair<int, int>> const& feat_hw, sabl_params const& p);
 
 // ── YOLOv3 (레벨당 한 갈래: na×(5+nc) 채널) ─────────────────────────────────
 struct yolov3_params {

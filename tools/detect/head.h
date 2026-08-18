@@ -27,6 +27,9 @@ enum class head_kind {
     gfl,        // + DFL(분포 → 거리 기댓값). cls 가 품질까지 겸한다
     vfnet,      // star deformable refine (전용 함수)
     reppoints,  // 점 집합 → bbox (전용 함수)
+    // 변마다 앵커를 칸으로 쪼개 **어느 칸인지 분류 + 칸 안 오프셋 회귀**. box 갈래가 둘이라
+    // (bbox_cls·bbox_reg) 두 갈래 규약으로는 못 담는다 — 두 번째를 `extra` 에 싣는다.
+    sabl,
     tood,       // task decomposition + deform sampling (전용 함수)
     centernet,  // heatmap / wh / offset 세 갈래 (앵커 없음, 단일 레벨)
     yolof,      // 단일 레벨 · 암묵 objectness (cls 와 obj 를 로그공간에서 합친다)
@@ -58,6 +61,9 @@ struct anchor_head_cfg {
     std::string reg_convs_prefix = "bbox_head.reg_convs";
     std::string cls_head = "bbox_head.retina_cls";         // 최종 cls conv
     std::string reg_head = "bbox_head.retina_reg";         // 최종 reg conv
+    // SABL 의 **두 번째 box 갈래**(버킷 분류). 비어 있으면 안 만든다.
+    // ⚠️ 채널 수가 `reg_head` 와 같아서(side_num*4) **채널로는 못 가른다** — 이름으로 가른다.
+    std::string bbox_cls_head;
     // 분기 conv 앞에 **하나만** 있는 공유 conv(+ReLU). RPNHead 의 `rpn_conv` 가 그렇다.
     // 컨테이너(ModuleList/Sequential)가 아니라 맨 Conv2d 라 타워 탐지에 안 걸린다.
     // 빼먹으면 256→256 이라 shape 이 안 변해 **조용히 틀린다**(rpn 실측 L1 5.56).

@@ -773,4 +773,112 @@ std::vector<detection> detect_yolov3(
     return kept;
 }
 
+
+// ── SABL ─────────────────────────────────────────────────────────────────────
+// mmdet `SABLRetinaHead._predict_by_feat_single` + `BucketingBBoxCoder.bucket2bbox`.
+//
+// 델타 회귀가 아니다. 변(l,r,t,d)마다 앵커를 `num_buckets` 칸으로 쪼개
+//   ① 어느 칸인지 softmax 분류 → argmax 칸의 경계를 잡고
+//   ② 그 칸 안에서 오프셋을 빼서 최종 변 위치를 만든다.
+// 그리고 칸 분류의 확신도(loc_confidence)로 점수를 다시 매긴다.
+std::vector<detection> detect_sabl(
+    std::vector<std::vector<float>> const& cls,
+    std::vector<std::vector<float>> const& bcls,
+    std::vector<std::vector<float>> const& breg,
+    std::vector<std::pair<int, int>> const& feat_hw, sabl_params const& p) {
+
+    const int nc = p.num_classes;
+    const int side = (p.num_buckets + 1) / 2;      // ceil(num_buckets/2)
+    const int nlev = (int)feat_hw.size();
+    std::vector<detection> cand;
+
+    for (int l = 0; l < nlev; ++l) {
+        const int fh = feat_hw[l].first, fw = feat_hw[l].second;
+        const float stride = l < (int)p.strides.size() ? p.strides[l] : 1.0f;
+        const float sz = stride * p.anchor_scale;   // 정사각 앵커 한 변
+        float const* cs = cls[l].data();
+        float const* bc = bcls[l].data();
+        float const* br = breg[l].data();
+        const int Cb = side * 4;
+
+        // 후보 수집 — cls 만 보고 자른다. loc_confidence 는 **뒤에** 곱한다.
+        std::vector<std::tuple<float, int, int>> lvl;   // score, label, pos
+        for (int pos = 0; pos < fh * fw; ++pos)
+            for (int j = 0; j < nc; ++j) {
+                const float sc = sigmoidf(cs[(size_t)pos * nc + j]);
+                if (sc > p.score_thr) lvl.emplace_back(sc, j, pos);
+            }
+        if (p.nms_pre > 0 && (int)lvl.size() > p.nms_pre) {
+            std::nth_element(lvl.begin(), lvl.begin() + p.nms_pre, lvl.end(),
+                             [](auto const& a, auto const& b) {
+                                 return std::get<0>(a) > std::get<0>(b);
+                             });
+            lvl.resize(p.nms_pre);
+        }
+
+        for (auto const& t : lvl) {
+            const int pos = std::get<2>(t);
+            const int gy = pos / fw, gx = pos % fw;
+            // AnchorGenerator(center_offset=0): 중심이 격자점 자체다.
+            const float cx = gx * stride, cy = gy * stride;
+            // 디코드 전에 앵커를 `bucket_scale` 배로 키운다(mmdet bbox_rescale).
+            const float hw = sz * 0.5f * p.bucket_scale, hh = sz * 0.5f * p.bucket_scale;
+            const float px1 = cx - hw, py1 = cy - hh, px2 = cx + hw, py2 = cy + hh;
+            const float bw = (px2 - px1) / p.num_buckets;
+            const float bh = (py2 - py1) / p.num_buckets;
+
+            float const* qc = bc + (size_t)pos * Cb;
+            float const* qr = br + (size_t)pos * Cb;
+            int   top1[4];
+            float conf = 0.0f;
+            float edge[4];
+            for (int k = 0; k < 4; ++k) {          // 0=l 1=r 2=t 3=d
+                float const* row = qc + (size_t)k * side;
+                // softmax → 상위 2개. 상위 2개가 **이웃 칸**이면 두 번째도 확신도에 더한다.
+                float mx = row[0];
+                for (int i = 1; i < side; ++i) mx = std::max(mx, row[i]);
+                float sum = 0.0f;
+                for (int i = 0; i < side; ++i) sum += std::exp(row[i] - mx);
+                int i1 = 0, i2 = -1;
+                for (int i = 1; i < side; ++i) if (row[i] > row[i1]) i1 = i;
+                for (int i = 0; i < side; ++i)
+                    if (i != i1 && (i2 < 0 || row[i] > row[i2])) i2 = i;
+                const float s1 = std::exp(row[i1] - mx) / sum;
+                const float s2 = i2 >= 0 ? std::exp(row[i2] - mx) / sum : 0.0f;
+                top1[k] = i1;
+                conf += s1 + (std::abs(i1 - i2) == 1 ? s2 : 0.0f);
+                const float off = qr[(size_t)k * side + i1];
+                // l·t 는 좌/상 경계에서 **더해** 들어가고, r·d 는 우/하에서 **빼서** 들어간다.
+                if (k == 0)      edge[0] = (px1 + (0.5f + i1) * bw) - off * bw;
+                else if (k == 1) edge[1] = (px2 - (0.5f + i1) * bw) - off * bw;
+                else if (k == 2) edge[2] = (py1 + (0.5f + i1) * bh) - off * bh;
+                else             edge[3] = (py2 - (0.5f + i1) * bh) - off * bh;
+            }
+            conf *= 0.25f;                          // 네 변 평균
+
+            float x1 = edge[0], x2 = edge[1], y1 = edge[2], y2 = edge[3];
+            if (p.input_w > 0) {                    // clip_border: max_shape-1 이다
+                x1 = std::min(std::max(x1, 0.0f), (float)p.input_w - 1.0f);
+                x2 = std::min(std::max(x2, 0.0f), (float)p.input_w - 1.0f);
+                y1 = std::min(std::max(y1, 0.0f), (float)p.input_h - 1.0f);
+                y2 = std::min(std::max(y2, 0.0f), (float)p.input_h - 1.0f);
+            }
+            // score_factors 규약 — top-k 뒤에 곱한다.
+            cand.push_back({x1, y1, x2, y2, std::get<0>(t) * conf, std::get<1>(t)});
+        }
+    }
+
+    std::vector<detection> kept;
+    for (int j = 0; j < nc; ++j) {
+        std::vector<detection> per;
+        for (auto const& d : cand) if (d.label == j) per.push_back(d);
+        if (per.empty()) continue;
+        for (int k : nms(per, p.nms_thr)) kept.push_back(per[k]);
+    }
+    std::sort(kept.begin(), kept.end(),
+              [](detection const& a, detection const& b) { return a.score > b.score; });
+    if (p.max_per_img > 0 && (int)kept.size() > p.max_per_img) kept.resize(p.max_per_img);
+    return kept;
+}
+
 }  // namespace visp

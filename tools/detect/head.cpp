@@ -209,6 +209,17 @@ static void tower_head_forward(model_ref m, std::vector<tensor> const& feats,
         out.cls.push_back(cls);
         out.box.push_back(box);
 
+        // SABL 의 **두 번째 box 갈래**(버킷 분류). `reg_head` 와 채널 수가 같아
+        // (side_num*4) 채널로는 못 가르므로 이름으로 받는다. `extra` 에 실어야
+        // 잰 갈래가 빠지지 않는다 — 셋에 우겨넣으면 "통과" 가 거짓말이 된다.
+        if (!c.bbox_cls_head.empty()) {
+            tensor bcl = conv_same(m, c.bbox_cls_head + lv, rr);   // reg 타워에서 뽑는다
+            bcl = contiguous_2d_to_cwhn(m, bcl);
+            ggml_format_name(bcl, "bcls_%zu", l);
+            if (out.extra.empty()) out.extra.push_back({"bcls", {}});
+            out.extra[0].second.push_back(bcl);
+        }
+
         if (!c.centerness_head.empty()) {
             tensor ctr = conv_same(m, c.centerness_head + lv, c.centerness_on_reg ? rr : cc);
             if (c.ctr_tanh) ctr = ggml_tanh(m, ctr);
@@ -1307,6 +1318,7 @@ void mmdet_head_forward(model_ref m, std::vector<tensor> const& feats,
         case head_kind::rpn:        // 〃 (`pre_conv` 로 rpn_conv 가 붙는다)
         case head_kind::fcos:
         case head_kind::gfl:
+        case head_kind::sabl:       // 타워는 같다. box 갈래가 하나 더 붙을 뿐이다
             tower_head_forward(m, feats, c, out);
             break;
         case head_kind::yolof:
