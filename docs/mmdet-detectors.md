@@ -347,7 +347,7 @@ file, so running from anywhere else fails to find it and the family looks broken
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Twenty-one of the forty families with a `roi_head` agree:
+and the thresholds are the same. Twenty-three of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
@@ -356,6 +356,8 @@ and the thresholds are the same. Twenty-one of the forty families with a `roi_he
 | `carafe` | `detect_roi` | 0.06 px | 0.0007 |
 | `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
 | `gcnet` | `detect_roi` | 0.14 px | 0.0010 |
+| `htc` | `detect_roi` (3 stages + semantic) | 0.12 px | 0.0011 |
+| `swin` | `detect_roi` | 0.22 px | 0.0003 |
 | `mask_rcnn` | `detect_roi` | 0.06 px | 0.0009 |
 | `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
 | `cascade_rcnn` | `detect_roi` (3 stages) | 0.09 px | 0.0025 |
