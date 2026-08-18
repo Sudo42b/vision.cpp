@@ -288,8 +288,8 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Fifty-nine families produce the same boxes MMDetection does** — thirty-two single-stage
-below, twenty-seven two-stage further down. Assembling a head and decoding its output are
+**Sixty families produce the same boxes MMDetection does** — thirty-two single-stage
+below, twenty-eight two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
@@ -365,7 +365,7 @@ file, so running from anywhere else fails to find it and the family looks broken
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Twenty-seven of the forty families with a `roi_head` agree:
+and the thresholds are the same. Twenty-eight of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
@@ -387,6 +387,7 @@ and the thresholds are the same. Twenty-seven of the forty families with a `roi_
 | `resnest` | `detect_roi` | 0.12 px | 0.0002 |
 | `gcnet` | `detect_roi` | 0.14 px | 0.0010 |
 | `albu_example` | `detect_roi` | 0.14 px | 0.0008 |
+| `grid_rcnn` | `detect_roi` (grid heatmap, no reg branch) | 0.15 px | 0.0007 |
 | `point_rend` | `detect_roi` | 0.15 px | 0.0012 |
 | `regnet` | `detect_roi` | 0.16 px | 0.0012 |
 | `scnet` | `detect_roi` (+ global context) | 0.18 px | 0.0020 |
@@ -409,7 +410,7 @@ made the failure visible. Treat the old number as unverified rather than wrong.
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The thirteen that do not agree split five ways, and the split matters more than the count:
+The twelve that do not agree split four ways, and the split matters more than the count:
 
 - **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
   `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
@@ -417,15 +418,6 @@ The thirteen that do not agree split five ways, and the split matters more than 
   reason — `GenericRoIExtractor` aggregates every level through per-level convolutions, which
   host RoIAlign cannot express. All five stop at export with a stated reason rather than a
   wrong number.
-- **The graph needs an operator ggml does not have.** `grid_rcnn` regresses boxes in a grid
-  head whose two transposed convolutions are grouped (`groups=9`) and padded (`padding=1`);
-  `ggml_conv_transpose_2d_p0` is neither. Everything else for that family is written — the
-  bbox head has no regression branch at all (`with_reg=False`, so the RoIs are used as boxes
-  the way mmdet does when `bbox_pred is None`), and the grid decode reads nine heatmap peaks,
-  maps them into the expanded box and averages each side by score. It stops at export with
-  the operator named, because "the decoder is missing" and "the operator is missing" are
-  different problems and should not share a row. Padding alone is now supported (the helper
-  crops the p0 output); groups is what remains.
 - **FP16 weights, not a defect.** `dynamic_rcnn` (10.24 px), `pafpn` (8.77 px) and `res2net`
   (6.81 px) return the right count and the right labels with the coordinates several pixels
   out. Recompiling with fp32 weights makes all three exact at **0.00 px**, so the gap is the
