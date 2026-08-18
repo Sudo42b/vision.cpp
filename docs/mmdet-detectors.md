@@ -348,41 +348,51 @@ file, so running from anywhere else fails to find it and the family looks broken
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Twenty-five of the forty families with a `roi_head` agree:
+and the thresholds are the same. Twenty-seven of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
-| `panoptic_fpn` | `detect_roi` | 0.04 px | 0.0001 |
+| `detectors` | `detect_roi` (SAC) | 0.03 px | 0.0006 |
 | `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
 | `carafe` | `detect_roi` | 0.06 px | 0.0007 |
 | `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
-| `gcnet` | `detect_roi` | 0.14 px | 0.0010 |
-| `htc` | `detect_roi` (3 stages + semantic) | 0.12 px | 0.0011 |
-| `detectors` | `detect_roi` (SAC) | 0.03 px | 0.0006 |
-| `scnet` | `detect_roi` (+ global context) | 0.18 px | 0.0020 |
-| `swin` | `detect_roi` | 0.22 px | 0.0003 |
 | `mask_rcnn` | `detect_roi` | 0.06 px | 0.0009 |
+| `crowddet` | `detect_roi` (set-NMS, 2 instances) | 0.07 px | 0.0001 |
+| `ms_rcnn` | `detect_roi` (+ mask-IoU rescoring) | 0.07 px | 0.0015 |
 | `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
 | `cascade_rcnn` | `detect_roi` (3 stages) | 0.09 px | 0.0025 |
 | `gn` | `detect_roi` | 0.09 px | 0.0003 |
 | `empirical_attention` | `detect_roi` | 0.09 px | 0.0003 |
+| `seesaw_loss` | `detect_roi` (NormedLinear, custom activation) | 0.09 px | 0.0002 |
 | `faster_rcnn` | `detect_roi` | 0.10 px | 0.0008 |
 | `libra_rcnn` | `detect_roi` | 0.11 px | 0.0007 |
+| `htc` | `detect_roi` (3 stages + semantic) | 0.12 px | 0.0011 |
 | `resnest` | `detect_roi` | 0.12 px | 0.0002 |
+| `gcnet` | `detect_roi` | 0.14 px | 0.0010 |
 | `albu_example` | `detect_roi` | 0.14 px | 0.0008 |
 | `point_rend` | `detect_roi` | 0.15 px | 0.0012 |
 | `regnet` | `detect_roi` | 0.16 px | 0.0012 |
+| `scnet` | `detect_roi` (+ global context) | 0.18 px | 0.0020 |
 | `simple_copy_paste` | `detect_roi` | 0.19 px | 0.0007 |
+| `swin` | `detect_roi` | 0.22 px | 0.0003 |
 | `resnet_strikes_back` | `detect_roi` | 0.24 px | 0.0023 |
 | `fpg` | `detect_roi` (at 1024) | 0.28 px | 0.0036 |
 | `dcn` | `detect_roi` | 0.37 px | 0.0002 |
 | `instaboost` | `detect_roi` | 0.39 px | 0.0079 |
 
+`panoptic_fpn` is not in the table any more, and the reason is worth stating plainly: it
+cannot be measured in this environment, because `panopticapi` is not installed and
+`init_detector` builds the dataset pipeline before it builds the model. It was previously
+recorded at 0.04 px. That number came from a run whose export step had already failed — the
+harness checked only that `frcnn.json` existed, so a file left by an earlier run carried it
+through. The harness now deletes each stage's outputs before that stage runs, which is what
+made the failure visible. Treat the old number as unverified rather than wrong.
+
 `fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The fifteen that do not agree split five ways, and the split matters more than the count:
+The thirteen that do not agree split five ways, and the split matters more than the count:
 
 - **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
   `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
@@ -390,6 +400,15 @@ The fifteen that do not agree split five ways, and the split matters more than t
   reason — `GenericRoIExtractor` aggregates every level through per-level convolutions, which
   host RoIAlign cannot express. All five stop at export with a stated reason rather than a
   wrong number.
+- **The graph needs an operator ggml does not have.** `grid_rcnn` regresses boxes in a grid
+  head whose two transposed convolutions are grouped (`groups=9`) and padded (`padding=1`);
+  `ggml_conv_transpose_2d_p0` is neither. Everything else for that family is written — the
+  bbox head has no regression branch at all (`with_reg=False`, so the RoIs are used as boxes
+  the way mmdet does when `bbox_pred is None`), and the grid decode reads nine heatmap peaks,
+  maps them into the expanded box and averages each side by score. It stops at export with
+  the operator named, because "the decoder is missing" and "the operator is missing" are
+  different problems and should not share a row. Padding alone is now supported (the helper
+  crops the p0 output); groups is what remains.
 - **FP16 weights, not a defect.** `dynamic_rcnn` (10.24 px), `pafpn` (8.77 px) and `res2net`
   (6.81 px) return the right count and the right labels with the coordinates several pixels
   out. Recompiling with fp32 weights makes all three exact at **0.00 px**, so the gap is the
@@ -405,12 +424,18 @@ The fifteen that do not agree split five ways, and the split matters more than t
   0.30–0.35 band beside every count mismatch. `fast_rcnn` is not measured at all — its
   metafile lists no weights, and random initialisation cannot judge a decoder, so it is
   recorded as untried rather than failing.
-- **The family post-processes its own way**: `crowddet` predicts two instances per proposal and
-  needs set-NMS (without it nothing is suppressed — 500 boxes against 1), `ms_rcnn` rescales
-  scores by a predicted mask IoU (its boxes are exact at 0.07 px; only the scores differ),
-  `grid_rcnn` turns off box regression on the bbox head entirely and regresses in a grid head,
-  and `seesaw_loss` classifies through a `NormedLinear` layer at temperature 20 over 1203 LVIS
-  classes.
+- **The family post-processed its own way.** This group is now empty, and each of the three
+  is worth keeping because none of them was visible in the tensors. `ms_rcnn` multiplies every
+  score by a predicted mask IoU, which needs the whole mask branch — RoIAlign at 14, the mask
+  head, then a second head over the features concatenated with the chosen mask channel.
+  `seesaw_loss` is two things at once: a `NormedLinear` classifier (the weight normalisation is
+  constant at inference and folds away; the input normalisation stays) and a custom activation
+  over `num_classes + 2` channels, so reading the class count as "output size minus one" shifts
+  every label by one. `crowddet` needed set-NMS — boxes from the same proposal do not suppress
+  each other — but three of its four differences were RPN settings that are not the defaults:
+  fixed anchor `centers`, `clip_border=False`, and an objectness head with two channels rather
+  than one because its `loss_cls` omits `use_sigmoid`. Its RPN tensors matched at 3e-04 from
+  the start, which is what said the problem was in the host code and not in the graph.
 - **An operator was missing, approximated, or silently reduced along the wrong axis.** This
   group is now empty, and how each was found is worth keeping. `carafe` rendered
   `pixel_shuffle` as a pass-through identity, skipping CARAFE's upsampling outright
