@@ -487,7 +487,12 @@ int main(int argc, char** argv) {
         fp.input_h = dp.input_h;
         fp.base_edge = dp.base_edge;   // FoveaBox 만 채워져 온다
         // FCOS 만 MlvlPointGenerator(0.5) 다. 나머지는 AnchorGenerator(center_offset=0).
-        fp.point_offset = hc.kind == head_kind::fcos ? 0.5f : hc.center_offset;
+        // ⚠️ **kind 로 0.5 를 박으면 안 된다.** 같은 `fcos` kind 라도 격자 오프셋이 다르다 —
+        //    FCOS·NAS-FCOS·FoveaBox 는 `MlvlPointGenerator` 기본값 0.5 지만 **AutoAssign 은
+        //    `offset=0`** 으로 만든다(autoassign_head.py:171). 프론트엔드가 생성기에서 읽어
+        //    실어 주므로(`_center_offset`) 그 값을 그대로 쓴다.
+        //    박으면 0.5·stride 만큼 밀리는데, 최대 stride 128 에서 **64px** 이다(실측 64.30px).
+        fp.point_offset = hc.center_offset;
         fp.box_xyxy_offset = hc.kind == head_kind::reppoints;
         dets = detect_fcos(cls_v, box_v, ctr_v, feat_hw, fp);
     } else {
