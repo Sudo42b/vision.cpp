@@ -21,8 +21,12 @@ std::vector<float> gen_anchors(int feat_h, int feat_w, float stride, float base_
 
 // ── bbox decode (mmdet DeltaXYWHBBoxCoder.delta2bbox) ────────────────────────
 // anchors[N*4], deltas[N*4] → out[N*4]. denorm(mean/std) + exp(dwh) + clamp + clip.
+// `ctr_clamp` > 0 이면 mmdet 의 **add_ctr_clamp** 경로다(YOLOF). 중심 이동량을 픽셀 단위로
+// ±ctr_clamp 로 자르고, dw/dh 는 **상한만** 자른다 — 기본 경로(상·하한 모두)와 다르다
+// (delta_xywh_bbox_coder.py:346-350).
 void delta2bbox(float const* anchors, float const* deltas, int n, float* out,
-                float const means[4], float const stds[4], int max_w, int max_h);
+                float const means[4], float const stds[4], int max_w, int max_h,
+                float ctr_clamp = 0.0f);
 
 // ── NMS (mmcv nms, IoU) ─────────────────────────────────────────────────────
 std::vector<int> nms(std::vector<detection> const& dets, float iou_thr);
@@ -45,6 +49,8 @@ struct det_params {
     int input_w = 0, input_h = 0;
     // FoveaBox 의 `base_edge_list`(레벨별). 비면 안 쓴다 — `fcos_params::base_edge` 로 넘어간다.
     std::vector<float> base_edge;
+    // mmdet DeltaXYWHBBoxCoder 의 `add_ctr_clamp`(YOLOF). 0 이면 기본 경로.
+    float ctr_clamp = 0.0f;
 };
 
 // per-level 원시출력: cls_scores[level] = [num_base*num_classes, feat_w, feat_h](CWHN flat),

@@ -41,7 +41,8 @@ std::vector<float> gen_anchors(int feat_h, int feat_w, float stride, float base_
 
 // ── delta2bbox (mmdet DeltaXYWHBBoxCoder) ────────────────────────────────────
 void delta2bbox(float const* anchors, float const* deltas, int n, float* out,
-                float const means[4], float const stds[4], int max_w, int max_h) {
+                float const means[4], float const stds[4], int max_w, int max_h,
+                float ctr_clamp) {
     float max_ratio = std::fabs(std::log(16.0f / 1000.0f));
     for (int i = 0; i < n; ++i) {
         float dx = deltas[i * 4 + 0] * stds[0] + means[0];
@@ -52,9 +53,18 @@ void delta2bbox(float const* anchors, float const* deltas, int n, float* out,
         float ax2 = anchors[i * 4 + 2], ay2 = anchors[i * 4 + 3];
         float pxc = (ax1 + ax2) * 0.5f, pyc = (ay1 + ay2) * 0.5f;
         float pw = ax2 - ax1, ph = ay2 - ay1;
-        dw = std::min(std::max(dw, -max_ratio), max_ratio);
-        dh = std::min(std::max(dh, -max_ratio), max_ratio);
-        float gxc = pxc + pw * dx, gyc = pyc + ph * dy;
+        float mx = pw * dx, my = ph * dy;
+        if (ctr_clamp > 0.0f) {
+            // add_ctr_clamp: 중심 이동은 **픽셀 단위**로 자르고 dw/dh 는 상한만 자른다.
+            mx = std::min(std::max(mx, -ctr_clamp), ctr_clamp);
+            my = std::min(std::max(my, -ctr_clamp), ctr_clamp);
+            dw = std::min(dw, max_ratio);
+            dh = std::min(dh, max_ratio);
+        } else {
+            dw = std::min(std::max(dw, -max_ratio), max_ratio);
+            dh = std::min(std::max(dh, -max_ratio), max_ratio);
+        }
+        float gxc = pxc + mx, gyc = pyc + my;
         float gw = pw * std::exp(dw), gh = ph * std::exp(dh);
         float x1 = gxc - gw * 0.5f, y1 = gyc - gh * 0.5f;
         float x2 = gxc + gw * 0.5f, y2 = gyc + gh * 0.5f;
@@ -154,7 +164,7 @@ std::vector<detection> detect_anchor(
             for (int k = 0; k < 4; ++k) delta[k] = bp[k];
             float outb[4];
             delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
-                       p.means, p.stds, p.input_w, p.input_h);
+                       p.means, p.stds, p.input_w, p.input_h, p.ctr_clamp);
             float sc = std::get<0>(t);
             if (sf) sc *= sigmoidf(sf[(size_t)pos * num_base + b]);
             cand.push_back({outb[0], outb[1], outb[2], outb[3], sc, std::get<1>(t)});

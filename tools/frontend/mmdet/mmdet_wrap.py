@@ -268,6 +268,9 @@ def postproc_cfg(det):
     # 디코드 지원은 **별개 판단**이다. head 조립은 되는데 박스 코더가 다른 계열이 있다
     # (FSAF 는 RetinaHead 인데 TBLRBBoxCoder 를 쓴다). 하나로 묶으면 조립까지 같이 막힌다.
     can_decode = bc is not None and "Delta" in type(bc).__name__
+    # mmdet DeltaXYWHBBoxCoder 의 `add_ctr_clamp`(YOLOF). 켜지면 중심 이동을 픽셀 단위로
+    # 자르고 dw/dh 는 상한만 자른다 — 기본 경로와 결과가 다르다. 0 이면 기본 경로.
+    ctr_clamp = float(getattr(bc, "ctr_clamp", 0)) if getattr(bc, "add_ctr_clamp", False) else 0.0
     # (레벨별 anchor 수가 다르면 뒤에서 취소한다 — num_base 하나로는 못 푼다)
 
     # cls 출력 채널 수. **의미상 클래스 수와 다를 수 있다** — softmax head 는 배경을 한 칸
@@ -515,6 +518,7 @@ def postproc_cfg(det):
         "means": [float(v) for v in getattr(bc, "means", [0.0] * 4)],
         "stds": [float(v) for v in getattr(bc, "stds", [1.0] * 4)],
         "can_decode": can_decode and uniform_priors,
+        "ctr_clamp": ctr_clamp,
         # ── C++ head 부품(anchor_head_forward)용 구조 ──
         "num_base": num_base,
         "stacked_convs": stacked,
