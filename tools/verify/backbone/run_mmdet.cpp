@@ -482,6 +482,7 @@ int main(int argc, char** argv) {
         fp.max_per_img = dp.max_per_img;
         fp.input_w = dp.input_w;
         fp.input_h = dp.input_h;
+        fp.base_edge = dp.base_edge;   // FoveaBox 만 채워져 온다
         // FCOS 만 MlvlPointGenerator(0.5) 다. 나머지는 AnchorGenerator(center_offset=0).
         fp.point_offset = hc.kind == head_kind::fcos ? 0.5f : hc.center_offset;
         dets = detect_fcos(cls_v, box_v, ctr_v, feat_hw, fp);

@@ -452,6 +452,16 @@ def postproc_cfg(det):
     is_autoassign = hasattr(bh, "center_prior")
     if is_autoassign:
         bbox_exp, bbox_clamp_stride = False, True
+    # FoveaBox 는 `x1 = x - base_len·exp(pred)` 로 디코드한다. **stride 가 아니라
+    # `base_edge_list`** 를 곱하는데 기본값이 (16,32,64,128,256) 으로 stride 의 2배다.
+    # 구조적 표시는 `base_edge_list` — 이 계열에만 있는 속성이라 이름으로 안 가른다.
+    # 안 실으면 FCOSHead 로 조립돼 **그럴듯하게 돌고 값만 틀린다**(실측 212px).
+    bbox_base_edge = [float(v) for v in (getattr(bh, "base_edge_list", None) or [])]
+    if bbox_base_edge:
+        # ⚠️ **조립기는 아무것도 안 한다.** `FCOSHead.forward` 는 exp 를 자기가 걸지만
+        #    `FoveaHead.forward` 는 안 건다(`_bbox_decode` 에서 건다). 조립기에 넣으면
+        #    텐서 검증이 torch 원시 출력과 안 맞는다(실측 L1 8.7e+02 → 3.9). 디코더가 한다.
+        bbox_exp, bbox_clamp_stride, bbox_mul_stride = False, False, False
 
     # ── 전처리(pre) 메타: mmdet data_preprocessor(모델 안 서브모듈)에서 추출 ──
     #   normalize mean/std(픽셀스케일 0-255) + 채널변환. vision.cpp preprocess() 가 소비.
@@ -532,6 +542,7 @@ def postproc_cfg(det):
         "bbox_exp": bbox_exp,
         "bbox_clamp_stride": bbox_clamp_stride,
         "bbox_mul_stride": bbox_mul_stride,
+        "bbox_base_edge": bbox_base_edge,
         "head_silu": head_silu,
         "reg_max": reg_max,
         # VFNet 의 레벨별 정규화 범위. stride 에서 유도하면 안 된다 — 마지막 레벨만 두 배다.

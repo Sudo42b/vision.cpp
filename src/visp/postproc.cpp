@@ -249,7 +249,16 @@ std::vector<detection> detect_fcos(
             // bbox_pred 는 조립기(head.cpp)가 이미 scale·relu·exp·×stride 를 적용한
             // **최종 픽셀 거리**다 → 여기서 다시 곱하지 않는다. 곱하면 레벨마다
             // 8~128배 커진다.
-            for (int k = 0; k < 4; ++k) dist[k] = box[(size_t)pos * 4 + k];
+            //
+            // 예외는 FoveaBox 뿐이다. `FoveaHead.forward` 는 exp 를 안 걸고
+            // `_bbox_decode` 에서 `base_len·exp(pred)` 로 만든다. 조립기가 그걸 하면
+            // torch 의 원시 head 출력과 안 맞아 텐서 검증이 깨지므로 **여기서** 한다.
+            const bool fovea = !p.base_edge.empty();
+            const float be = fovea ? (l < (int)p.base_edge.size() ? p.base_edge[l] : 1.0f) : 1.0f;
+            for (int k = 0; k < 4; ++k) {
+                float v = box[(size_t)pos * 4 + k];
+                dist[k] = fovea ? be * std::exp(v) : v;
+            }
             float outb[4];
             distance2bbox(pts.data() + (size_t)pos * 2, dist, 1, outb, p.input_w, p.input_h);
             float sc = std::get<0>(t);

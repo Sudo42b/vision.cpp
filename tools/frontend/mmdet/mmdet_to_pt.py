@@ -108,6 +108,10 @@ def emit_params(cfg, config_name):
             "    // per-level tensors, and only the anchor(Delta) path fills c.det here.\n",
         ]
         out.append("    c.det.strides = {" + ", ".join(_f(v) for v in cfg["strides"]) + "};\n")
+        # FoveaBox 만 채운다. 비어 있으면 디코더가 조립기가 낸 값을 그대로 거리로 쓴다.
+        if cfg.get("bbox_base_edge"):
+            out.append("    c.det.base_edge = {"
+                       + ", ".join(_f(v) for v in cfg["bbox_base_edge"]) + "};\n")
         # ⚠️ `c.det.num_classes` 는 **배경을 뺀** 클래스 수다. softmax head(고전 DETR)는
         #    채널이 하나 더 많으므로(`cls_out_channels = num_classes + 1`), 채널 폭은
         #    `c.head.num_classes` 를 쓰고 여기엔 의미상 값을 싣는다. 뒤바꾸면 배경을

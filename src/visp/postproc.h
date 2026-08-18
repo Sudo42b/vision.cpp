@@ -43,6 +43,8 @@ struct det_params {
     int nms_pre = 1000;                 // 레벨별 topk
     int max_per_img = 100;
     int input_w = 0, input_h = 0;
+    // FoveaBox 의 `base_edge_list`(레벨별). 비면 안 쓴다 — `fcos_params::base_edge` 로 넘어간다.
+    std::vector<float> base_edge;
 };
 
 // per-level 원시출력: cls_scores[level] = [num_base*num_classes, feat_w, feat_h](CWHN flat),
@@ -78,6 +80,13 @@ struct fcos_params {
     int nms_pre = 1000;
     int max_per_img = 100;
     int input_w = 0, input_h = 0;
+    // FoveaBox 는 거리를 **여기서** 만든다: `dist = base_edge[l] · exp(pred)`.
+    // ⚠️ 조립기에 넣으면 안 된다 — `FCOSHead.forward` 는 `exp` 를 자기가 걸지만
+    //    `FoveaHead.forward` 는 **안 건다**(`_bbox_decode` 에서 건다). 조립기에 넣으면
+    //    텐서 검증이 torch 의 원시 출력과 안 맞는다(실측 상대 L1 8.7e+02).
+    //    그리고 곱하는 값은 stride 가 아니라 `base_edge_list` 다 — 기본값이 stride 의
+    //    2배(16,32,… vs 8,16,…)라 stride 로 두면 박스가 레벨마다 정확히 절반이 된다.
+    std::vector<float> base_edge;
 };
 // cls_scores[l]=[nc,W,H]HWC · bbox_preds[l]=[4,W,H]HWC.
 // bbox_preds 는 조립기가 이미 픽셀 거리로 만든 값이다 — 여기서 stride 를 곱하지 않는다.
