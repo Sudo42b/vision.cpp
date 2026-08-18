@@ -322,7 +322,7 @@ no label mismatch and no difference in how many boxes survive.
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Fifteen of the thirty-four families with a `roi_head` agree:
+and the thresholds are the same. Eighteen of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
@@ -330,6 +330,9 @@ and the thresholds are the same. Fifteen of the thirty-four families with a `roi
 | `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
 | `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
 | `mask_rcnn` | `detect_roi` | 0.06 px | 0.0009 |
+| `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
+| `cascade_rcnn` | `detect_roi` (3 stages) | 0.09 px | 0.0025 |
+| `gn` | `detect_roi` | 0.09 px | 0.0003 |
 | `empirical_attention` | `detect_roi` | 0.09 px | 0.0003 |
 | `faster_rcnn` | `detect_roi` | 0.10 px | 0.0008 |
 | `resnest` | `detect_roi` | 0.12 px | 0.0002 |
@@ -346,7 +349,7 @@ and the thresholds are the same. Fifteen of the thirty-four families with a `roi
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The nineteen that do not agree split four ways, and the split matters more than the count:
+The twenty-two that do not agree split five ways, and the split matters more than the count:
 
 - **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
   `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
@@ -354,36 +357,32 @@ The nineteen that do not agree split four ways, and the split matters more than 
   reason — `GenericRoIExtractor` aggregates every level through per-level convolutions, which
   host RoIAlign cannot express. All five stop at export with a stated reason rather than a
   wrong number.
-- **Cascade heads decode from the last stage only** — `cascade_rcnn`, `htc`, `detectors`,
-  `scnet`. The runner does walk all three stages and refines boxes between them, but
-  MMDetection averages the classification scores over stages before the final decode, so the
-  scores diverge and the boxes follow. This is a decode-convention gap, not missing plumbing.
+- **FP16 weights, not a defect.** `dynamic_rcnn` (10.24 px), `pafpn` (8.77 px) and `res2net`
+  (6.81 px) return the right count and the right labels with the coordinates several pixels
+  out. Recompiling with fp32 weights makes all three exact at **0.00 px**, so the gap is the
+  half-precision the compiler deliberately stores — the NPU this targets is FP16-native.
+  Isolating it took swapping one tensor at a time: substituting the C++ RPN *class* scores
+  into torch changed nothing, while substituting the *box deltas* reproduced the full 10.25 px
+  from a maximum delta error of 0.0023. Do not replace these numbers with their fp32 twins;
+  they are what the deployment precision produces.
+- **Cascade stages beyond the first are still incomplete**: `htc` (94 px), `detectors` (30 px)
+  and `scnet` (29 px). `cascade_rcnn` itself now agrees at 0.09 px, so the shared three-stage
+  path is right; what remains is each family's mask or semantic branch.
 - **The family post-processes its own way**: `crowddet` predicts two instances per proposal and
   needs set-NMS (without it nothing is suppressed — 500 boxes against 1), `ms_rcnn` rescales
-  scores by a predicted mask IoU (its boxes are exact at 0.07 px; only the scores differ), and
+  scores by a predicted mask IoU (its boxes are exact at 0.07 px; only the scores differ),
   `grid_rcnn` turns off box regression on the bbox head entirely and regresses in a grid head,
-  so there is no `bbox_pred` to decode.
-- **Something before the decoder disagrees**, the same category as `dyhead` above: `carafe`,
-  `pafpn`, `libra_rcnn`, `dynamic_rcnn`, `res2net` and `gcnet` return the right *number* of
-  boxes with the right labels but coordinates 6–37 px out. The shared symptom is tempting to
-  read as a shared cause; it is not one. Only three replace the neck (`FPN_CARAFE`, `PAFPN`,
-  and the `FPN`+`BFP` pair). `res2net` and `gcnet` run a plain FPN and differ in the backbone
-  (hierarchical scales, `ContextBlock` plugins). `dynamic_rcnn` differs in neither: plain
-  ResNet, plain FPN, `Shared2FCBBoxHead`, the same RCNN test config as `faster_rcnn`, which
-  passes at 0.10 px. Its one difference is an RPN NMS threshold of 0.85 against 0.7, which
-  keeps far more overlapping candidates and makes the proposal set correspondingly sensitive
-  to small score differences — so it is the family to diagnose first, and what it turns up
-  applies to the fifteen that already pass.
+  and `seesaw_loss` classifies through a `NormedLinear` layer at temperature 20 over 1203 LVIS
+  classes.
+- **An operator is missing or approximated in the generated graph.** `carafe` (29 px) renders
+  `pixel_shuffle` as a pass-through identity, so CARAFE's upsampling is skipped outright.
+  `libra_rcnn` (12 px) approximates the non-integer `adaptive_max_pool2d` that BFP uses to
+  scatter back to P6 (50 → 13, variable 3–4 wide windows) with a fixed kernel. Both announce
+  themselves in the generated `.cpp` as `TODO` comments — grep for those first. `gcnet` (37 px)
+  is in this group by elimination; its `ContextBlock` emits no TODO and has not been isolated.
 
-  `gn` and `gn+ws` are the sharper version of the same point — they use
-  `Shared4Conv1FCBBoxHead`, but so does `resnest`, which passes at 0.12 px, so the head layout
-  is exonerated and GroupNorm/weight-standardisation is what is left.
-
-`seesaw_loss` belongs with the third group rather than here: it classifies through a
-`NormedLinear` layer at temperature 20 over 1203 LVIS classes with a score threshold of
-0.0001, so its scores are not computed the way `detect_roi` assumes. `swin` (the SubA gguf
-fails to load) and `tridentnet` (the runner returns no boxes at all) are the two that remain
-unsorted.
+`swin` (the SubA gguf fails to load) and `tridentnet` (the runner returns no boxes at all) are
+the two that remain unsorted.
 
 `rpn` decodes proposals rather than detections, so a worst case over the whole set says little:
 of 185 proposals the median is 0.09 px and 182 are within 1 px, with one proposal of 186
