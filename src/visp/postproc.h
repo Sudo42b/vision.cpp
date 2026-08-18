@@ -15,9 +15,11 @@ struct detection {
 // ── anchor 생성 (mmdet AnchorGenerator) ─────────────────────────────────────
 // 한 레벨의 anchor grid: base_anchor(scales×ratios) × (feat_w×feat_h 격자 shift).
 // 반환 [N*4] (x1,y1,x2,y2), N = feat_h*feat_w*num_base. octave_scales = scale 배율 목록.
+// `center_xy` 가 있으면 base anchor 중심으로 그 값을 그대로 쓴다(center_offset 무시).
 std::vector<float> gen_anchors(int feat_h, int feat_w, float stride, float base_size,
                                std::vector<float> const& octave_scales,
-                               std::vector<float> const& ratios, float center_offset = 0.0f);
+                               std::vector<float> const& ratios, float center_offset = 0.0f,
+                               float const* center_xy = nullptr);
 
 // ── bbox decode (mmdet DeltaXYWHBBoxCoder.delta2bbox) ────────────────────────
 // anchors[N*4], deltas[N*4] → out[N*4]. denorm(mean/std) + exp(dwh) + clamp + clip.
@@ -58,6 +60,22 @@ struct det_params {
     int num_buckets = 0;
     float bucket_scale = 3.0f;
     float anchor_scale = 4.0f;
+    // FSAF 의 TBLRBBoxCoder. >0 이면 delta 대신 TBLR 로 디코드한다 —
+    // 채널 순서가 (t,b,l,r) 이고, 값에 normalizer 와 앵커 변 길이를 곱한다.
+    float tblr_normalizer = 0.0f;
+    // SSD 처럼 **레벨마다 앵커 수·모양이 다른** 계열. 비어 있지 않으면 octave/ratio 로
+    // 앵커를 만들지 않고 이 base 앵커((x1,y1,x2,y2)·n, 중심 (0,0) 부근)를 격자만큼 민다.
+    std::vector<std::vector<float>> base_anchor_boxes;
+    // mmdet `_bbox_post_process` 의 min_bbox_size. ≥0 이면 **변이 그 이하인 박스를
+    // NMS 전에 버린다**(w>min && h>min). SSD 처럼 앵커가 이미지 밖까지 깔리는 계열은
+    // 경계로 클램프된 면적 0 박스가 생기는데, 이 필터가 없으면 IoU 0 이라 NMS 도
+    // 못 지워 **점수 높은 유령 박스**로 살아남는다(ssd 실측: mmdet 4건 vs C++ 31건).
+    float min_bbox_size = -1.0f;
+    // PAA·LAD: 점수 = sqrt(cls_sig × iou_sig) 이고, NMS 뒤 **IoU 가중 박스 투표**를 한다.
+    bool score_voting = false;
+    // YOLACT 의 fast NMS. 클래스별 정렬 top_k 안에서 상삼각 IoU 최댓값으로 한 번에 거른다.
+    bool fast_nms = false;
+    int nms_top_k = 200;                // fast NMS 의 클래스별 후보 상한(test_cfg.top_k)
 };
 
 // per-level 원시출력: cls_scores[level] = [num_base*num_classes, feat_w, feat_h](CWHN flat),
@@ -73,6 +91,55 @@ std::vector<detection> detect_anchor(
     std::vector<std::pair<int, int>> const& feat_hw,  // 레벨별 (feat_h, feat_w)
     det_params const& p,
     std::vector<std::vector<float>> const* score_factors = nullptr);
+
+// ── PAA / LAD ───────────────────────────────────────────────────────────────
+// detect_anchor 와 갈리는 곳이 셋이라 별도 함수다(paa_head.py `_predict_by_feat_single`):
+//  ① 레벨별 top-k 를 (anchor,class) 쌍이 아니라 **앵커 단위**로 자른다
+//     (기준: max_j sqrt(cls_j × iou))  ② 임계값·NMS 점수가 sqrt(cls × iou) 다
+//  ③ NMS 뒤 **score voting** — 살아남은 박스를 같은 클래스 후보들의
+//     IoU 가중 평균(exp(−(1−iou)²/0.025)·score)으로 다시 놓는다. 점수는 그대로다.
+std::vector<detection> detect_paa(
+    std::vector<std::vector<float>> const& cls_scores,
+    std::vector<std::vector<float>> const& bbox_preds,
+    std::vector<std::vector<float>> const& iou_preds,
+    std::vector<std::pair<int, int>> const& feat_hw, det_params const& p);
+
+// ── CornerNet / CentripetalNet ──────────────────────────────────────────────
+// 앵커도 격자 회귀도 없다. 좌상·우하 **코너 heatmap** 에서 각각 top-k 를 뽑아 k×k 쌍을
+// 만들고, 쌍이 같은 물체인지 두 방식 중 하나로 가른다:
+//   · CornerNet      — associative embedding 거리 |tl_emb − br_emb|
+//   · CentripetalNet — centripetal shift 로 옮긴 두 점이 박스 중앙 영역에 드는가
+// 살아남은 쌍의 점수는 (tl+br)/2 이고, 마지막은 **soft-NMS(gaussian)** 다.
+struct corner_params {
+    int num_classes = 80;
+    int topk = 100;               // 코너별 top-k (test_cfg.corner_topk)
+    int local_max_kernel = 3;     // heatmap 국소 최대 억제 커널
+    float distance_threshold = 0.5f;   // emb 거리 / centripetal dists 상한
+    float score_thr = 0.05f;
+    float nms_thr = 0.5f;         // soft-NMS 의 iou_threshold(gaussian 은 감쇠에만 쓴다)
+    float soft_nms_sigma = 0.5f;
+    float soft_nms_min_score = 1e-3f;
+    int max_per_img = 100;
+    int input_w = 0, input_h = 0;
+    bool centripetal = false;     // true 면 emb 대신 centripetal shift 로 짝짓는다
+};
+// 전부 CWHN flat, 단일 레벨(hourglass 마지막 단). off/shift 는 (x,y) 2채널.
+// emb 는 CornerNet 만, shift 는 CentripetalNet 만 준다(nullptr 대신 빈 vector).
+std::vector<detection> detect_corner(
+    std::vector<float> const& tl_heat, std::vector<float> const& br_heat,
+    std::vector<float> const& tl_off, std::vector<float> const& br_off,
+    std::vector<float> const& tl_emb, std::vector<float> const& br_emb,
+    std::vector<float> const& tl_shift, std::vector<float> const& br_shift,
+    int fh, int fw, corner_params const& p);
+
+// ── YOLACT (박스 갈래만 — mask 는 이 하네스 밖) ─────────────────────────────
+// 역시 셋이 다르다(yolact_head.py): ① softmax(배경 마지막 채널) ② 레벨별 top-k 가
+// **앵커 단위**(배경 뺀 최대 점수) ③ NMS 가 fast NMS — 클래스별로 정렬해 top_k 만 남기고,
+// 상삼각 IoU 최댓값이 임계 이하인 것만 살린다(이미 제거된 박스도 남을 박스를 누른다).
+std::vector<detection> detect_yolact(
+    std::vector<std::vector<float>> const& cls_scores,
+    std::vector<std::vector<float>> const& bbox_preds,
+    std::vector<std::pair<int, int>> const& feat_hw, det_params const& p);
 
 // ── anchor-free 검출 (FCOS/FCOS계열) ────────────────────────────────────────
 // point 생성 (mmdet MlvlPointGenerator): point = (idx + offset) * stride.
@@ -249,6 +316,21 @@ struct rpn_params {
     float nms_thr = 0.7f;
     int max_per_img = 1000;             // 최종 proposal 수
     int input_w = 0, input_h = 0;
+    // ⚠️ 아래 셋은 **계열마다 다르고 전부 기본값이 아닐 수 있다.** 셋 다 shape 를 안 바꾼다.
+    // `centers` — 레벨별 base anchor 중심 (cx,cy) 쌍. 비어 있으면 center_offset 식을 쓴다.
+    //   mmdet `AnchorGenerator(centers=[(8,8),…])` 가 주면 그 값이 정본이다.
+    std::vector<float> centers;
+    // `clip_border` — false 면 디코드한 proposal 을 이미지로 자르지 않는다
+    //   (crowddet 은 false 라 800 짜리 입력에서 1054 같은 좌표가 나온다).
+    bool clip_border = true;
+    // `min_bbox_size` — NMS **앞에서** 너무 작은 상자를 버린다(`w > s && h > s`, 강부등호).
+    float min_bbox_size = 0.0f;
+    // `cls_out_channels` — 앵커당 objectness 채널 수. 1 이면 sigmoid, 2 면 softmax 다.
+    //   ⚠️ RPNHead 의 기본은 `use_sigmoid=True`(1채널)지만 **loss_cls 에 use_sigmoid 를
+    //   안 적은 config 는 2채널**이 된다(crowddet). 2채널을 1채널로 읽으면 앵커 절반의
+    //   배경 로짓을 다른 앵커의 전경 점수로 오해한다 — shape 는 맞고 값만 뒤죽박죽이 된다.
+    //   전경은 **index 0** 이다(mmdet v2.0 이후 FG label = 0, BG = 1).
+    int cls_out_channels = 1;
 };
 // rpn_cls[l] = [num_base*1, W, H] objectness(CWHN flat), rpn_bbox[l] = [num_base*4, W, H].
 // 점수까지 필요한 쪽(단독 RPN 계열 검증)이 쓴다. `label` 은 클래스가 아니라 **레벨 번호**다

@@ -7,9 +7,15 @@ namespace visp {
 // ── anchor 생성 (mmdet AnchorGenerator.gen_single_level_base_anchors + grid) ──
 std::vector<float> gen_anchors(int feat_h, int feat_w, float stride, float base_size,
                                std::vector<float> const& scales,
-                               std::vector<float> const& ratios, float center_offset) {
+                               std::vector<float> const& ratios, float center_offset,
+                               float const* center_xy) {
     // base anchors: ratio-major, scale-minor (mmdet: w_ratios[:,None]*scales[None,:]).view(-1)
+    // ⚠️ **중심을 재현식으로 만들지 마라.** mmdet `AnchorGenerator` 는 `centers` 가 주어지면
+    //    그 값을 그대로 쓰고 `center_offset` 은 무시한다(anchor_generator.py:`if self.centers
+    //    is None`). crowddet 이 레벨마다 (8,8) 을 박아 두는데, 재현식으로 만들면 stride 64
+    //    레벨에서 중심이 수십 픽셀 어긋나고 **shape 는 그대로**라 아무 검사에 안 걸린다.
     float xc = center_offset * base_size, yc = center_offset * base_size;
+    if (center_xy) { xc = center_xy[0]; yc = center_xy[1]; }
     std::vector<float> base;  // [num_base*4]
     for (float r : ratios) {
         float h_ratio = std::sqrt(r), w_ratio = 1.0f / h_ratio;
@@ -108,6 +114,34 @@ std::vector<int> nms(std::vector<detection> const& d, float iou_thr) {
 
 static inline float sigmoidf(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 
+// 한 레벨의 앵커. `base_anchor_boxes` 가 실려 있으면 **그 값이 정본**이고 격자만 민다
+// (SSD: 레벨마다 개수가 다르다 · YOLACT: base_size·중심을 stride 와 따로 준다).
+// 없으면 재현식(base = stride·octave_base_scale, 중심 = center_offset·base)으로 만든다.
+static std::vector<float> level_anchors(det_params const& p, int l, int fh, int fw,
+                                        int& num_base) {
+    const float stride = p.strides[l];
+    if (!p.base_anchor_boxes.empty()) {
+        std::vector<float> const& ba = p.base_anchor_boxes[l];
+        num_base = (int)(ba.size() / 4);
+        std::vector<float> a;
+        a.reserve((size_t)fh * fw * ba.size());
+        for (int h = 0; h < fh; ++h)
+            for (int w = 0; w < fw; ++w) {
+                const float sx = w * stride, sy = h * stride;
+                for (int b = 0; b < num_base; ++b) {
+                    a.push_back(ba[b * 4 + 0] + sx);
+                    a.push_back(ba[b * 4 + 1] + sy);
+                    a.push_back(ba[b * 4 + 2] + sx);
+                    a.push_back(ba[b * 4 + 3] + sy);
+                }
+            }
+        return a;
+    }
+    num_base = (int)(p.octave_scales.size() * p.ratios.size());
+    return gen_anchors(fh, fw, stride, stride * p.octave_base_scale,
+                       p.octave_scales, p.ratios, p.center_offset);
+}
+
 // ── 앵커-기반 검출 후처리 (mmdet _predict_by_feat_single) ────────────────────
 std::vector<detection> detect_anchor(
     std::vector<std::vector<float>> const& cls_scores,
@@ -115,19 +149,21 @@ std::vector<detection> detect_anchor(
     std::vector<std::pair<int, int>> const& feat_hw, det_params const& p,
     std::vector<std::vector<float>> const* score_factors) {
 
-    int num_base = (int)(p.octave_scales.size() * p.ratios.size());
     int nc = p.num_classes;
+    // softmax head(SSD·YOLACT·고전 계열)는 채널이 하나 더다 — 마지막이 배경이고,
+    // mmdet 은 `softmax(-1)[:, :-1]` 로 배경만 버린다(anchor_head.py). 시그모이드
+    // 계열은 채널 수 = 클래스 수 그대로다.
+    const int ncch = nc + (p.use_sigmoid ? 0 : 1);
     // 후보 수집: (score, label, box) — 레벨별 nms_pre topk + score_thr
     std::vector<detection> cand;
     int nlev = (int)feat_hw.size();
     for (int l = 0; l < nlev; ++l) {
         int fh = feat_hw[l].first, fw = feat_hw[l].second;
         float stride = p.strides[l];
-        float base_size = stride * p.octave_base_scale;
-        std::vector<float> anchors = gen_anchors(fh, fw, stride, base_size,
-                                                 p.octave_scales, p.ratios, p.center_offset);
-        int C_cls = num_base * nc, C_box = num_base * 4;
-        float const* cls = cls_scores[l].data();  // HWC flat: (h*fw+w)*C_cls + b*nc + j
+        int num_base = 0;
+        std::vector<float> anchors = level_anchors(p, l, fh, fw, num_base);
+        int C_cls = num_base * ncch, C_box = num_base * 4;
+        float const* cls = cls_scores[l].data();  // HWC flat: (h*fw+w)*C_cls + b*ncch + j
         float const* box = bbox_preds[l].data();  // HWC flat: (h*fw+w)*C_box + b*4 + k
         int npos = fh * fw;
         // (score,label,anchor_idx) 후보 → score_thr 넘는 것만, 레벨당 nms_pre topk
@@ -135,10 +171,22 @@ std::vector<detection> detect_anchor(
         for (int pos = 0; pos < npos; ++pos) {
             for (int b = 0; b < num_base; ++b) {
                 int aidx = pos * num_base + b;
-                float const* cs = cls + (size_t)pos * C_cls + (size_t)b * nc;
-                for (int j = 0; j < nc; ++j) {
-                    float sc = p.use_sigmoid ? sigmoidf(cs[j]) : cs[j];
-                    if (sc > p.score_thr) lvl.emplace_back(sc, j, aidx);
+                float const* cs = cls + (size_t)pos * C_cls + (size_t)b * ncch;
+                if (p.use_sigmoid) {
+                    for (int j = 0; j < nc; ++j) {
+                        float sc = sigmoidf(cs[j]);
+                        if (sc > p.score_thr) lvl.emplace_back(sc, j, aidx);
+                    }
+                } else {
+                    // softmax — 배경(마지막 채널)은 정규화에만 넣고 후보에서는 버린다.
+                    float mx = cs[0];
+                    for (int j = 1; j < ncch; ++j) mx = std::max(mx, cs[j]);
+                    float sum = 0.0f;
+                    for (int j = 0; j < ncch; ++j) sum += std::exp(cs[j] - mx);
+                    for (int j = 0; j < nc; ++j) {
+                        float sc = std::exp(cs[j] - mx) / sum;
+                        if (sc > p.score_thr) lvl.emplace_back(sc, j, aidx);
+                    }
                 }
             }
         }
@@ -163,8 +211,33 @@ std::vector<detection> detect_anchor(
             float const* bp = box + (size_t)pos * C_box + (size_t)b * 4;
             for (int k = 0; k < 4; ++k) delta[k] = bp[k];
             float outb[4];
-            delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
-                       p.means, p.stds, p.input_w, p.input_h, p.ctr_clamp);
+            if (p.tblr_normalizer > 0.0f) {
+                // FSAF(TBLRBBoxCoder). 채널이 (t,b,l,r) 순이고 t·b 에는 앵커 **높이**,
+                // l·r 에는 **너비**를 곱한다(tblr_bbox_coder.py `tblr2bboxes`).
+                float const* a = anchors.data() + (size_t)aidx * 4;
+                float cx = (a[0] + a[2]) * 0.5f, cy = (a[1] + a[3]) * 0.5f;
+                float aw = a[2] - a[0], ah = a[3] - a[1];
+                float tt = delta[0] * p.tblr_normalizer * ah;
+                float bb = delta[1] * p.tblr_normalizer * ah;
+                float ll = delta[2] * p.tblr_normalizer * aw;
+                float rr = delta[3] * p.tblr_normalizer * aw;
+                outb[0] = cx - ll; outb[1] = cy - tt;
+                outb[2] = cx + rr; outb[3] = cy + bb;
+                if (p.input_w > 0) {
+                    outb[0] = std::min(std::max(outb[0], 0.0f), (float)p.input_w);
+                    outb[2] = std::min(std::max(outb[2], 0.0f), (float)p.input_w);
+                    outb[1] = std::min(std::max(outb[1], 0.0f), (float)p.input_h);
+                    outb[3] = std::min(std::max(outb[3], 0.0f), (float)p.input_h);
+                }
+            } else {
+                delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
+                           p.means, p.stds, p.input_w, p.input_h, p.ctr_clamp);
+            }
+            // min_bbox_size(≥0): 경계로 클램프돼 변이 0 이 된 박스를 버린다 — IoU 0 이라
+            // NMS 가 못 지우고, mmdet 은 NMS 전에 걸러낸다(base_dense_head.py:476-478).
+            if (p.min_bbox_size >= 0.0f &&
+                (outb[2] - outb[0] <= p.min_bbox_size || outb[3] - outb[1] <= p.min_bbox_size))
+                continue;
             float sc = std::get<0>(t);
             if (sf) sc *= sigmoidf(sf[(size_t)pos * num_base + b]);
             cand.push_back({outb[0], outb[1], outb[2], outb[3], sc, std::get<1>(t)});
@@ -478,16 +551,35 @@ std::vector<detection> detect_rpn(
         int fh = feat_hw[l].first, fw = feat_hw[l].second;
         float stride = p.strides[l];
         float base_size = stride * p.octave_base_scale;
-        std::vector<float> anchors = gen_anchors(fh, fw, stride, base_size, p.octave_scales, p.ratios);
-        int C_cls = num_base * 1, C_box = num_base * 4;
+        float const* cxy = ((int)p.centers.size() >= 2 * (l + 1)) ? &p.centers[2 * l] : nullptr;
+        std::vector<float> anchors = gen_anchors(fh, fw, stride, base_size, p.octave_scales,
+                                                 p.ratios, 0.0f, cxy);
+        // 채널 수는 **파라미터가 정본**이되, 실제 텐서와 다르면 텐서를 믿는다 —
+        // 설정을 못 읽은 계열에서 조용히 틀리는 것보다 낫다.
+        int cls_ch = std::max(1, p.cls_out_channels);
+        if ((int)rpn_cls[l].size() == fh * fw * num_base * 2) cls_ch = 2;
+        else if ((int)rpn_cls[l].size() == fh * fw * num_base) cls_ch = 1;
+        int C_cls = num_base * cls_ch, C_box = num_base * 4;
         float const* cls = rpn_cls[l].data();   // CWHN: (h*fw+w)*num_base + b
         float const* box = rpn_bbox[l].data();  // CWHN: (h*fw+w)*C_box + b*4 + k
         int npos = fh * fw;
         std::vector<std::pair<float, int>> lvl;  // (objectness, anchor_idx)
         lvl.reserve((size_t)npos * num_base);
         for (int pos = 0; pos < npos; ++pos)
-            for (int b = 0; b < num_base; ++b)
-                lvl.emplace_back(sigmoidf(cls[(size_t)pos * C_cls + b]), pos * num_base + b);
+            for (int b = 0; b < num_base; ++b) {
+                float sc;
+                if (cls_ch == 1) {
+                    sc = sigmoidf(cls[(size_t)pos * C_cls + b]);
+                } else {
+                    // 채널은 앵커-major · 클래스-minor 다(conv 출력 = num_base*cls_ch).
+                    // 전경은 index 0 — `softmax(-1)[:, :-1]` 이 그 뜻이다.
+                    float const* c2 = cls + (size_t)pos * C_cls + (size_t)b * cls_ch;
+                    const float mx = std::max(c2[0], c2[1]);
+                    const float e0 = std::exp(c2[0] - mx), e1 = std::exp(c2[1] - mx);
+                    sc = e0 / (e0 + e1);
+                }
+                lvl.emplace_back(sc, pos * num_base + b);
+            }
         // 레벨별 nms_pre topk (RPN 은 pre-NMS score_thr 없음)
         if (p.nms_pre > 0 && (int)lvl.size() > p.nms_pre) {
             std::nth_element(lvl.begin(), lvl.begin() + p.nms_pre, lvl.end(),
@@ -499,8 +591,14 @@ std::vector<detection> detect_rpn(
             float const* bp = box + (size_t)pos * C_box + (size_t)b * 4;
             float delta[4] = {bp[0], bp[1], bp[2], bp[3]};
             float outb[4];
-            delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
-                       p.means, p.stds, p.input_w, p.input_h);
+            // clip_border=false 인 계열은 이미지로 자르지 않는다(0 을 주면 클리핑이 꺼진다).
+            delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb, p.means, p.stds,
+                       p.clip_border ? p.input_w : 0, p.clip_border ? p.input_h : 0);
+            // min_bbox_size 는 **NMS 앞에서** 건다(mmdet `_bbox_post_process`, 강부등호).
+            if (p.min_bbox_size > 0.0f &&
+                !(outb[2] - outb[0] > p.min_bbox_size && outb[3] - outb[1] > p.min_bbox_size)) {
+                continue;
+            }
             cand.push_back({outb[0], outb[1], outb[2], outb[3], t.first, l});
         }
     }
@@ -879,6 +977,363 @@ std::vector<detection> detect_sabl(
               [](detection const& a, detection const& b) { return a.score > b.score; });
     if (p.max_per_img > 0 && (int)kept.size() > p.max_per_img) kept.resize(p.max_per_img);
     return kept;
+}
+
+
+// (x1,y1,x2,y2) 두 상자의 IoU — mmdet `bbox_overlaps` 와 같은 식(+1 보정 없음).
+static inline float box_iou4(float const* a, float const* b) {
+    float xx1 = std::max(a[0], b[0]), yy1 = std::max(a[1], b[1]);
+    float xx2 = std::min(a[2], b[2]), yy2 = std::min(a[3], b[3]);
+    float inter = std::max(0.0f, xx2 - xx1) * std::max(0.0f, yy2 - yy1);
+    float aa = std::max(0.0f, a[2] - a[0]) * std::max(0.0f, a[3] - a[1]);
+    float ab = std::max(0.0f, b[2] - b[0]) * std::max(0.0f, b[3] - b[1]);
+    return inter / (aa + ab - inter + 1e-9f);
+}
+
+// ── PAA / LAD ────────────────────────────────────────────────────────────────
+// mmdet `paa_head.py _predict_by_feat_single`. detect_anchor 와 셋이 다르다:
+//  ① 레벨별 top-k 가 **앵커 단위**다 — 기준은 max_j sqrt(cls_j×iou) (paa_head.py:582-585)
+//  ② 임계값·NMS 점수가 전부 sqrt(cls×iou) 다 (:647)
+//  ③ NMS 뒤 score voting — IoU>0.01 인 같은 클래스 후보들의
+//     exp(−(1−iou)²/0.025)·score 가중 평균으로 박스를 다시 놓는다. 점수는 그대로다.
+std::vector<detection> detect_paa(
+    std::vector<std::vector<float>> const& cls_scores,
+    std::vector<std::vector<float>> const& bbox_preds,
+    std::vector<std::vector<float>> const& iou_preds,
+    std::vector<std::pair<int, int>> const& feat_hw, det_params const& p) {
+
+    const int nc = p.num_classes;
+    std::vector<detection> cand;          // score_thr 를 넘은 (박스, sqrt점수, 라벨)
+    const int nlev = (int)feat_hw.size();
+    for (int l = 0; l < nlev; ++l) {
+        const int fh = feat_hw[l].first, fw = feat_hw[l].second;
+        int num_base = 0;
+        std::vector<float> anchors = level_anchors(p, l, fh, fw, num_base);
+        const int C_cls = num_base * nc, C_box = num_base * 4;
+        float const* cls = cls_scores[l].data();
+        float const* box = bbox_preds[l].data();
+        float const* iou = iou_preds[l].data();
+        const int na = fh * fw * num_base;
+        // 앵커 단위 순위 — (max_j sqrt(cls×iou), anchor_idx)
+        std::vector<std::pair<float, int>> rank;
+        rank.reserve(na);
+        for (int pos = 0; pos < fh * fw; ++pos)
+            for (int b = 0; b < num_base; ++b) {
+                float sf = sigmoidf(iou[(size_t)pos * num_base + b]);
+                float const* cs = cls + (size_t)pos * C_cls + (size_t)b * nc;
+                float best = 0.0f;
+                for (int j = 0; j < nc; ++j) best = std::max(best, sigmoidf(cs[j]) * sf);
+                rank.emplace_back(std::sqrt(best), pos * num_base + b);
+            }
+        if (p.nms_pre > 0 && (int)rank.size() > p.nms_pre) {
+            std::nth_element(rank.begin(), rank.begin() + p.nms_pre, rank.end(),
+                             [](auto const& a, auto const& b) { return a.first > b.first; });
+            rank.resize(p.nms_pre);
+        }
+        for (auto const& r : rank) {
+            const int aidx = r.second, b = aidx % num_base, pos = aidx / num_base;
+            float delta[4];
+            float const* bp = box + (size_t)pos * C_box + (size_t)b * 4;
+            for (int k = 0; k < 4; ++k) delta[k] = bp[k];
+            float outb[4];
+            delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
+                       p.means, p.stds, p.input_w, p.input_h, p.ctr_clamp);
+            if (p.min_bbox_size >= 0.0f &&
+                (outb[2] - outb[0] <= p.min_bbox_size || outb[3] - outb[1] <= p.min_bbox_size))
+                continue;
+            const float sf = sigmoidf(iou[(size_t)pos * num_base + b]);
+            float const* cs = cls + (size_t)pos * C_cls + (size_t)b * nc;
+            for (int j = 0; j < nc; ++j) {
+                const float sc = std::sqrt(sigmoidf(cs[j]) * sf);
+                if (sc > p.score_thr)
+                    cand.push_back({outb[0], outb[1], outb[2], outb[3], sc, j});
+            }
+        }
+    }
+
+    // 클래스별 NMS → 점수순 → max_per_img (multiclass_nms 동등)
+    std::vector<detection> out;
+    int maxlabel = 0;
+    for (auto const& c : cand) maxlabel = std::max(maxlabel, c.label);
+    for (int lab = 0; lab <= maxlabel; ++lab) {
+        std::vector<detection> per;
+        for (auto const& c : cand) if (c.label == lab) per.push_back(c);
+        if (per.empty()) continue;
+        for (int k : nms(per, p.nms_thr)) out.push_back(per[k]);
+    }
+    std::sort(out.begin(), out.end(),
+              [](detection const& a, detection const& b) { return a.score > b.score; });
+    if (p.max_per_img > 0 && (int)out.size() > p.max_per_img) out.resize(p.max_per_img);
+
+    // score voting — 후보 풀은 **NMS 전, 임계값 넘은 전체**다(cand 그대로).
+    if (p.score_voting) {
+        for (auto& d : out) {
+            float bx[4] = {d.x1, d.y1, d.x2, d.y2};
+            double acc[4] = {0, 0, 0, 0}, wsum = 0.0;
+            for (auto const& c : cand) {
+                if (c.label != d.label) continue;
+                float cb[4] = {c.x1, c.y1, c.x2, c.y2};
+                const float ov = box_iou4(bx, cb);
+                if (ov <= 0.01f) continue;
+                const double w = std::exp(-(1.0 - ov) * (1.0 - ov) / 0.025) * c.score;
+                for (int k = 0; k < 4; ++k) acc[k] += w * cb[k];
+                wsum += w;
+            }
+            if (wsum > 0.0) {
+                d.x1 = (float)(acc[0] / wsum); d.y1 = (float)(acc[1] / wsum);
+                d.x2 = (float)(acc[2] / wsum); d.y2 = (float)(acc[3] / wsum);
+            }
+        }
+    }
+    return out;
+}
+
+// ── YOLACT (박스 갈래만 — mask/coeff 는 이 하네스 밖) ────────────────────────
+// mmdet `yolact_head.py`. detect_anchor 와 셋이 다르다:
+//  ① softmax 이고 배경이 마지막 채널  ② 레벨별 top-k 가 **앵커 단위**(배경 뺀 최대 점수)
+//  ③ NMS 가 fast NMS — 클래스별 정렬 top_k 안에서 상삼각 IoU 최댓값이 임계 **이하**인
+//     것만 살린다(bbox_nms.py `fast_nms`: 이미 제거된 박스도 남을 박스를 누른다).
+std::vector<detection> detect_yolact(
+    std::vector<std::vector<float>> const& cls_scores,
+    std::vector<std::vector<float>> const& bbox_preds,
+    std::vector<std::pair<int, int>> const& feat_hw, det_params const& p) {
+
+    const int nc = p.num_classes;
+    const int ncch = nc + 1;              // softmax — 마지막이 배경
+    std::vector<float> cboxes;            // [n*4]
+    std::vector<float> cscores;           // [n*nc] (softmax, 배경 제외)
+    const int nlev = (int)feat_hw.size();
+    for (int l = 0; l < nlev; ++l) {
+        const int fh = feat_hw[l].first, fw = feat_hw[l].second;
+        int num_base = 0;
+        std::vector<float> anchors = level_anchors(p, l, fh, fw, num_base);
+        const int C_cls = num_base * ncch, C_box = num_base * 4;
+        float const* cls = cls_scores[l].data();
+        float const* box = bbox_preds[l].data();
+        // 앵커 단위 top-k — 기준은 배경 뺀 softmax 최댓값
+        std::vector<std::pair<float, int>> rank;
+        rank.reserve((size_t)fh * fw * num_base);
+        std::vector<float> sm((size_t)fh * fw * num_base * nc);
+        for (int pos = 0; pos < fh * fw; ++pos)
+            for (int b = 0; b < num_base; ++b) {
+                const int aidx = pos * num_base + b;
+                float const* cs = cls + (size_t)pos * C_cls + (size_t)b * ncch;
+                float mx = cs[0];
+                for (int j = 1; j < ncch; ++j) mx = std::max(mx, cs[j]);
+                float sum = 0.0f;
+                for (int j = 0; j < ncch; ++j) sum += std::exp(cs[j] - mx);
+                float best = 0.0f;
+                for (int j = 0; j < nc; ++j) {
+                    const float s = std::exp(cs[j] - mx) / sum;
+                    sm[(size_t)aidx * nc + j] = s;
+                    best = std::max(best, s);
+                }
+                rank.emplace_back(best, aidx);
+            }
+        if (p.nms_pre > 0 && (int)rank.size() > p.nms_pre) {
+            std::nth_element(rank.begin(), rank.begin() + p.nms_pre, rank.end(),
+                             [](auto const& a, auto const& b) { return a.first > b.first; });
+            rank.resize(p.nms_pre);
+        }
+        for (auto const& r : rank) {
+            const int aidx = r.second, b = aidx % num_base, pos = aidx / num_base;
+            float delta[4];
+            float const* bp = box + (size_t)pos * C_box + (size_t)b * 4;
+            for (int k = 0; k < 4; ++k) delta[k] = bp[k];
+            float outb[4];
+            delta2bbox(anchors.data() + (size_t)aidx * 4, delta, 1, outb,
+                       p.means, p.stds, p.input_w, p.input_h, p.ctr_clamp);
+            for (int k = 0; k < 4; ++k) cboxes.push_back(outb[k]);
+            for (int j = 0; j < nc; ++j) cscores.push_back(sm[(size_t)aidx * nc + j]);
+        }
+    }
+
+    // fast NMS. 같은 박스 집합을 클래스마다 그 클래스 점수로 정렬해 따로 거른다.
+    const int n = (int)(cboxes.size() / 4);
+    const int topk = p.nms_top_k > 0 ? std::min(p.nms_top_k, n) : n;
+    std::vector<detection> out;
+    std::vector<int> order(n);
+    for (int cls = 0; cls < nc; ++cls) {
+        for (int i = 0; i < n; ++i) order[i] = i;
+        std::partial_sort(order.begin(), order.begin() + topk, order.end(),
+                          [&](int a, int b) {
+                              return cscores[(size_t)a * nc + cls] > cscores[(size_t)b * nc + cls];
+                          });
+        // iou_max[j] = 더 높은 순위 i<j 와의 최대 IoU. 임계 **이하**만 살린다(≤).
+        for (int j = 0; j < topk; ++j) {
+            const float sc = cscores[(size_t)order[j] * nc + cls];
+            if (sc <= p.score_thr) continue;      // fast_nms 의 2차 임계(> 만 통과)
+            float mx = 0.0f;
+            for (int i = 0; i < j; ++i)
+                mx = std::max(mx, box_iou4(&cboxes[(size_t)order[i] * 4],
+                                           &cboxes[(size_t)order[j] * 4]));
+            if (mx <= p.nms_thr) {
+                float const* bx = &cboxes[(size_t)order[j] * 4];
+                out.push_back({bx[0], bx[1], bx[2], bx[3], sc, cls});
+            }
+        }
+    }
+    std::sort(out.begin(), out.end(),
+              [](detection const& a, detection const& b) { return a.score > b.score; });
+    if (p.max_per_img > 0 && (int)out.size() > p.max_per_img) out.resize(p.max_per_img);
+    return out;
+}
+
+
+// ── CornerNet / CentripetalNet ───────────────────────────────────────────────
+// mmdet `corner_head.py _decode_heatmap` + `_bboxes_nms`. 앵커가 없다 —
+// 코너 두 장에서 각각 top-k 를 뽑아 **k×k 쌍**을 만들고 규칙으로 걸러낸다.
+std::vector<detection> detect_corner(
+    std::vector<float> const& tl_heat, std::vector<float> const& br_heat,
+    std::vector<float> const& tl_off, std::vector<float> const& br_off,
+    std::vector<float> const& tl_emb, std::vector<float> const& br_emb,
+    std::vector<float> const& tl_shift, std::vector<float> const& br_shift,
+    int fh, int fw, corner_params const& p) {
+
+    const int nc = p.num_classes, npos = fh * fw, k = p.topk;
+    const int pad = (p.local_max_kernel - 1) / 2;
+
+    // ① 국소 최대만 남긴다(get_local_maximum): maxpool(k, stride 1) 과 같은 자리만 통과.
+    //    heatmap 은 CWHN flat 이라 (y*fw+x)*nc + c 다.
+    auto local_max = [&](std::vector<float> const& h, std::vector<float>& out) {
+        out.assign((size_t)npos * nc, 0.0f);
+        for (int y = 0; y < fh; ++y)
+            for (int x = 0; x < fw; ++x)
+                for (int c = 0; c < nc; ++c) {
+                    const float v = sigmoidf(h[((size_t)y * fw + x) * nc + c]);
+                    float mx = -1e30f;
+                    for (int dy = -pad; dy <= pad; ++dy) {
+                        const int yy = y + dy;
+                        if (yy < 0 || yy >= fh) continue;
+                        for (int dx = -pad; dx <= pad; ++dx) {
+                            const int xx = x + dx;
+                            if (xx < 0 || xx >= fw) continue;
+                            mx = std::max(mx, sigmoidf(h[((size_t)yy * fw + xx) * nc + c]));
+                        }
+                    }
+                    // mmdet 은 `hmax == heat` 로 비교한다 — 같은 값이 여럿이면 둘 다 남는다.
+                    if (v >= mx) out[((size_t)y * fw + x) * nc + c] = v;
+                }
+    };
+    std::vector<float> tl_lm, br_lm;
+    local_max(tl_heat, tl_lm);
+    local_max(br_heat, br_lm);
+
+    // ② 코너별 top-k. mmdet 은 (class, y, x) 를 편 뒤 topk 이므로 **클래스가 인덱스에 섞인다**.
+    struct corner { float score; int cls, y, x, pos; };
+    auto topk = [&](std::vector<float> const& lm, std::vector<corner>& out) {
+        std::vector<std::pair<float, int>> all;
+        all.reserve((size_t)npos * nc);
+        for (int c = 0; c < nc; ++c)
+            for (int i = 0; i < npos; ++i)
+                all.emplace_back(lm[(size_t)i * nc + c], c * npos + i);
+        const int kk = std::min<int>(k, (int)all.size());
+        std::partial_sort(all.begin(), all.begin() + kk, all.end(),
+                          [](auto const& a, auto const& b) { return a.first > b.first; });
+        out.clear();
+        for (int i = 0; i < kk; ++i) {
+            const int idx = all[(size_t)i].second, c = idx / npos, pos = idx % npos;
+            out.push_back({all[(size_t)i].first, c, pos / fw, pos % fw, pos});
+        }
+    };
+    std::vector<corner> tl, br;
+    topk(tl_lm, tl);
+    topk(br_lm, br);
+
+    // ③ 코너 좌표 보정(offset) + 픽셀 스케일. off 는 (x,y) 2채널.
+    const float sx = p.input_w > 0 ? (float)p.input_w / fw : 1.0f;
+    const float sy = p.input_h > 0 ? (float)p.input_h / fh : 1.0f;
+    auto corner_xy = [&](corner const& c, std::vector<float> const& off,
+                         float& ox, float& oy) {
+        ox = c.x + off[(size_t)c.pos * 2 + 0];
+        oy = c.y + off[(size_t)c.pos * 2 + 1];
+    };
+
+    std::vector<detection> cand;
+    for (auto const& a : tl) {
+        float ax, ay;
+        corner_xy(a, tl_off, ax, ay);
+        for (auto const& b : br) {
+            if (a.cls != b.cls) continue;                 // 클래스가 같아야 한 물체다
+            float bx, by;
+            corner_xy(b, br_off, bx, by);
+            if (bx <= ax || by <= ay) continue;           // width/height 음수 거부
+
+            // 짝짓기 판정 — 두 방식 중 하나(mmdet 은 assert 로 하나만 켜지게 한다).
+            float dist;
+            if (p.centripetal) {
+                // centripetal shift 로 옮긴 점이 박스 **중앙 영역**에 드는지 본다.
+                const float tcx = ax + std::exp(tl_shift[(size_t)a.pos * 2 + 0]);
+                const float tcy = ay + std::exp(tl_shift[(size_t)a.pos * 2 + 1]);
+                const float bcx = bx - std::exp(br_shift[(size_t)b.pos * 2 + 0]);
+                const float bcy = by - std::exp(br_shift[(size_t)b.pos * 2 + 1]);
+                // 픽셀로 올린 뒤 판정한다(mmdet 도 스케일 후에 비교한다).
+                const float X1 = ax * sx, Y1 = ay * sy, X2 = bx * sx, Y2 = by * sy;
+                float T1 = tcx * sx, T2 = tcy * sy, B1 = bcx * sx, B2 = bcy * sy;
+                T1 = T1 > 0 ? T1 : 0.0f; T2 = T2 > 0 ? T2 : 0.0f;
+                B1 = B1 > 0 ? B1 : 0.0f; B2 = B2 > 0 ? B2 : 0.0f;
+                const float area = std::fabs((X2 - X1) * (Y2 - Y1));
+                // 논문 4.1 의 상수 — 큰 박스는 중앙 영역을 좁게 잡는다.
+                const float mu = area > 3500.0f ? 1.0f / 2.1f : 1.0f / 2.4f;
+                const float cx = (X1 + X2) * 0.5f, cy = (Y1 + Y2) * 0.5f;
+                const float r0 = cx - mu * (X2 - X1) * 0.5f, r1 = cy - mu * (Y2 - Y1) * 0.5f;
+                const float r2 = cx + mu * (X2 - X1) * 0.5f, r3 = cy + mu * (Y2 - Y1) * 0.5f;
+                if (T1 <= r0 || T1 >= r2 || T2 <= r1 || T2 >= r3 ||
+                    B1 <= r0 || B1 >= r2 || B2 <= r1 || B2 >= r3)
+                    continue;                              // 중앙 영역 밖 — 버린다
+                const float area_ct = std::fabs((B1 - T1) * (B2 - T2));
+                const float area_r = std::fabs((r2 - r0) * (r3 - r1));
+                dist = area_ct / (area_r + 1e-12f);
+            } else {
+                dist = std::fabs(tl_emb[(size_t)a.pos] - br_emb[(size_t)b.pos]);
+            }
+            if (dist > p.distance_threshold) continue;
+
+            const float score = (a.score + b.score) * 0.5f;
+            cand.push_back({ax * sx, ay * sy, bx * sx, by * sy, score, a.cls});
+        }
+    }
+
+    // ④ 전체에서 num_dets(=max_per_img) 만 남긴 뒤 score_thr — mmdet 순서 그대로다.
+    std::sort(cand.begin(), cand.end(),
+              [](detection const& a, detection const& b) { return a.score > b.score; });
+    if (p.max_per_img > 0 && (int)cand.size() > p.max_per_img) cand.resize(p.max_per_img);
+    std::vector<detection> kept;
+    for (auto const& d : cand) if (d.score > p.score_thr) kept.push_back(d);
+
+    // ⑤ soft-NMS(gaussian, 클래스별). 하드 NMS 와 달리 **지우지 않고 점수를 깎는다** —
+    //    겹친 상자가 살아남되 점수가 exp(−iou²/σ) 배가 된다(mmcv `soft_nms`).
+    std::vector<detection> out;
+    int maxlabel = 0;
+    for (auto const& c : kept) maxlabel = std::max(maxlabel, c.label);
+    for (int lab = 0; lab <= maxlabel; ++lab) {
+        std::vector<detection> per;
+        for (auto const& c : kept) if (c.label == lab) per.push_back(c);
+        while (!per.empty()) {
+            int best = 0;
+            for (int i = 1; i < (int)per.size(); ++i)
+                if (per[(size_t)i].score > per[(size_t)best].score) best = i;
+            detection m = per[(size_t)best];
+            per.erase(per.begin() + best);
+            if (m.score < p.soft_nms_min_score) break;     // 남은 것은 더 낮다
+            out.push_back(m);
+            float mb[4] = {m.x1, m.y1, m.x2, m.y2};
+            for (auto& d : per) {
+                float db[4] = {d.x1, d.y1, d.x2, d.y2};
+                const float ov = box_iou4(mb, db);
+                d.score *= std::exp(-ov * ov / p.soft_nms_sigma);
+            }
+            per.erase(std::remove_if(per.begin(), per.end(),
+                                     [&](detection const& d) {
+                                         return d.score < p.soft_nms_min_score;
+                                     }),
+                      per.end());
+        }
+    }
+    std::sort(out.begin(), out.end(),
+              [](detection const& a, detection const& b) { return a.score > b.score; });
+    if (p.max_per_img > 0 && (int)out.size() > p.max_per_img) out.resize(p.max_per_img);
+    return out;
 }
 
 }  // namespace visp

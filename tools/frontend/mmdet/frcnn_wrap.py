@@ -269,6 +269,17 @@ def frcnn_cfg(det, size=800):
         mask["mask_iou_in_channels"] = int(mih.in_channels)          # 256 (+1 은 런너가 붙인다)
         mask["mask_iou_num_classes"] = int(mih.num_classes)
 
+    # ⚠️ **점수 활성이 softmax 가 아닌 계열이 있다.** SeesawLoss 는 `custom_activation`
+    #    을 세우고 채널을 `num_classes + 2` 로 쓴다 — 앞 C 개는 클래스, 뒤 2개는
+    #    전경/배경 objectness 다. 활성도 두 단계다(각각 softmax → 클래스 점수에 전경 확률을
+    #    곱하고 배경 확률을 뒤에 붙인다). 평범한 softmax 로 읽으면 **채널 수부터 틀리고**
+    #    (C+2 를 "C+1 클래스 + 배경" 으로 오해한다) 점수도 통째로 달라진다.
+    lc = getattr(bh, "loss_cls", None)
+    if getattr(lc, "custom_activation", False):
+        #    (러너의 tiny_json 은 숫자·배열만 읽는다 → 문자열 대신 플래그로 싣는다)
+        mask["seesaw_activation"] = 1
+        mask["cls_num_classes"] = int(bh.num_classes)
+
     # CrowdDet: proposal 하나가 사람 둘을 낸다고 보고 (cls, box) 쌍을 2벌 낸다.
     # 디코드도 NMS 도 다르다 — **같은 proposal 에서 나온 상자끼리는 서로 안 누른다**(set-NMS).
     ni = int(getattr(bh, "num_instance", 1) or 1)
@@ -339,6 +350,17 @@ def frcnn_cfg(det, size=800):
         "rpn_means": [float(v) for v in bc.means], "rpn_stds": [float(v) for v in bc.stds],
         "rpn_nms_pre": int(rpn_c.nms_pre), "rpn_nms_thr": float(rpn_c.nms.iou_threshold),
         "rpn_max": int(rpn_c.max_per_img),
+        # ⚠️ 아래 셋은 **기본값이 아닌 계열이 있다**(crowddet 이 셋 다 다르다).
+        #    전부 shape 를 안 바꾸므로 빼먹으면 크래시 없이 proposal 만 달라진다.
+        #    `centers` — 주어지면 그 값이 base anchor 중심이고 center_offset 은 무시된다.
+        "rpn_centers": [float(v) for c in (getattr(pg, "centers", None) or []) for v in c],
+        #    `clip_border` — false 면 proposal 을 이미지로 안 자른다(800 입력에 1054 가 나온다).
+        "rpn_clip_border": 1.0 if getattr(bc, "clip_border", True) else 0.0,
+        #    `min_bbox_size` — NMS **앞에서** 작은 상자를 버린다.
+        "rpn_min_bbox_size": float(getattr(rpn_c, "min_bbox_size", 0) or 0),
+        #    `cls_out_channels` — RPNHead 는 보통 1(sigmoid)이지만 loss_cls 에
+        #    use_sigmoid 를 안 적으면 2(softmax, 전경 index 0)가 된다. **모듈에서 읽는다.**
+        "rpn_cls_out_channels": int(getattr(rh, "cls_out_channels", 1) or 1),
         # RoIAlign
         # ⚠️ **RoI feature 채널을 256 으로 박으면 안 된다.** FPN 계열은 256 이지만
         #    C4 계열(TridentNet)은 neck 이 없어 백본 C4 채널(1024)이 그대로 온다.

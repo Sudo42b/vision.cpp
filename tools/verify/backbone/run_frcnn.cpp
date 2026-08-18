@@ -215,6 +215,10 @@ int main(int argc, char** argv) {
     rp.nms_pre = (int)J.num("rpn_nms_pre", 1000);
     rp.nms_thr = J.num("rpn_nms_thr", 0.7f);
     rp.max_per_img = (int)J.num("rpn_max", 1000);
+    rp.centers = J.arr("rpn_centers");                       // 비어 있으면 재현식
+    rp.clip_border = J.num("rpn_clip_border", 1.0f) != 0.0f;
+    rp.min_bbox_size = J.num("rpn_min_bbox_size", 0.0f);
+    rp.cls_out_channels = (int)J.num("rpn_cls_out_channels", 1.0f);
     rp.input_w = rp.input_h = SZ;
     std::vector<float> props = rpn_proposals(rpn_cls, rpn_box, rpn_hw, rp);
     const int M = (int)(props.size() / 4);
@@ -531,12 +535,36 @@ int main(int argc, char** argv) {
         }
     } else if (!cls_st.empty() && !box_st.empty()) {
         const int last = (int)cls_st.size() - 1;
-        const int NCLS = (int)(cls_st[last].size() / M) - 1;   // 배경 제외
+        // ⚠️ **채널 수를 출력 크기에서 -1 로 유추하면 안 되는 계열이 있다.** SeesawLoss 는
+        //    `num_classes + 2` 를 쓴다(앞 C 개 = 클래스, 뒤 2개 = 전경/배경 objectness).
+        //    -1 로 읽으면 클래스가 하나 많아지고 라벨이 통째로 한 칸 밀린다.
+        const bool seesaw = J.num("seesaw_activation", 0.0f) != 0.0f;
+        const int NCLS = seesaw ? (int)J.num("cls_num_classes", 0.0f)
+                                : (int)(cls_st[last].size() / M) - 1;
         // 캐스케이드 단계들만 평균한다. 다중 인스턴스(CrowdDet)는 단계가 아니라 **쌍**이라
         // 평균 대상이 아니다 — 위에서 (NS>1 && NPAIR>1) 을 막아 뒀으므로 여기서는
         // `NS > 1` 일 때만 여러 원소가 단계를 뜻한다.
         const int NAVG = (NS > 1) ? (int)cls_st.size() : 1;
-        std::vector<float> prob(cls_st[last].size());
+        std::vector<float> prob((size_t)M * (NCLS + 1));
+        if (seesaw) {
+            // mmdet `SeesawLoss.get_activation`: 클래스와 objectness 를 따로 softmax 하고
+            // 클래스 점수에 전경 확률을 곱한 뒤 배경 확률을 뒤에 붙인다.
+            const int RAW = NCLS + 2;
+            for (int i = 0; i < M; ++i) {
+                float const* src = cls_st[last].data() + (size_t)i * RAW;
+                float* dst = prob.data() + (size_t)i * (NCLS + 1);
+                float mx = src[0];
+                for (int c = 1; c < NCLS; ++c) mx = std::max(mx, src[c]);
+                float sum = 0.0f;
+                for (int c = 0; c < NCLS; ++c) { dst[c] = std::exp(src[c] - mx); sum += dst[c]; }
+                for (int c = 0; c < NCLS; ++c) dst[c] /= sum;
+                const float om = std::max(src[NCLS], src[NCLS + 1]);
+                const float ep = std::exp(src[NCLS] - om), en = std::exp(src[NCLS + 1] - om);
+                const float pos = ep / (ep + en), neg = en / (ep + en);
+                for (int c = 0; c < NCLS; ++c) dst[c] *= pos;
+                dst[NCLS] = neg;                         // 배경은 맨 뒤
+            }
+        } else
         for (int i = 0; i < M; ++i) {
             float* dst = prob.data() + (size_t)i * (NCLS + 1);
             // ① 단계별 로짓 평균
