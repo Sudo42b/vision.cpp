@@ -341,7 +341,7 @@ file, so running from anywhere else fails to find it and the family looks broken
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Twenty of the forty families with a `roi_head` agree:
+and the thresholds are the same. Twenty-one of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
@@ -349,6 +349,7 @@ and the thresholds are the same. Twenty of the forty families with a `roi_head` 
 | `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
 | `carafe` | `detect_roi` | 0.06 px | 0.0007 |
 | `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
+| `gcnet` | `detect_roi` | 0.14 px | 0.0010 |
 | `mask_rcnn` | `detect_roi` | 0.06 px | 0.0009 |
 | `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
 | `cascade_rcnn` | `detect_roi` (3 stages) | 0.09 px | 0.0025 |
@@ -395,15 +396,21 @@ The twenty that do not agree split five ways, and the split matters more than th
   `grid_rcnn` turns off box regression on the bbox head entirely and regresses in a grid head,
   and `seesaw_loss` classifies through a `NormedLinear` layer at temperature 20 over 1203 LVIS
   classes.
-- **An operator is missing or approximated in the generated graph.** `gcnet` (37 px) is the one
-  left here, and it is here by elimination: its `ContextBlock` emits no `TODO` and has not been
-  isolated. The two that were in this group are now fixed — `carafe` rendered `pixel_shuffle`
-  as a pass-through identity, skipping CARAFE's upsampling outright (29 px → 0.06 px), and
-  `libra_rcnn` approximated the non-integer `adaptive_max_pool2d` that BFP uses to scatter back
-  to P6 with a fixed kernel (12 px → 0.11 px). Both announced themselves in the generated
-  `.cpp` as `TODO` comments, so grep for those before reading anything else: a renderer that
-  cannot express an operation still emits shape-correct code, which passes compilation and
-  every shape assertion while returning wrong values.
+- **An operator was missing, approximated, or silently reduced along the wrong axis.** This
+  group is now empty, and how each was found is worth keeping. `carafe` rendered
+  `pixel_shuffle` as a pass-through identity, skipping CARAFE's upsampling outright
+  (29 px → 0.06 px). `libra_rcnn` approximated with a fixed kernel the non-integer
+  `adaptive_max_pool2d` that BFP uses to scatter back to P6 (12 px → 0.11 px). Both announced
+  themselves as `TODO` comments in the generated `.cpp`, so grep for those before reading
+  anything else.
+
+  `gcnet` (37 px → 0.14 px) had no such marker. `ContextBlock` uses
+  `nn.LayerNorm([planes, 1, 1])` — three normalised axes — but the renderer always emitted
+  `ggml_norm`, which reduces `ne0` alone. At that point the tensor is `ne [1, 1, C, N]`, so
+  `ne0` is 1: normalising a single element gives `x - mean(x) = 0`, and the whole channel
+  branch collapses to a constant bias. A renderer that cannot express an operation still emits
+  shape-correct code, which passes compilation and every shape assertion while returning wrong
+  values.
 
 `swin` (the SubA gguf fails to load) and `tridentnet` (the runner returns no boxes at all) are
 the two that remain unsorted.
