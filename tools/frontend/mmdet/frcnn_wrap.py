@@ -95,6 +95,7 @@ class FRCNN_SubB(nn.Module):
         #    폴백**한다 — 두 슬라이스가 같은 자리를 읽어 확대판 RoI 가 무시된다(L1 0.740).
         #    proposal 개수는 `test_cfg.rpn.max_per_img` 로 이미 정해져 있다.
         self.n_half = int(det.test_cfg.rpn.max_per_img) if self.two_in else 0
+        _fold_normed_linear(self.bbox_head)
 
     def forward(self, roi_feat):
         # ⚠️ **`self.<새속성>` 을 그냥 읽지 마라.** 이 클래스는 `torch.save` 로 통째 절여지는데,
@@ -108,6 +109,51 @@ class FRCNN_SubB(nn.Module):
             m = getattr(self, "n_half", 0) or roi_feat.shape[0] // 2
             return self.bbox_head(roi_feat[:m], roi_feat[m:])
         return self.bbox_head(roi_feat)
+
+
+class _NormedCls(nn.Module):
+    """`NormedLinear` 를 trace 되는 연산으로 바꾼다 (seesaw_loss 의 분류기).
+
+    mmdet 원식(`normed_predictor.py`):
+        w_ = w / (||w||_row^power + eps)          ← **추론에서 상수다**
+        x_ = x / (||x||_row^power + eps) * T
+        out = x_ @ w_^T + b
+
+    가중치 정규화는 상수이므로 **여기서 미리 접어** 평범한 Linear 로 만든다. 남는 것은
+    입력 정규화와 온도뿐인데, `Tensor.norm` 은 trace 로 안 잡히므로 sqrt(sum(x*x)) 로
+    풀어 쓴다 — 값은 같고 렌더러가 아는 연산만 남는다.
+
+    ⚠️ 온도를 빼먹으면 **크래시 없이 점수만** 틀린다. 행 전체에 같은 배수가 곱해지지만
+       softmax 는 스케일 불변이 아니고(bias 가 뒤에 더해져 상쇄도 안 된다), 온도 20 은
+       분포를 크게 날카롭게 만든다.
+    """
+    def __init__(self, lin):
+        super().__init__()
+        power = float(getattr(lin, "power", 1.0))
+        if power != 1.0:
+            raise NotImplementedError(f"NormedLinear power={power} — 1.0 만 접을 수 있다")
+        w = lin.weight.detach()
+        eps = float(getattr(lin, "eps", 1e-6))
+        wn = w / (w.norm(dim=1, keepdim=True) + eps)
+        self.fc = nn.Linear(w.shape[1], w.shape[0], bias=lin.bias is not None)
+        with torch.no_grad():
+            self.fc.weight.copy_(wn)
+            if lin.bias is not None:
+                self.fc.bias.copy_(lin.bias.detach())
+        self.t = float(getattr(lin, "tempearture", 20.0))   # mmdet 의 철자 그대로다
+        self.eps = eps
+
+    def forward(self, x):
+        n = torch.sqrt((x * x).sum(dim=1, keepdim=True))
+        return self.fc(x / (n + self.eps) * self.t)
+
+
+def _fold_normed_linear(head):
+    """head 의 `NormedLinear` 예측기를 `_NormedCls` 로 갈아 끼운다(있을 때만)."""
+    for name in ("fc_cls", "fc_reg"):
+        m = getattr(head, name, None)
+        if m is not None and type(m).__name__ == "NormedLinear":
+            setattr(head, name, _NormedCls(m))
 
 
 def num_bbox_stages(det):
@@ -148,6 +194,22 @@ class MSRCNN_SubD(nn.Module):
         for fc in self.fcs:
             x = self.relu(fc(x))
         return self.fc_mask_iou(x)
+
+
+class GridRCNN_SubE(nn.Module):
+    """grid head. RoI feat (M,256,14,14) → 격자점 히트맵 (M, grid_points, 56, 56).
+
+    ⚠️ `GridHead.forward` 는 dict 를 낸다(`fused`/`unfused`). 추론에서 둘은 **같은
+    텐서**이므로 하나만 낸다 — dict 를 그대로 두면 g2c 가 출력을 못 잡는다.
+    `test_mode` 를 세워 학습용 분기(unfused 를 따로 계산)를 끈다.
+    """
+    def __init__(self, det):
+        super().__init__()
+        self.grid_head = det.roi_head.grid_head
+        self.grid_head.test_mode = True
+
+    def forward(self, grid_feat):
+        return self.grid_head(grid_feat)["fused"]
 
 
 def frcnn_cfg(det, size=800):
@@ -206,6 +268,45 @@ def frcnn_cfg(det, size=800):
         #    여기서 명시한다 — 런너가 shape 을 추측하면 조용히 어긋난다.
         mask["mask_iou_in_channels"] = int(mih.in_channels)          # 256 (+1 은 런너가 붙인다)
         mask["mask_iou_num_classes"] = int(mih.num_classes)
+
+    # CrowdDet: proposal 하나가 사람 둘을 낸다고 보고 (cls, box) 쌍을 2벌 낸다.
+    # 디코드도 NMS 도 다르다 — **같은 proposal 에서 나온 상자끼리는 서로 안 누른다**(set-NMS).
+    ni = int(getattr(bh, "num_instance", 1) or 1)
+    if ni > 1:
+        mask["num_instance"] = ni
+        # 정제(refine) 분기가 있으면 mmdet 은 **정제된 쌍**으로 예측한다
+        # (`multi_instance_roi_head.py:102` — cls_score_ref/bbox_pred_ref).
+        mask["with_refine"] = bool(getattr(bh, "with_refine", False))
+
+    # Grid R-CNN: bbox head 는 회귀 분기가 없고(`with_reg=False`) 격자점 히트맵으로
+    # 박스를 다시 낸다. 디코드에 필요한 상수를 전부 여기서 뽑는다 — 러너가 재계산하면
+    # 두 곳이 갈린다(`calc_sub_regions` 는 정수 절단이 섞여 있어 특히 위험하다).
+    gh = getattr(det.roi_head, "grid_head", None)
+    if gh is not None:
+        # ⚠️ **grid head 의 deconv 는 grouped + padded 다**(groups=grid_points=9,
+        #    padding=(k-2)//2=1). ggml 이 가진 것은 `ggml_conv_transpose_2d_p0` 하나이고
+        #    이름 그대로 padding 0 · groups 1 전용이다. 그대로 태우면 출력이 2px 크고
+        #    채널 묶음이 섞여 `add_bias_2d` 에서 `ggml_can_repeat` 로 죽는다.
+        #    **크래시로 두면 "우리 버그" 처럼 보인다** — 왜 안 되는지 여기서 말한다.
+        d1 = gh.deconv1
+        if getattr(d1, "groups", 1) != 1 or any(v != 0 for v in getattr(d1, "padding", (0, 0))):
+            raise NotImplementedError(
+                f"GridHead.deconv: groups={getattr(d1, 'groups', 1)} · "
+                f"padding={tuple(getattr(d1, 'padding', (0, 0)))} — ggml 의 conv_transpose 는 "
+                "padding 0 · groups 1 만 한다(ggml_conv_transpose_2d_p0). 그룹별로 쪼개 돌리고 "
+                "가장자리를 잘라내는 분해가 필요하다 — 디코드가 아니라 연산 부족이다")
+        gext = det.roi_head.grid_roi_extractor
+        if isinstance(gext, nn.ModuleList):
+            gext = gext[0]
+        mask["has_grid"] = True
+        mask["grid_roi_out"] = int(gext.roi_layers[0].output_size[0])       # 14
+        mask["grid_strides"] = [int(v) for v in gext.featmap_strides]
+        mask["grid_finest_scale"] = int(getattr(gext, "finest_scale", 56))
+        mask["grid_points"] = int(gh.grid_points)
+        mask["grid_size"] = int(gh.grid_size)
+        mask["whole_map_size"] = int(gh.whole_map_size)
+        # (x1,y1) 만 쓴다 — 히트맵을 전체 좌표로 옮기는 오프셋이다.
+        mask["grid_sub_xy"] = [float(v) for r in gh.sub_regions for v in r[:2]]
 
     # HTC 의 시맨틱 융합 파라미터. 없으면 안 싣는다.
     sem = {}

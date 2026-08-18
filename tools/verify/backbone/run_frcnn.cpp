@@ -21,6 +21,9 @@
 #ifdef VISP_ARCH_HEADER_D
 #include VISP_ARCH_HEADER_D
 #endif
+#ifdef VISP_ARCH_HEADER_E
+#include VISP_ARCH_HEADER_E
+#endif
 
 #include "visp/ml.h"
 #include "visp/postproc.h"
@@ -52,6 +55,10 @@ using namespace visp;
 #ifdef ARCH_D
 #define FWD_D CAT(ARCH_D, _forward)
 #define PRM_D CAT(ARCH_D, _detect_params)
+#endif
+#ifdef ARCH_E
+#define FWD_E CAT(ARCH_E, _forward)
+#define PRM_E CAT(ARCH_E, _detect_params)
 #endif
 
 static std::vector<float> load_bin(const char* path, size_t n) {
@@ -135,7 +142,7 @@ int main(int argc, char** argv) {
     if (argc < 6) {
         fprintf(stderr,
                 "usage: %s <subA.gguf> <subB.gguf> <frcnn.json> <in_cwhn.bin> <out_prefix>"
-                " [size] [subC.gguf] [subD.gguf]\n",
+                " [size] [subC.gguf] [subD.gguf] [subE.gguf]\n",
                 argv[0]);
         return 1;
     }
@@ -148,6 +155,7 @@ int main(int argc, char** argv) {
     // Mask Scoring R-CNN 전용. 안 주면 마스크 경로를 아예 안 탄다(다른 계열은 그대로다).
     const char* gc = argc > 7 ? argv[7] : nullptr;
     const char* gd = argc > 8 ? argv[8] : nullptr;
+    const char* ge = argc > 9 ? argv[9] : nullptr;   // Grid R-CNN 의 격자 head
 
     backend_device backend = backend_init();
 
@@ -362,6 +370,17 @@ int main(int argc, char** argv) {
         compute(g1, backend);
 
         auto bo = read_outputs(g1, 8, nullptr);
+        if (bo.size() == 1) {
+            // ⚠️ **회귀 분기가 없는 bbox head 가 있다.** Grid R-CNN 은 `with_reg=False`
+            //    로 박스를 아예 예측하지 않고 격자 head 가 나중에 다시 낸다. mmdet 도
+            //    `bbox_pred is None` 이면 `rois` 를 그대로 박스로 쓴다
+            //    (`bbox_head.predict_by_feat`). 0 델타를 넣으면 같은 결과가 된다 —
+            //    평균 0 · exp(0)=1 이라 디코드가 항등이 되기 때문이다.
+            //    여기서 막고 "출력이 부족하다" 로 실패시키면 계열을 못 재본다.
+            const int ncls = (int)(bo[0].size() / M) - 1;
+            bo.push_back(std::vector<float>((size_t)M * ncls * 4, 0.0f));
+            fprintf(stderr, "[frcnn] bbox head 에 회귀 분기가 없다 → RoI 를 박스로 쓴다\n");
+        }
         if (bo.size() < 2) {
             fprintf(stderr, "SubB 출력이 2개 미만이다(cls_score, bbox_pred 필요)\n");
             return 5;
@@ -443,7 +462,74 @@ int main(int argc, char** argv) {
     //
     //    박스는 평균하지 않는다. mmdet 도 `bbox_preds` 는 마지막 단계 것을 그대로 쓴다.
     std::vector<detection> dets;
-    if (!cls_st.empty() && !box_st.empty()) {
+    // ── CrowdDet: proposal 하나가 사람 둘 — 디코드도 NMS 도 다르다 ──────────
+    const int NI = (int)J.num("num_instance", 1.0f);
+    if (NI > 1 && !cls_st.empty() && !box_st.empty()) {
+        // ⚠️ **정제된 쌍을 쓴다.** head 가 (cls, box, cls_ref, box_ref) 넷을 내고
+        //    mmdet 은 정제된 쪽으로 예측한다(`multi_instance_roi_head.py`).
+        //    앞 쌍을 쓰면 크래시 없이 점수만 달라진다.
+        const bool refine = J.num("with_refine", 0.0f) != 0.0f;
+        const int use = (refine && cls_st.size() >= 2) ? 1 : 0;
+        std::vector<float> const& cls = cls_st[use];
+        std::vector<float> const& box = box_st[use];
+        // cat(dim=1) 이라 proposal 하나에 [inst0 (C+1)값][inst1 (C+1)값] 이 붙어 있다.
+        const int NCLS = (int)(cls.size() / ((size_t)M * NI)) - 1;
+        const float score_thr = J.num("rcnn_score_thr", 0.01f);
+        const float nms_thr = J.num("rcnn_nms_thr", 0.5f);
+        const int max_img = (int)J.num("rcnn_max", 500.0f);
+        const std::vector<float> rm = J.arr("rcnn_means"), rs = J.arr("rcnn_stds");
+        float mean[4] = {0, 0, 0, 0}, sd[4] = {1, 1, 1, 1};
+        for (int k = 0; k < 4; ++k) {
+            if (rm.size() >= 4) mean[k] = rm[k];
+            if (rs.size() >= 4) sd[k] = rs[k];
+        }
+        struct cand { float x1, y1, x2, y2, score; int roi; };
+        std::vector<cand> cs;
+        for (int i = 0; i < M; ++i) {
+            const float px1 = rois[(size_t)i * 4 + 0], py1 = rois[(size_t)i * 4 + 1];
+            const float px2 = rois[(size_t)i * 4 + 2], py2 = rois[(size_t)i * 4 + 3];
+            const float pw = px2 - px1, ph = py2 - py1;
+            for (int p = 0; p < NI; ++p) {
+                float const* c = cls.data() + ((size_t)i * NI + p) * (NCLS + 1);
+                float mx = c[0];
+                for (int k = 1; k <= NCLS; ++k) mx = std::max(mx, c[k]);
+                float sum = 0.0f;
+                for (int k = 0; k <= NCLS; ++k) sum += std::exp(c[k] - mx);
+                const float fg = std::exp(c[1] - mx) / sum;   // 전경 확률(클래스 1)
+                if (fg <= score_thr) continue;
+                float const* d = box.data() + ((size_t)i * NI + p) * 4;
+                const float dx = d[0] * sd[0] + mean[0], dy = d[1] * sd[1] + mean[1];
+                const float dw = d[2] * sd[2] + mean[2], dh = d[3] * sd[3] + mean[3];
+                const float cx = px1 + pw * 0.5f + dx * pw, cy = py1 + ph * 0.5f + dy * ph;
+                const float w = pw * std::exp(dw), h = ph * std::exp(dh);
+                cs.push_back({std::max(0.0f, cx - w * 0.5f), std::max(0.0f, cy - h * 0.5f),
+                              std::min((float)SZ, cx + w * 0.5f),
+                              std::min((float)SZ, cy + h * 0.5f), fg, i});
+            }
+        }
+        std::stable_sort(cs.begin(), cs.end(),
+                         [](cand const& a, cand const& b) { return a.score > b.score; });
+        // set-NMS — 평범한 NMS 인데 **같은 proposal 에서 나온 상자는 서로 안 누른다.**
+        // 그게 이 계열의 핵심이다: 겹쳐 선 두 사람은 IoU 가 높아 보통 NMS 면 하나가
+        // 지워진다. 이걸 빼면 억제가 통째로 어긋나 500건이 그대로 남는다(실측 1:500).
+        std::vector<char> keep(cs.size(), 1);
+        for (size_t a = 0; a < cs.size(); ++a) {
+            if (!keep[a]) continue;
+            for (size_t b = a + 1; b < cs.size(); ++b) {
+                if (!keep[b] || cs[b].roi == cs[a].roi) continue;   // 같은 proposal 은 면제
+                const float ix1 = std::max(cs[a].x1, cs[b].x1), iy1 = std::max(cs[a].y1, cs[b].y1);
+                const float ix2 = std::min(cs[a].x2, cs[b].x2), iy2 = std::min(cs[a].y2, cs[b].y2);
+                const float iw = std::max(0.0f, ix2 - ix1), ih = std::max(0.0f, iy2 - iy1);
+                const float inter = iw * ih;
+                const float ua = (cs[a].x2 - cs[a].x1) * (cs[a].y2 - cs[a].y1) +
+                                 (cs[b].x2 - cs[b].x1) * (cs[b].y2 - cs[b].y1) - inter;
+                if (ua > 0.0f && inter / ua > nms_thr) keep[b] = 0;
+            }
+        }
+        for (size_t i = 0; i < cs.size() && (int)dets.size() < max_img; ++i) {
+            if (keep[i]) dets.push_back({cs[i].x1, cs[i].y1, cs[i].x2, cs[i].y2, cs[i].score, 0});
+        }
+    } else if (!cls_st.empty() && !box_st.empty()) {
         const int last = (int)cls_st.size() - 1;
         const int NCLS = (int)(cls_st[last].size() / M) - 1;   // 배경 제외
         // 캐스케이드 단계들만 평균한다. 다중 인스턴스(CrowdDet)는 단계가 아니라 **쌍**이라
@@ -622,6 +708,106 @@ int main(int argc, char** argv) {
         dump_bin(pref + ".mlogit.bin", logit_all);  // SubC 출력 (행별 cwhn)
         dump_bin(pref + ".miouin.bin", din_all);    // SubD 입력 (행별 cwhn, 257ch)
         dump_bin(pref + ".maskiou.bin", miou);      // 라벨 채널의 IoU 예측
+    }
+#endif
+
+#ifdef ARCH_E
+    // ── 패스 3: 격자점 히트맵으로 박스를 다시 낸다 (Grid R-CNN) ─────────────
+    // bbox head 는 `with_reg=False` 라 박스를 아예 안 낸다(위에서 RoI 를 그대로 썼다).
+    // 진짜 박스는 여기서 나온다 — 9개 격자점의 히트맵 최대점을 이미지 좌표로 옮기고
+    // 같은 변에 놓인 점들을 **점수 가중 평균**한다(`grid_head._predict_by_feat_single`).
+    if (J.num("has_grid", 0.0f) != 0.0f && ge && !dets.empty()) {
+        const int MD = (int)dets.size();
+        const int GP = (int)J.num("grid_points", 9.0f);
+        const int GS = (int)J.num("grid_size", 3.0f);
+        std::vector<float> sub = J.arr("grid_sub_xy");      // (x1,y1) x GP
+        roi_align_params gp_;
+        gp_.output_size = (int)J.num("grid_roi_out", 14.0f);
+        gp_.channels = C;
+        gp_.strides = J.arr("grid_strides");
+        gp_.finest_scale = J.num("grid_finest_scale", 56.0f);
+        const int GL = std::min((int)gp_.strides.size(), (int)feats.size());
+        std::vector<std::vector<float>> gfeats(feats.begin(), feats.begin() + GL);
+        std::vector<std::pair<int, int>> ghw(feat_hw.begin(), feat_hw.begin() + GL);
+        const int GO = gp_.output_size;
+
+        std::vector<float> gbox((size_t)MD * 4);
+        for (int i = 0; i < MD; ++i) {
+            gbox[(size_t)i * 4 + 0] = dets[i].x1; gbox[(size_t)i * 4 + 1] = dets[i].y1;
+            gbox[(size_t)i * 4 + 2] = dets[i].x2; gbox[(size_t)i * 4 + 3] = dets[i].y2;
+        }
+        std::vector<float> gfeat = roi_align(gfeats, ghw, gbox.data(), MD, gp_);
+
+        model_file fe = model_load(ge);
+        model_weights we = model_init(fe.n_tensors());
+        model_transfer(fe, we, backend, backend.preferred_float_type(), fe.tensor_layout());
+
+        std::vector<float> heat_all;
+        for (int n = 0; n < MD; ++n) {
+            // ⚠️ 여기도 **배치 1** 이다. grid head 는 deconv 를 두 번 타는데 ggml 의
+            //    conv_transpose 가 배치 축을 안 돈다(위 마스크 경로 주석 참고).
+            compute_graph g4 = compute_graph_init(65536);
+            model_ref me(we, g4);
+            tensor gin = compute_graph_input(me, GGML_TYPE_F32, {C, GO, GO, 1}, "groi");
+            ggml_build_forward_expand(g4, gin);
+            ggml_build_forward_expand(g4, FWD_E(me, gin, PRM_E(fe)));
+            compute_graph_allocate(g4, backend);
+            std::vector<float> cw((size_t)C * GO * GO);
+            for (int c = 0; c < C; ++c)
+                for (int y = 0; y < GO; ++y)
+                    for (int x = 0; x < GO; ++x)
+                        cw[((size_t)y * GO + x) * C + c] =
+                            gfeat[(((size_t)n * C + c) * GO + y) * GO + x];
+            transfer_to_backend(gin, std::span<const float>(cw.data(), cw.size()));
+            compute(g4, backend);
+            std::vector<std::pair<int, int>> hw;
+            auto go = read_outputs(g4, 4, &hw);
+            if (go.empty()) {
+                fprintf(stderr, "SubE(grid head) 출력이 없다\n");
+                return 8;
+            }
+            const int GH = hw[0].first, GW = hw[0].second;     // 반쪽 히트맵(28)
+            std::vector<float> const& hm = go[0];              // cwhn: ((y*GW+x)*GP+k)
+            // 격자점마다 최대점을 찾는다. 점수는 sigmoid 를 거친 값이다.
+            std::vector<float> sc(GP), ax(GP), ay(GP);
+            for (int k = 0; k < GP; ++k) {
+                float best = -INFINITY; int bx = 0, by = 0;
+                for (int y = 0; y < GH; ++y)
+                    for (int x = 0; x < GW; ++x) {
+                        const float v = hm[((size_t)y * GW + x) * GP + k];
+                        if (v > best) { best = v; bx = x; by = y; }
+                    }
+                sc[k] = 1.0f / (1.0f + std::exp(-best));
+                // 반쪽 히트맵 좌표 → 전체 히트맵 좌표.
+                const float sx = (2 * k < (int)sub.size()) ? sub[2 * k] : 0.0f;
+                const float sy = (2 * k + 1 < (int)sub.size()) ? sub[2 * k + 1] : 0.0f;
+                // ⚠️ **나누는 것은 전체 크기가 아니라 반쪽 크기(GW/GH)다.** mmdet 이
+                //    그렇게 쓴다 — 전체 맵이 상자의 2배 영역을 덮으므로 반쪽으로 나누면
+                //    확장 상자 기준이 된다. 전체 크기로 나누면 박스가 절반이 된다.
+                const float w0 = dets[n].x2 - dets[n].x1, h0 = dets[n].y2 - dets[n].y1;
+                ax[k] = ((float)bx + sx + 0.5f) / (float)GW * w0 + (dets[n].x1 - w0 * 0.5f);
+                ay[k] = ((float)by + sy + 0.5f) / (float)GH * h0 + (dets[n].y1 - h0 * 0.5f);
+            }
+            // 같은 변에 놓인 격자점들을 점수로 가중 평균한다.
+            auto vote = [&](std::vector<int> const& idx, std::vector<float> const& v) {
+                float num = 0.0f, den = 0.0f;
+                for (int i : idx) { num += v[i] * sc[i]; den += sc[i]; }
+                return den > 0.0f ? num / den : 0.0f;
+            };
+            std::vector<int> ix1, iy1, ix2, iy2;
+            for (int i = 0; i < GS; ++i) {
+                ix1.push_back(i);
+                iy1.push_back(i * GS);
+                ix2.push_back(GP - GS + i);
+                iy2.push_back((i + 1) * GS - 1);
+            }
+            dets[n].x1 = std::min(std::max(vote(ix1, ax), 0.0f), (float)SZ);
+            dets[n].y1 = std::min(std::max(vote(iy1, ay), 0.0f), (float)SZ);
+            dets[n].x2 = std::min(std::max(vote(ix2, ax), 0.0f), (float)SZ);
+            dets[n].y2 = std::min(std::max(vote(iy2, ay), 0.0f), (float)SZ);
+            heat_all.insert(heat_all.end(), hm.begin(), hm.end());
+        }
+        dump_bin(pref + ".gridheat.bin", heat_all);
     }
 #endif
 

@@ -184,7 +184,7 @@ tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
     return x;
 }
 
-tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
+tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad) {
     tensor weight = m.weights("weight");
     // ⚠️ **커널은 F16 이어야 한다.** `ggml_compute_forward_conv_transpose_2d` 는
     //    `GGML_ASSERT(src0->type == GGML_TYPE_F16)` 로 시작한다(ggml-cpu/ops.cpp).
@@ -199,6 +199,19 @@ tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
     }
     x = ggml_conv_transpose_2d_p0(m, weight, x, stride);
 
+    // ⚠️ **`ggml_conv_transpose_2d_p0` 은 이름 그대로 padding 0 전용이다.**
+    //    transposed conv 의 padding p 는 "출력 가장자리를 p 픽셀씩 버린다" 와 같으므로
+    //    p0 로 크게 뽑아 놓고 여기서 잘라낸다. 안 자르면 출력이 2p 만큼 크고, 그 크기는
+    //    **다음 op 에서** 어긋나 죽는다 — 크래시 지점이 원인 지점이 아니다
+    //    (centernet 실측: deconv 가 34x34 를 내고 다음 DCN 의 offset 32 와 안 맞았다).
+    //    mmdet 의 deconv 는 전부 대칭 padding 이라 양쪽을 같은 값으로 자르면 된다.
+    if (pad > 0) {
+        const int64_t w = x->ne[0] - 2 * pad, h = x->ne[1] - 2 * pad;
+        GGML_ASSERT(w > 0 && h > 0);
+        x = ggml_cont(m, ggml_view_4d(m, x, w, h, x->ne[2], x->ne[3],
+                                      x->nb[1], x->nb[2], x->nb[3],
+                                      pad * x->nb[0] + pad * x->nb[1]));
+    }
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
     }

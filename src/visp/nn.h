@@ -62,7 +62,9 @@ tensor conv_2d_wt(model_ref m, tensor x, tensor weight, tensor bias,
 tensor conv_2d_depthwise(model_ref m, tensor x, int stride = 1, int pad = 0);
 tensor conv_2d_deform(
     model_ref m, tensor x, tensor weight, tensor offset, tensor mask, int stride, int pad);
-tensor conv_transpose_2d(model_ref m, tensor x, int stride);
+// `pad` 는 torch 의 ConvTranspose2d padding 과 같은 뜻이다(출력 가장자리를 그만큼 버린다).
+// ggml 에는 padding 을 받는 conv_transpose 가 없어 여기서 잘라낸다.
+tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad = 0);
 tensor batch_norm_2d(model_ref, tensor x);
 
 // 2D image to patch embedding using convolution and optional norm. CWHN input and output.

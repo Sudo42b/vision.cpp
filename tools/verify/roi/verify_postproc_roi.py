@@ -184,6 +184,15 @@ def one(fam, size, image, workdir, keep, verbose):
 
     # ① export — two-stage 를 두 subgraph 로 가른다. 여기서 죽으면 "왜" 를 그대로 옮긴다.
     fr = os.path.join(d, "frcnn")
+    # ⚠️ **단계마다 산출물을 먼저 지운다.** 존재 검사만 하면 이번 실행이 실패해도 지난
+    #    실행의 것이 남아 있어 **그대로 통과한다** — 고친 코드가 반영 안 된 숫자를
+    #    "통과" 로 보고하게 된다. 공유 코드를 자주 고치는 날에는 이게 제일 위험하다
+    #    (verify_heads.py 가 `bb.pt` 에 대해 같은 이유로 이미 지우고 있다).
+    for stale in ("frcnn.json", "run_frcnn"):
+        try:
+            os.remove(os.path.join(fr, stale))
+        except OSError:
+            pass
     r = run([PY, os.path.join(FE, "frcnn_to_pt.py"), "--config", cfg, "--checkpoint", ckpt,
              "--out", fr, "--size", str(size)], MM, {"PYTHONPATH": f"{d}:{FE}"})
     if not os.path.exists(os.path.join(fr, "frcnn.json")):
@@ -218,7 +227,18 @@ def one(fam, size, image, workdir, keep, verbose):
                   f"1,{RC},{MO},{MO}"),
                  ("MSRCNN_SubD", "MSRCNN_SubD", "out_MSRCNN_SubD",
                   f"1,{RC + 1},{MO},{MO}")]
+    # Grid R-CNN: bbox head 에 회귀 분기가 없고 격자점 히트맵이 박스를 낸다.
+    # 여기도 배치 1 이다 — grid head 가 deconv 를 두 번 탄다.
+    has_grid = bool(J.get("has_grid"))
+    GO = int(J.get("grid_roi_out", 14))
+    if has_grid:
+        jobs += [("GridRCNN_SubE", "GridRCNN_SubE", "out_GridRCNN_SubE",
+                  f"1,{RC},{GO},{GO}")]
     for src, name, outdir, shape in jobs:
+        try:
+            os.remove(os.path.join(fr, outdir, f"{name}.gguf"))   # 위와 같은 이유
+        except OSError:
+            pass
         r = run([PY, "-c", f'''
 import _stub, sys
 sys.argv = ["g2c","--model","{src}.pt","--name","{name}","--output","{outdir}","--input-shape","{shape}"]
@@ -232,16 +252,21 @@ from shared.compile.pipeline import main; main()
     incs = [("FRCNN_SubA", "incA"), (subs[0], "incB")]
     if has_miou:
         incs += [("MaskRCNN_SubC", "incC"), ("MSRCNN_SubD", "incD")]
+    if has_grid:
+        incs += [("GridRCNN_SubE", "incE")]
     for name, inc in incs:
         os.makedirs(os.path.join(fr, inc, "visp", "arch"), exist_ok=True)
         shutil.copy(os.path.join(fr, "out_" + name, name + ".h"),
                     os.path.join(fr, inc, "visp", "arch"))
     extra = []
     if has_miou:
-        extra = ["-DARCH_C=MaskRCNN_SubC", "-DARCH_D=MSRCNN_SubD",
-                 '-DVISP_ARCH_HEADER_C="visp/arch/MaskRCNN_SubC.h"',
-                 '-DVISP_ARCH_HEADER_D="visp/arch/MSRCNN_SubD.h"',
-                 "-IincC", "-IincD"]
+        extra += ["-DARCH_C=MaskRCNN_SubC", "-DARCH_D=MSRCNN_SubD",
+                  '-DVISP_ARCH_HEADER_C="visp/arch/MaskRCNN_SubC.h"',
+                  '-DVISP_ARCH_HEADER_D="visp/arch/MSRCNN_SubD.h"',
+                  "-IincC", "-IincD"]
+    if has_grid:
+        extra += ["-DARCH_E=GridRCNN_SubE",
+                  '-DVISP_ARCH_HEADER_E="visp/arch/GridRCNN_SubE.h"', "-IincE"]
     b = run(["g++", "-std=c++20", "-O1", "-DARCH_A=FRCNN_SubA", "-DARCH_B=" + subs[0],
              '-DVISP_ARCH_HEADER_A="visp/arch/FRCNN_SubA.h"',
              f'-DVISP_ARCH_HEADER_B="visp/arch/{subs[0]}.h"'] + extra + [
@@ -250,7 +275,8 @@ from shared.compile.pipeline import main; main()
              V + "/tools/verify/backbone/run_frcnn.cpp",
              "out_FRCNN_SubA/FRCNN_SubA.cpp", f"out_{subs[0]}/{subs[0]}.cpp"] + (
              ["out_MaskRCNN_SubC/MaskRCNN_SubC.cpp", "out_MSRCNN_SubD/MSRCNN_SubD.cpp"]
-             if has_miou else []) + [
+             if has_miou else []) + (
+             ["out_GridRCNN_SubE/GridRCNN_SubE.cpp"] if has_grid else []) + [
              "-L" + BUILD + "/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + BUILD + "/lib", "-o", "run_frcnn"], fr)
     if not os.path.exists(os.path.join(fr, "run_frcnn")):
@@ -272,6 +298,11 @@ from shared.compile.pipeline import main; main()
             "frcnn.json", binp, pref, str(size)]
     if has_miou:
         argv += ["out_MaskRCNN_SubC/MaskRCNN_SubC.gguf", "out_MSRCNN_SubD/MSRCNN_SubD.gguf"]
+    if has_grid:
+        # 러너 인자는 자리로 읽는다 — SubE 는 9번째다. 마스크가 없으면 자리를 채운다.
+        while len(argv) < 9:
+            argv.append("")
+        argv.append("out_GridRCNN_SubE/GridRCNN_SubE.gguf")
     rr = run(argv, fr, {"VISP_BACKEND": "cpu"})
     if not os.path.exists(pref + ".boxes.bin"):
         return fam, "RUN_FAIL", last_error(rr.stderr)[:110], None
