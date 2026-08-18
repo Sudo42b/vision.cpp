@@ -310,6 +310,7 @@ no label mismatch and no difference in how many boxes survive.
 | `nas_fpn` | `detect_anchor` | 1.04 px | 0.004 |
 | `yolof` | `detect_anchor` (ctr_clamp) | 0.12 px | 0.002 |
 | `pvt` | `detect_anchor` (PVT-Tiny) | 0.55 px | 0.005 |
+| `sabl` | `detect_sabl` (buckets) | 0.55 px | 0.003 |
 | `nas_fcos` | `detect_fcos` | 0.19 px | 0.001 |
 | `reppoints` | `detect_fcos` (xyxy offset) | 0.25 px | 0.006 |
 | `autoassign` | `detect_fcos` | 0.30 px | 0.006 |
