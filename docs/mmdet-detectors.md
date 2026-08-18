@@ -288,8 +288,8 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Sixty-five families produce the same boxes MMDetection does** — thirty-six single-stage
-below, twenty-nine two-stage further down. Assembling a head and decoding its output are
+**Sixty-six families produce the same boxes MMDetection does** — thirty-six single-stage
+below, thirty two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
@@ -398,11 +398,12 @@ table, and the two deserve different columns.
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Twenty-nine of the forty families with a `roi_head` agree:
+and the thresholds are the same. Thirty of the forty families with a `roi_head` agree:
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
 | `detectors` | `detect_roi` (SAC) | 0.03 px | 0.0006 |
+| `panoptic_fpn` | `detect_roi` | 0.04 px | 0.0001 |
 | `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
 | `carafe` | `detect_roi` | 0.06 px | 0.0007 |
 | `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
@@ -432,14 +433,21 @@ and the thresholds are the same. Twenty-nine of the forty families with a `roi_h
 | `dcn` | `detect_roi` | 0.37 px | 0.0002 |
 | `instaboost` | `detect_roi` | 0.39 px | 0.0079 |
 
-`panoptic_fpn` is not in the table any more, and the reason is worth stating precisely: the
-interpreter the harness runs under does not have `panopticapi`, and `init_detector` builds the
-dataset pipeline before it builds the model. Naming the interpreter matters more than naming
-the environment, because two virtualenvs on this machine disagree: the one the harness uses has
-a working `import mmdet.models` but no `panopticapi`, while the other has `panopticapi` and
-cannot import `mmdet.models` at all — a stale `mmpretrain` install makes its
+`panoptic_fpn` is back in the table, and the round trip it took is the useful part. It was
+recorded at 0.04 px, then removed when the harness started deleting each stage's outputs before
+that stage ran: the old run's export had failed and a stale `frcnn.json` from an earlier run had
+carried it through, so the number could no longer be trusted. It was marked unverified rather
+than wrong. Installing `panopticapi` and re-measuring returns **0.04 px** — the original number
+was right all along. "Unverified" and "wrong" are different claims, and only one of them
+survived contact with the measurement.
+
+What blocked the re-measurement was the interpreter, not the environment, and the distinction
+matters because two virtualenvs on this machine disagreed: the one the harness uses had a
+working `import mmdet.models` but no `panopticapi`, while the other had `panopticapi` and could
+not import `mmdet.models` at all — a stale `mmpretrain` install makes its
 `reid_data_preprocessor` raise `TypeError` at class-definition time. The harness resolves child
-processes through `sys.executable`, so which Python starts it decides the answer.
+processes through `sys.executable`, so which Python starts it decided the answer. Two sessions
+measuring the same package reached opposite conclusions, each correct about its own interpreter.
 
 Checking this needs the failing call, not an import. `import panopticapi` and even
 `import mmdet.datasets.coco_panoptic` both succeed without the package, because the check is
@@ -447,17 +455,11 @@ deferred to `LoadPanopticAnnotations.__init__` (`mmdet/datasets/transforms/loadi
 The discriminating command is
 `python -c "from mmdet.datasets.transforms.loading import LoadPanopticAnnotations as L; L()"`.
 
-`panoptic_fpn` was previously recorded at 0.04 px. That number came from a run whose export
-step had already failed — the harness checked only that `frcnn.json` existed, so a file left by
-an earlier run carried it through. The harness now deletes each stage's outputs before that
-stage runs, which is what made the failure visible. Treat the old number as unverified rather
-than wrong.
-
 `fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The eleven that do not agree split four ways, and the split matters more than the count:
+The ten that do not agree split four ways, and the split matters more than the count:
 
 - **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
   `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
