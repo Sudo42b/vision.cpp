@@ -15,6 +15,12 @@
 //         -DVISP_ARCH_HEADER_A='"..."' -DVISP_ARCH_HEADER_B='"..."'
 #include VISP_ARCH_HEADER_A
 #include VISP_ARCH_HEADER_B
+#ifdef VISP_ARCH_HEADER_C
+#include VISP_ARCH_HEADER_C
+#endif
+#ifdef VISP_ARCH_HEADER_D
+#include VISP_ARCH_HEADER_D
+#endif
 
 #include "visp/ml.h"
 #include "visp/postproc.h"
@@ -39,6 +45,14 @@ using namespace visp;
 #define PRM_A CAT(ARCH_A, _detect_params)
 #define FWD_B CAT(ARCH_B, _forward)
 #define PRM_B CAT(ARCH_B, _detect_params)
+#ifdef ARCH_C
+#define FWD_C CAT(ARCH_C, _forward)
+#define PRM_C CAT(ARCH_C, _detect_params)
+#endif
+#ifdef ARCH_D
+#define FWD_D CAT(ARCH_D, _forward)
+#define PRM_D CAT(ARCH_D, _detect_params)
+#endif
 
 static std::vector<float> load_bin(const char* path, size_t n) {
     std::vector<float> v(n);
@@ -120,7 +134,8 @@ static std::vector<std::vector<float>> read_outputs(compute_graph const& g, int 
 int main(int argc, char** argv) {
     if (argc < 6) {
         fprintf(stderr,
-                "usage: %s <subA.gguf> <subB.gguf> <frcnn.json> <in_cwhn.bin> <out_prefix> [size]\n",
+                "usage: %s <subA.gguf> <subB.gguf> <frcnn.json> <in_cwhn.bin> <out_prefix>"
+                " [size] [subC.gguf] [subD.gguf]\n",
                 argv[0]);
         return 1;
     }
@@ -130,6 +145,9 @@ int main(int argc, char** argv) {
     const char* inb = argv[4];
     const std::string pref = argv[5];
     const int SZ = argc > 6 ? atoi(argv[6]) : 512;
+    // Mask Scoring R-CNN 전용. 안 주면 마스크 경로를 아예 안 탄다(다른 계열은 그대로다).
+    const char* gc = argc > 7 ? argv[7] : nullptr;
+    const char* gd = argc > 8 ? argv[8] : nullptr;
 
     backend_device backend = backend_init();
 
@@ -466,6 +484,146 @@ int main(int argc, char** argv) {
         // 이미 다음 단계용으로 갱신되지 않으므로(마지막 단계는 정제를 건너뛴다) 그대로 쓴다.
         dets = detect_roi(prob.data(), box_st[last].data(), rois.data(), M, rp2);
     }
+
+#if defined(ARCH_C) && defined(ARCH_D)
+    // ── 패스 2: 마스크 IoU 로 점수를 다시 매긴다 (Mask Scoring R-CNN) ───────
+    // mmdet 은 `score * mask_iou[label]` 로 점수를 낮춘다(maskiou_head.predict_by_feat).
+    // 이걸 빼면 **박스는 맞는데 점수만 틀린다** — 실측 박스 0.07px / 점수 0.163.
+    // 게다가 점수가 임계값을 넘나들어 개수까지 달라진다(mmdet 4건 vs C++ 6건).
+    //
+    // ⚠️⚠️ **두 그래프를 검출 하나씩(배치 1) 돌린다. 묶어 넣으면 안 된다.**
+    //    `ggml_compute_forward_conv_transpose_2d` 는 **배치 축을 안 돈다** — src1 을
+    //    풀 때 i12(채널)·i11(행)만 돌고 i13(배치)이 없고, 출력도 `dst->data + i2*nb2`
+    //    로 Cout 만 인덱싱한다(ggml-cpu/ops.cpp). 그래서 배치 20으로 넣으면 **0번 행만
+    //    계산되고 나머지 19행은 bias 만 남는다.** 크래시도 경고도 없다 —
+    //    실측: 행0 rel_L1 6.0e-04, 행1..4 는 전부 1.01 이고 |x| 평균이 서로 똑같았다
+    //    (0.0870 = bias 뿐). mask head 의 `upsample`(14→28 deconv)이 그 경로다.
+    if (J.num("has_mask_iou", 0.0f) != 0.0f && gc && gd && !dets.empty()) {
+        const int MD = (int)dets.size();
+        // ⚠️ **박스를 원본 해상도로 되돌리지 않는다.** mmdet 은 마스크 분기가 있으면
+        //    bbox 쪽 rescale 을 끈다(`base_roi_head.py`:
+        //    `bbox_rescale = rescale if not self.with_mask else False`) — 마스크 쪽이
+        //    박스와 마스크를 한꺼번에 되돌리기 때문이다. 여기 좌표는 이미 feature 계다.
+        std::vector<float> mbox((size_t)MD * 4);
+        std::vector<int> mlab(MD);
+        for (int i = 0; i < MD; ++i) {
+            mbox[(size_t)i * 4 + 0] = dets[i].x1; mbox[(size_t)i * 4 + 1] = dets[i].y1;
+            mbox[(size_t)i * 4 + 2] = dets[i].x2; mbox[(size_t)i * 4 + 3] = dets[i].y2;
+            mlab[i] = dets[i].label;
+        }
+        roi_align_params mp;
+        mp.output_size = (int)J.num("mask_roi_out", 14.0f);
+        mp.channels = C;
+        mp.strides = J.arr("mask_strides");
+        mp.finest_scale = J.num("mask_finest_scale", 56.0f);
+        // 마스크 extractor 가 쓰는 레벨 수는 bbox 쪽과 다를 수 있다(P6 를 안 쓴다).
+        const int ML = std::min((int)mp.strides.size(), (int)feats.size());
+        std::vector<std::vector<float>> mfeats(feats.begin(), feats.begin() + ML);
+        std::vector<std::pair<int, int>> mhw(feat_hw.begin(), feat_hw.begin() + ML);
+        const int MO = mp.output_size;
+        std::vector<float> mfeat = roi_align(mfeats, mhw, mbox.data(), MD, mp);
+
+        // 모델은 한 번만 올린다. 행마다 바뀌는 것은 그래프뿐이다.
+        model_file fc = model_load(gc);
+        model_weights wc = model_init(fc.n_tensors());
+        model_transfer(fc, wc, backend, backend.preferred_float_type(), fc.tensor_layout());
+        model_file fd = model_load(gd);
+        model_weights wd = model_init(fd.n_tensors());
+        model_transfer(fd, wd, backend, backend.preferred_float_type(), fd.tensor_layout());
+
+        std::vector<float> logit_all, din_all, miou(MD, 1.0f);
+        int MH = 0, MW = 0, NCLS_M = 0;
+        const int CD = C + 1;
+        for (int n = 0; n < MD; ++n) {
+            // ① SubC = mask head. (1,256,14,14) → (1, NCLS_M, 28, 28)
+            std::vector<float> mo0;
+            {
+                compute_graph g2 = compute_graph_init(65536);
+                model_ref mc(wc, g2);
+                tensor min_ = compute_graph_input(mc, GGML_TYPE_F32, {C, MO, MO, 1}, "mroi");
+                ggml_build_forward_expand(g2, min_);
+                ggml_build_forward_expand(g2, FWD_C(mc, min_, PRM_C(fc)));
+                compute_graph_allocate(g2, backend);
+                // roi_align 은 NCHW flat 을 낸다. 생성 코드는 cwhn 규약이다.
+                std::vector<float> cw((size_t)C * MO * MO);
+                for (int c = 0; c < C; ++c)
+                    for (int y = 0; y < MO; ++y)
+                        for (int x = 0; x < MO; ++x)
+                            cw[((size_t)y * MO + x) * C + c] =
+                                mfeat[(((size_t)n * C + c) * MO + y) * MO + x];
+                transfer_to_backend(min_, std::span<const float>(cw.data(), cw.size()));
+                compute(g2, backend);
+                std::vector<std::pair<int, int>> hw;
+                auto mo = read_outputs(g2, 4, &hw);
+                if (mo.empty()) {
+                    fprintf(stderr, "SubC(mask head) 출력이 없다\n");
+                    return 7;
+                }
+                mo0 = mo[0];
+                MH = hw[0].first; MW = hw[0].second;
+                NCLS_M = (int)(mo0.size() / ((size_t)MH * MW));
+            }
+            const int PH = MH / 2, PW = MW / 2;      // 28 → 14
+            if (PH != MO || PW != MO) {
+                fprintf(stderr, "mask pool %dx%d != roi %dx%d — 이어붙이기 불가\n",
+                        PH, PW, MO, MO);
+                return 7;
+            }
+            // 호스트: 라벨 채널 고르기 → sigmoid → maxpool(2,2) → mask_feat 뒤에 잇기.
+            // ⚠️ 이 세 단계는 그래프에 못 넣는다. 라벨은 **실행 중에** 정해지는 값이라
+            //    `mask_preds[range(M), labels]` 가 trace 에 안 실린다(조용히 0번 채널이 된다).
+            // ⚠️ 채널 순서는 mmdet 대로 **feature 256 뒤에 mask 1** 이다
+            //    (`torch.cat((mask_feat, mask_pred_pooled), 1)`).
+            std::vector<float> din((size_t)CD * MO * MO);   // cwhn
+            const int k = std::min(std::max(mlab[n], 0), NCLS_M - 1);
+            for (int y = 0; y < MO; ++y)
+                for (int x = 0; x < MO; ++x) {
+                    float* dst = din.data() + ((size_t)y * MO + x) * CD;
+                    for (int c = 0; c < C; ++c)
+                        dst[c] = mfeat[(((size_t)n * C + c) * MO + y) * MO + x];
+                    float mx = -INFINITY;
+                    for (int dy = 0; dy < 2; ++dy)
+                        for (int dx = 0; dx < 2; ++dx) {
+                            const size_t si =
+                                ((size_t)(2 * y + dy) * MW + (2 * x + dx)) * NCLS_M + k;
+                            mx = std::max(mx, 1.0f / (1.0f + std::exp(-mo0[si])));
+                        }
+                    dst[C] = mx;
+                }
+            // ② SubD = mask-IoU head. (1,257,14,14) → (1, NCLS)
+            {
+                compute_graph g3 = compute_graph_init(65536);
+                model_ref md(wd, g3);
+                tensor din_ = compute_graph_input(md, GGML_TYPE_F32, {CD, MO, MO, 1}, "miou_in");
+                ggml_build_forward_expand(g3, din_);
+                ggml_build_forward_expand(g3, FWD_D(md, din_, PRM_D(fd)));
+                compute_graph_allocate(g3, backend);
+                transfer_to_backend(din_, std::span<const float>(din.data(), din.size()));
+                compute(g3, backend);
+                auto od = read_outputs(g3, 4, nullptr);
+                if (od.empty()) {
+                    fprintf(stderr, "SubD(mask-IoU head) 출력이 없다\n");
+                    return 7;
+                }
+                const int NIOU = (int)od[0].size();
+                miou[n] = od[0][std::min(std::max(mlab[n], 0), NIOU - 1)];
+            }
+            logit_all.insert(logit_all.end(), mo0.begin(), mo0.end());
+            din_all.insert(din_all.end(), din.begin(), din.end());
+        }
+        for (int i = 0; i < MD; ++i) {
+            dets[i].score *= miou[i];
+        }
+        // ⚠️ **재정렬하지 않는다.** mmdet 도 보정 뒤 정렬하지 않는다
+        //    (`predict_by_feat` 는 `results.scores` 를 제자리에서 곱할 뿐이다).
+        //    여기서 정렬하면 양쪽 순서가 갈려 인덱스로 짝짓는 대조가 어긋난다.
+        // 중간 텐서도 낸다 — 값이 틀렸을 때 **어느 단계**인지 torch 와 대조한다.
+        dump_bin(pref + ".mfeat.bin", mfeat);       // 마스크 RoIAlign (NCHW)
+        dump_bin(pref + ".mlogit.bin", logit_all);  // SubC 출력 (행별 cwhn)
+        dump_bin(pref + ".miouin.bin", din_all);    // SubD 입력 (행별 cwhn, 257ch)
+        dump_bin(pref + ".maskiou.bin", miou);      // 라벨 채널의 IoU 예측
+    }
+#endif
 
     // ── 덤프 (torch 대조용) ─────────────────────────────────────────────────
     dump_bin(pref + ".props.bin", props);

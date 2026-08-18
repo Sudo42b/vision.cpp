@@ -204,6 +204,20 @@ def one(fam, size, image, workdir, keep, verbose):
     jobs = [("FRCNN_SubA", "FRCNN_SubA", "out_FRCNN_SubA", f"1,3,{size},{size}")]
     #    캐스케이드는 단계마다 가중치만 다르므로 그래프 이름을 subs[0] 으로 통일해 gguf 만 갈아 낀다.
     jobs += [(s, subs[0], "out_" + s, f"{MX},{RC},{O},{O}") for s in subs]
+    # Mask Scoring R-CNN 은 점수를 마스크 IoU 로 다시 매긴다 → 그래프가 둘 더 필요하다.
+    #   SubC = mask head      (1, 256, 14, 14) → 마스크 로짓 (1, 80, 28, 28)
+    #   SubD = mask-IoU head  (1, 257, 14, 14) → 클래스별 IoU (1, 80)
+    # ⚠️ **배치 1 로 굽고 러너가 검출 하나씩 돌린다.** ggml 의
+    #    `conv_transpose_2d` 가 배치 축을 안 돌아서(ggml-cpu/ops.cpp — src1 을 풀 때
+    #    i13 이 없다) 배치로 묶으면 **0번 행만 계산되고 나머지는 bias 만 남는다.**
+    #    크래시가 없어 조용히 틀린다. mask head 의 14→28 deconv 가 그 경로다.
+    has_miou = bool(J.get("has_mask_iou"))
+    MO = int(J.get("mask_roi_out", 14))
+    if has_miou:
+        jobs += [("MaskRCNN_SubC", "MaskRCNN_SubC", "out_MaskRCNN_SubC",
+                  f"1,{RC},{MO},{MO}"),
+                 ("MSRCNN_SubD", "MSRCNN_SubD", "out_MSRCNN_SubD",
+                  f"1,{RC + 1},{MO},{MO}")]
     for src, name, outdir, shape in jobs:
         r = run([PY, "-c", f'''
 import _stub, sys
@@ -215,17 +229,28 @@ from shared.compile.pipeline import main; main()
 
     # ③ 러너 빌드 — 빌드 라인은 build_frcnn_cpp.sh / verify_heads.py 와 같아야 한다.
     import shutil
-    for name, inc in (("FRCNN_SubA", "incA"), (subs[0], "incB")):
+    incs = [("FRCNN_SubA", "incA"), (subs[0], "incB")]
+    if has_miou:
+        incs += [("MaskRCNN_SubC", "incC"), ("MSRCNN_SubD", "incD")]
+    for name, inc in incs:
         os.makedirs(os.path.join(fr, inc, "visp", "arch"), exist_ok=True)
         shutil.copy(os.path.join(fr, "out_" + name, name + ".h"),
                     os.path.join(fr, inc, "visp", "arch"))
+    extra = []
+    if has_miou:
+        extra = ["-DARCH_C=MaskRCNN_SubC", "-DARCH_D=MSRCNN_SubD",
+                 '-DVISP_ARCH_HEADER_C="visp/arch/MaskRCNN_SubC.h"',
+                 '-DVISP_ARCH_HEADER_D="visp/arch/MSRCNN_SubD.h"',
+                 "-IincC", "-IincD"]
     b = run(["g++", "-std=c++20", "-O1", "-DARCH_A=FRCNN_SubA", "-DARCH_B=" + subs[0],
              '-DVISP_ARCH_HEADER_A="visp/arch/FRCNN_SubA.h"',
-             f'-DVISP_ARCH_HEADER_B="visp/arch/{subs[0]}.h"',
+             f'-DVISP_ARCH_HEADER_B="visp/arch/{subs[0]}.h"'] + extra + [
              "-IincA", "-IincB", "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
              V + "/tools/verify/backbone/run_frcnn.cpp",
-             "out_FRCNN_SubA/FRCNN_SubA.cpp", f"out_{subs[0]}/{subs[0]}.cpp",
+             "out_FRCNN_SubA/FRCNN_SubA.cpp", f"out_{subs[0]}/{subs[0]}.cpp"] + (
+             ["out_MaskRCNN_SubC/MaskRCNN_SubC.cpp", "out_MSRCNN_SubD/MSRCNN_SubD.cpp"]
+             if has_miou else []) + [
              "-L" + BUILD + "/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + BUILD + "/lib", "-o", "run_frcnn"], fr)
     if not os.path.exists(os.path.join(fr, "run_frcnn")):
@@ -242,9 +267,12 @@ from shared.compile.pipeline import main; main()
 
     # ⑤ 러너 실행
     pref = os.path.join(d, "cpp")
-    rr = run([os.path.join(fr, "run_frcnn"), "out_FRCNN_SubA/FRCNN_SubA.gguf",
-              ",".join(f"out_{s}/{subs[0]}.gguf" for s in subs),
-              "frcnn.json", binp, pref, str(size)], fr, {"VISP_BACKEND": "cpu"})
+    argv = [os.path.join(fr, "run_frcnn"), "out_FRCNN_SubA/FRCNN_SubA.gguf",
+            ",".join(f"out_{s}/{subs[0]}.gguf" for s in subs),
+            "frcnn.json", binp, pref, str(size)]
+    if has_miou:
+        argv += ["out_MaskRCNN_SubC/MaskRCNN_SubC.gguf", "out_MSRCNN_SubD/MSRCNN_SubD.gguf"]
+    rr = run(argv, fr, {"VISP_BACKEND": "cpu"})
     if not os.path.exists(pref + ".boxes.bin"):
         return fam, "RUN_FAIL", last_error(rr.stderr)[:110], None
     got = np.fromfile(pref + ".boxes.bin", dtype="float32").reshape(-1, 6)

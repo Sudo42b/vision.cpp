@@ -126,6 +126,30 @@ class MaskRCNN_SubC(nn.Module):
         return self.mask_head(mask_feat)
 
 
+class MSRCNN_SubD(nn.Module):
+    """mask-IoU head. 이어붙인 (M,257,14,14) → mask_iou (M, num_classes). (Mask Scoring R-CNN).
+
+    ⚠️ **mmdet 의 `MaskIoUHead.forward` 를 통째로 태우지 않는다.** 그 forward 는 앞부분에서
+    `mask_preds[range(M), labels]` 로 **행마다 다른 채널**을 고른 뒤 sigmoid·maxpool·concat
+    까지 한다. 라벨은 실행할 때까지 모르는 값이라 trace 로는 고정 그래프가 안 나온다
+    (`index_put_`/`gather` 가 그래프에 안 실려 **크래시 없이 0번 채널**을 고르게 된다).
+    그래서 그 앞부분은 호스트가 하고, 여기는 conv/fc 만 맡는다.
+    """
+    def __init__(self, det):
+        super().__init__()
+        h = det.roi_head.mask_iou_head
+        self.convs, self.fcs = h.convs, h.fcs
+        self.fc_mask_iou, self.relu = h.fc_mask_iou, h.relu
+
+    def forward(self, x):
+        for conv in self.convs:
+            x = self.relu(conv(x))
+        x = x.flatten(1)
+        for fc in self.fcs:
+            x = self.relu(fc(x))
+        return self.fc_mask_iou(x)
+
+
 def frcnn_cfg(det, size=800):
     """host 부품(rpn_proposals/roi_align/detect_roi)용 config 추출 → .frcnn.json."""
     rh = det.rpn_head
@@ -174,6 +198,15 @@ def frcnn_cfg(det, size=800):
             "mask_finest_scale": int(getattr(mext, "finest_scale", 56)),
             "mask_thr_binary": float(rcnn_c.mask_thr_binary),
         }
+    # Mask Scoring R-CNN: 마스크 IoU 로 점수를 다시 매긴다. 없으면 안 싣는다.
+    if getattr(det.roi_head, "mask_iou_head", None) is not None:
+        mih = det.roi_head.mask_iou_head
+        mask["has_mask_iou"] = True
+        # ⚠️ 마지막 conv 만 stride 2 다(14→7). 호스트가 이어붙일 채널 수(+1)와 함께
+        #    여기서 명시한다 — 런너가 shape 을 추측하면 조용히 어긋난다.
+        mask["mask_iou_in_channels"] = int(mih.in_channels)          # 256 (+1 은 런너가 붙인다)
+        mask["mask_iou_num_classes"] = int(mih.num_classes)
+
     # HTC 의 시맨틱 융합 파라미터. 없으면 안 싣는다.
     sem = {}
     if getattr(det.roi_head, "semantic_head", None) is not None:

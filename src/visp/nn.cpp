@@ -186,6 +186,14 @@ tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
 
 tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
     tensor weight = m.weights("weight");
+    // ⚠️ **커널은 F16 이어야 한다.** `ggml_compute_forward_conv_transpose_2d` 는
+    //    `GGML_ASSERT(src0->type == GGML_TYPE_F16)` 로 시작한다(ggml-cpu/ops.cpp).
+    //    `model_transfer` 에 `preferred_float_type()` 을 주면 CPU 백엔드에서 F32 로 올라와
+    //    **로드는 되고 실행에서 죽는다.** 호출자가 알아야 할 사정이 아니므로 여기서 맞춘다
+    //    (attention 의 k/v 캐스팅과 같은 규약).
+    if (weight->type != GGML_TYPE_F16) {
+        weight = ggml_cast(m, weight, GGML_TYPE_F16);
+    }
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
     }

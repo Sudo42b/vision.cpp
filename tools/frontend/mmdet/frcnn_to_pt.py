@@ -20,7 +20,8 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mmdet_compat  # noqa: E402
-from frcnn_wrap import FRCNN_SubA, FRCNN_SubB, MaskRCNN_SubC, frcnn_cfg  # noqa: E402,F401 (피클: frcnn_wrap)
+from frcnn_wrap import (FRCNN_SubA, FRCNN_SubB, MaskRCNN_SubC, MSRCNN_SubD,  # noqa: E402,F401
+                        frcnn_cfg)                                          # (피클: frcnn_wrap)
 
 
 def _desync_norm(cfg_path):
@@ -89,6 +90,8 @@ def main(argv=None):
     cfg = frcnn_cfg(det, a.size)
     if cfg.get("has_mask"):
         torch.save(MaskRCNN_SubC(det).eval(), f"{a.out}/MaskRCNN_SubC.pt")   # mask_feat → mask_logits
+    if cfg.get("has_mask_iou"):
+        torch.save(MSRCNN_SubD(det).eval(), f"{a.out}/MSRCNN_SubD.pt")       # (feat|mask) → mask_iou
     # feat_hw (P2-P6) — 러너 CWHN flat 해석용. 위 dummy forward 에서 얻었다.
     cfg["feat_hw"] = [[int(f.shape[2]), int(f.shape[3])] for f in feats]
     json.dump(cfg, open(f"{a.out}/frcnn.json", "w"), indent=2)
