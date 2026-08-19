@@ -106,7 +106,11 @@ meta = {"img_shape": (size, size), "ori_shape": (size, size),
 ds = DetDataSample(); ds.set_metainfo(meta)
 with torch.no_grad():
     try:
-        if getattr(det, "rpn_head", None) is None:
+        # ⚠️ **proposal 파일이 있으면 무조건 그것을 쓴다.** rpn_head 유무로 가르면,
+        #    비표준 RPN 계열(GA·CascadeRPN)에서 기준값만 자기 RPN 을 다시 돌려
+        #    **양쪽이 다른 proposal 로 재게 된다**(실측: guided_anchoring 7.22px).
+        #    러너와 기준값은 같은 파일을 읽어야 비교가 성립한다.
+        if os.environ.get("FRCNN_PROPOSALS"):
             # ⚠️ **proposal 을 밖에서 받는 계열**(FastRCNN). `predict` 는 proposal 을
             #    데이터에서 기대하므로 못 부른다. 러너와 **같은 파일**을 읽어
             #    `roi_head.predict` 에 직접 넣는다 — 각자 만들면 proposal 생성기를 재게 된다.
@@ -161,6 +165,45 @@ x = (np.ascontiguousarray(x) - mean) / std
 np.save(npy, x)
 np.ascontiguousarray(x).tofile(binp)              # HWC 연속 == 러너의 cwhn
 print("PREP_OK mean=%%s std=%%s to_rgb=%%s" %% (list(mean), list(std), to_rgb))
+'''
+
+
+# 계열 자신의 rpn_head 로 proposal 을 뽑는다. 러너·기준값이 **이 파일 하나**를 읽는다.
+PROPS = r'''
+import _stub, os, sys, numpy as np, torch
+from PIL import Image
+cfg, ckpt, size, img, out, want = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], int(sys.argv[6])
+sys.path.insert(0, "%(FE)s")
+try:
+    import mmdet_wrap; mmdet_wrap.allow_mmengine_checkpoint_globals()
+    # ⚠️ GARPNHead 의 MaskedConv2d 는 CUDA 커널만 있다 — CPU 등가 대체를 건다.
+    mmdet_wrap.trace_friendly_ops()
+except Exception:
+    pass
+from mmdet.apis import init_detector
+from frcnn_to_pt import _desync_norm
+from mmdet.structures import DetDataSample
+det = init_detector(_desync_norm(cfg), ckpt, device="cpu"); det.eval()
+dp = det.data_preprocessor
+mean = dp.mean.view(3).numpy() if hasattr(dp, "mean") else np.zeros(3, "float32")
+std  = dp.std.view(3).numpy()  if hasattr(dp, "std")  else np.ones(3, "float32")
+to_rgb = bool(getattr(dp, "_channel_conversion", False))
+im = np.asarray(Image.open(img).convert("RGB").resize((size, size), Image.BILINEAR), dtype="float32")
+x = im if to_rgb else im[:, :, ::-1]
+t = torch.from_numpy(np.ascontiguousarray((np.ascontiguousarray(x) - mean) / std).astype("float32")).permute(2,0,1)[None]
+# ⚠️ `CascadeRPNHead` 는 `pad_shape` 를 읽는다 — 다른 RPN 은 안 읽어서 여태 없었다.
+# 우리는 정사각 한 번 리사이즈라 패딩이 없으므로 img_shape 과 같다.
+ds = DetDataSample(); ds.set_metainfo({"img_shape": (size, size), "ori_shape": (size, size),
+    "pad_shape": (size, size), "scale_factor": (1.0, 1.0), "batch_input_shape": (size, size)})
+with torch.no_grad():
+    feats = det.extract_feat(t)
+    pr = det.rpn_head.predict(feats, [ds], rescale=False)[0]
+b = pr.bboxes.numpy()[:want]
+# ⚠️ **개수를 상한까지 채운다.** SubB 가 그 행 수로 구워져 있어 모자라면 reshape 이 죽는다.
+if len(b) < want:
+    b = np.vstack([b, np.zeros((want - len(b), 4), "float32")])
+np.ascontiguousarray(b, dtype="float32").tofile(out)
+print("PROPS_OK", len(b))
 '''
 
 
@@ -281,14 +324,24 @@ def _one(fam, size, image, workdir, keep, verbose):
     #    ⚠️ 러너와 기준값이 **같은 파일**을 읽는다 — 각자 만들면 생성기를 재게 된다.
     prop_env = {}
     if J.get("external_proposals"):
-        import numpy as _np
-        # 개수는 `frcnn.json` 이 정한다(SubB 가 그 수로 구워졌다). 격자 한 변은 √N.
-        want = int(J.get("rpn_max") or 64)
-        n = int(round(want ** 0.5)); step = size / n
-        boxes = [[c * step, rr * step, (c + 2) * step, (rr + 2) * step]
-                 for rr in range(n) for c in range(n)][:want]
         pf = os.path.join(fr, "proposals.bin")
-        _np.asarray(boxes, dtype="float32").clip(0, size).tofile(pf)
+        want = int(J.get("rpn_max") or 64)
+        if J.get("own_rpn"):
+            # **그 계열 자신의 RPN** 이 낸 proposal 을 쓴다(GARPNHead·CascadeRPNHead).
+            # 호스트가 그 RPN 을 못 깔 뿐, proposal 자체는 이 모델의 것이 정본이다.
+            open(os.path.join(d, "props.py"), "w").write(PROPS % {"FE": FE})
+            rp = run([PY, "props.py", cfg, ckpt, str(size), image, pf, str(want)], d,
+                     {"PYTHONPATH": f"{d}:{FE}"})
+            if not os.path.exists(pf):
+                return fam, "PROPS_FAIL", last_error(rp.stderr)[:110], None
+        else:
+            # RPN 이 **아예 없는** 계열(FastRCNN). 낼 주체가 없으므로 고정 격자를 쓴다 —
+            # 다른 계열의 RPN 을 빌리면 그 계열을 재는 것이 된다.
+            import numpy as _np
+            n = int(round(want ** 0.5)); step = size / n
+            boxes = [[c * step, rr * step, (c + 2) * step, (rr + 2) * step]
+                     for rr in range(n) for c in range(n)][:want]
+            _np.asarray(boxes, dtype="float32").clip(0, size).tofile(pf)
         prop_env = {"FRCNN_PROPOSALS": pf}
     O, RC = int(J["roi_out"]), int(J.get("roi_channels", 256))
     MX = int(J["rpn_max"])

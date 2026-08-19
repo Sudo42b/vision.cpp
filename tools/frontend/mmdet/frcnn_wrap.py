@@ -41,7 +41,10 @@ class FRCNN_SubA(nn.Module):
         #    `rpn_head` 를 아예 안 갖는다(config 에 `test_cfg.rpn` 도 없다). 없는 게
         #    결함이 아니라 그 계열의 정의다 — SubA 는 백본+넥까지만 내고, proposal 은
         #    러너가 파일에서 읽는다.
-        self.rpn_head = getattr(det, "rpn_head", None)
+        rh = getattr(det, "rpn_head", None)
+        # 표준 앵커 RPN 이 아니면 그래프에 안 넣는다(호스트가 디코드를 못 하므로 무의미하다).
+        # proposal 은 밖에서 온다. `frcnn_cfg` 의 판정과 **같은 조건**을 쓴다.
+        self.rpn_head = rh if (rh is not None and hasattr(rh, "prior_generator")) else None
         self.n_roi = _n_roi_levels(det)
         # HTC 계열의 **시맨틱 갈래**. FPN 위에 FCN 을 따로 돌려 나온 융합 feature 를
         # RoIAlign 해서 `bbox_feats` 에 더한다(htc_roi_head.py:99-104).
@@ -260,11 +263,17 @@ def frcnn_cfg(det, size=800):
     #    (strides, scale, ratios) 로 앵커를 깔아 디코드하는 구조라 그대로는 못 쓴다.
     #    **`AttributeError` 로 흘려보내지 말고** 왜 안 되는지 말한다 — 그래야 "미지원" 과
     #    "우리 버그" 가 구분된다.
+    # ⚠️ 표준 앵커 RPN 이 아니면 **거절하지 않고 외부 proposal 로 돌린다.**
+    #    CascadeRPNHead=다단계 정제 · GARPNHead=앵커 모양 예측 · EmbeddingRPNHead=학습된
+    #    proposal — 셋 다 호스트 `rpn_proposals` 로는 못 깐다. 그런데 **RoI head 는 표준**이라
+    #    proposal 만 밖에서 받으면 나머지 경로는 그대로 잰다. proposal 은 그 계열 **자신의
+    #    rpn_head** 가 torch 에서 낸 것을 쓰고, 러너와 기준값이 **같은 파일**을 읽는다.
+    #    ⚠️ 그래서 이 계열의 숫자는 "RPN 까지 검증됐다" 가 아니다 — RPN 은 torch 에서 돈다.
+    # 갈래가 둘이다 — RPN 이 **없는** 계열(FastRCNN)과 **비표준인** 계열(GA·CascadeRPN).
+    # 앞은 낼 주체가 없어 고정 격자를, 뒤는 자기 rpn_head 가 낸 것을 써야 한다.
+    has_own_rpn = rh is not None
     if rh is not None and not hasattr(rh, "prior_generator"):
-        raise NotImplementedError(
-            f"{type(rh).__name__}: 표준 앵커 RPN 이 아니다. "
-            "CascadeRPNHead=다단계 정제(stages), GARPNHead=앵커 모양을 예측, "
-            "EmbeddingRPNHead=학습된 proposal — 각각 호스트 proposal 생성이 달라진다")
+        rh = None                      # 아래부터 외부 proposal 계약으로 간다
     pg = rh.prior_generator if rh is not None else None
     bc = rh.bbox_coder if rh is not None else None
     ext = det.roi_head.bbox_roi_extractor
@@ -406,6 +415,9 @@ def frcnn_cfg(det, size=800):
         # ⚠️ proposal 을 밖에서 받는 계열인가(FastRCNN). 러너는 이 값이 참이면
         #    RPN 계산을 건너뛰고 proposal 파일을 읽는다.
         "external_proposals": rh is None,
+        # 비표준 RPN 이라 외부로 돌린 것인가(참) vs RPN 이 아예 없는 것인가(거짓).
+        # 참이면 하네스가 **그 계열 자신의 rpn_head** 로 proposal 을 뽑는다.
+        "own_rpn": rh is None and has_own_rpn,
         # groie: 러너가 레벨마다 RoIAlign 을 걸어 배치로 이어붙여야 한다(0 이면 평소대로).
         "groie_levels": len(getattr(ext, "featmap_strides", []) or [])
                         if type(ext).__name__ == "GenericRoIExtractor" else 0,

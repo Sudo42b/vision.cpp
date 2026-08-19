@@ -157,7 +157,40 @@ def patch_ops():
     _patch_carafe()
     _patch_swin_mask()
     _patch_sac_dilation()
+    _patch_masked_conv()
 
+
+
+def _patch_masked_conv():
+    """`MaskedConv2d` 를 CPU 에서도 돌게 한다 (guided_anchoring 의 GARPNHead).
+
+    ⚠️ `masked_conv2d` 는 **CUDA 커널만** 있어 CPU 에서
+    `masked_im2col_forward_impl: implementation for device cpu not found` 로 죽는다.
+    그런데 이 연산은 정확도를 위한 게 아니라 **속도 최적화**다 — 마스크가 1인 자리만
+    계산하고 나머지는 0으로 둔다. 즉 `dense conv * mask` 와 값이 같다.
+    등가 대체이므로 수치가 달라지지 않는다(달라지면 그건 이 가정이 틀린 것이다).
+
+    mask 가 None 이면 원래도 평범한 Conv2d 로 떨어지므로 그 경로는 안 건드린다.
+    """
+    try:
+        from mmcv.ops import MaskedConv2d
+    except ImportError:
+        return
+    if getattr(MaskedConv2d.forward, "__module__", "") == __name__:
+        return
+
+    import torch.nn as _nn
+
+    def forward(self, x, mask=None):
+        out = _nn.Conv2d.forward(self, x)
+        if mask is None:
+            return out
+        # mask: (B, H, W) 또는 (B, 1, H, W) — 채널 축으로 브로드캐스트한다.
+        m = mask if mask.dim() == 4 else mask.unsqueeze(1)
+        return out * m.to(out.dtype)
+
+    forward.__module__ = __name__
+    MaskedConv2d.forward = forward
 
 
 def _patch_sac_dilation():
