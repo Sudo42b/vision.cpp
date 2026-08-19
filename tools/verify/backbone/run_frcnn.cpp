@@ -461,6 +461,21 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "sparse 인데 SubB 출력이 %zu 개다(cls/bbox/query 셋 필요)\n", bo.size());
                 return 5;
             }
+            // FRCNN_DEBUG=2 면 stage 0 의 **입력과 출력**을 통째로 남긴다.
+            // 같은 입력을 torch 래퍼에 먹여 대조하면 "그래프가 틀렸나 배관이 틀렸나" 가 갈린다.
+            if (st == 0 && getenv("FRCNN_DEBUG") && std::string(getenv("FRCNN_DEBUG")) == "2") {
+                auto dump = [](const char* nm, std::vector<float> const& v) {
+                    std::ofstream f(nm, std::ios::binary);
+                    f.write(reinterpret_cast<const char*>(v.data()),
+                            (std::streamsize)(v.size() * sizeof(float)));
+                };
+                dump("dbg.in.bin", roi_cwhn);
+                dump("dbg.cls.bin", bo[0]);
+                dump("dbg.box.bin", bo[1]);
+                dump("dbg.obj.bin", bo[2]);
+                fprintf(stderr, "[sparse] stage0 덤프: in %zu · cls %zu · box %zu · obj %zu\n",
+                        roi_cwhn.size(), bo[0].size(), bo[1].size(), bo[2].size());
+            }
             if (getenv("FRCNN_DEBUG")) {
                 float mx = -1e9f;
                 for (float v : bo[0]) mx = std::max(mx, v);
