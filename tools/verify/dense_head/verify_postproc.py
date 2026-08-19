@@ -191,6 +191,20 @@ def main():
                 to_rgb = "c.to_rgb = true" in txt
     print(f"to_rgb={to_rgb} (파라미터 헤더 기준) · thr={thr} · size={size}")
 
+    # ⚠️ **계열에 안 맞는 사진이면 크게 알린다.** MOT 트래커는 보행자 1클래스라 고양이
+    #    사진에서는 양쪽 다 0건이 나오고, 그러면 "한쪽이 비어 비교 불가" 로 끝나 그 계열을
+    #    아예 못 잰다. 이 도구는 이미지를 **인자로** 받으므로 덮어쓰지 않고 경고만 한다 —
+    #    부른 사람이 일부러 골랐을 수 있다(roi 하네스는 기본값일 때만 계열별 지정을 쓴다).
+    try:
+        import mmdet_families as _MF
+        fam = os.path.basename(os.path.dirname(os.path.abspath(cfg)))
+        want = _MF.test_image(fam, image)
+        if os.path.basename(want) != os.path.basename(image):
+            print(f"  ⚠️ '{fam}' 계열 권장 이미지는 {os.path.basename(want)} 인데 "
+                  f"{os.path.basename(image)} 를 받았다 — 0건이면 사진 탓일 수 있다")
+    except Exception:                            # 계열을 못 알아내도 계속 간다
+        pass
+
     got = cpp_boxes(gen, image, size, thr)
     ref = mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb)
     print(f"\nmmdet {len(ref)}건 · run_mmdet {len(got)}건")

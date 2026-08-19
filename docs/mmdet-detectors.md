@@ -288,8 +288,8 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Sixty-seven families produce the same boxes MMDetection does** — thirty-six single-stage
-below, thirty-one two-stage further down. Assembling a head and decoding its output are
+**Seventy-four families produce the same boxes MMDetection does** — thirty-nine single-stage
+below, thirty-five two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
@@ -303,8 +303,10 @@ no label mismatch and no difference in how many boxes survive.
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
 | `cornernet` | `detect_corner` (embedding pairing) | 0.03 px | 0.003 |
+| `bytetrack` | `detect_yolox` (tracker wrapper) | 0.06 px | 0.007 |
 | `ddq` | `detect_detr` (distinct queries) | 0.06 px | 0.018 |
 | `yolof` | `detect_anchor` (ctr_clamp) | 0.12 px | 0.002 |
+| `ocsort` | `detect_yolox` (tracker wrapper) | 0.15 px | 0.041 |
 | `centernet` | `detect_centernet` (heatmap peaks) | 0.13 px | 0.001 |
 | `atss` | `detect_anchor` | 0.14 px | 0.000 |
 | `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
@@ -314,6 +316,7 @@ no label mismatch and no difference in how many boxes survive.
 | `gfl` | `detect_fcos` | 0.23 px | 0.004 |
 | `yolo` | `detect_yolov3` | 0.23 px | 0.005 |
 | `boxinst` | `detect_fcos` (mask branch ignored) | 0.25 px | 0.001 |
+| `strongsort` | `detect_yolox` (tracker wrapper) | 0.25 px | 0.001 |
 | `reppoints` | `detect_fcos` (xyxy offset) | 0.25 px | 0.006 |
 | `retinanet` | `detect_anchor` | 0.27 px | 0.000 |
 | `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
@@ -398,7 +401,7 @@ table, and the two deserve different columns.
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Thirty-one of the forty-five families with a `roi_head` agree —
+and the thresholds are the same. Thirty-five of the forty-five families with a `roi_head` agree —
 forty-five rather than forty because the harness now looks one layer inside wrapper detectors
 (see below):
 
@@ -406,6 +409,9 @@ forty-five rather than forty because the harness now looks one layer inside wrap
 | :--- | :--- | ---: | ---: |
 | `detectors` | `detect_roi` (SAC) | 0.03 px | 0.0006 |
 | `panoptic_fpn` | `detect_roi` | 0.04 px | 0.0001 |
+| `qdtrack` | `detect_roi` (tracker wrapper) | 0.03 px | 0.0003 |
+| `deepsort` | `detect_roi` (tracker wrapper) | 0.04 px | 0.0000 |
+| `sort` | `detect_roi` (tracker wrapper) | 0.04 px | 0.0000 |
 | `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
 | `carafe` | `detect_roi` | 0.06 px | 0.0007 |
 | `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
@@ -413,6 +419,7 @@ forty-five rather than forty because the harness now looks one layer inside wrap
 | `crowddet` | `detect_roi` (set-NMS, 2 instances) | 0.07 px | 0.0001 |
 | `ms_rcnn` | `detect_roi` (+ mask-IoU rescoring) | 0.07 px | 0.0015 |
 | `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
+| `masktrack_rcnn` | `detect_roi` (tracker wrapper) | 0.09 px | 0.0012 |
 | `tridentnet` | `detect_roi` (C4, no neck) | 0.09 px | 0.0013 |
 | `cascade_rcnn` | `detect_roi` (3 stages) | 0.09 px | 0.0025 |
 | `gn` | `detect_roi` | 0.09 px | 0.0003 |
@@ -458,7 +465,8 @@ deferred to `LoadPanopticAnnotations.__init__` (`mmdet/datasets/transforms/loadi
 The discriminating command is
 `python -c "from mmdet.datasets.transforms.loading import LoadPanopticAnnotations as L; L()"`.
 
-`soft_teacher` is the first family measured through a **wrapper**. Trackers and semi-supervised
+All eight **wrapper** families are now measured: seven trackers and one semi-supervised
+detector. Trackers and semi-supervised
 detectors are not detectors themselves: they put one inside `model.detector` and keep only their
 own machinery at the top level, so reading `model.backbone` raises
 `'ConfigDict' object has no attribute 'backbone'` and the export stops. Unwrapping the config
@@ -473,7 +481,26 @@ weights are stored under `teacher.` / `student.` and the config decides which on
 `load_state_dict` reports it and carries on, and the graph is built on random weights — which
 reads as a decode bug, not a loading bug: boxes 562 px out, 91 labels wrong, 100 detections
 against MMDetection's 5. Check the count of unloaded tensors, not whether loading raised.
-Trackers do use `detector.`; only the semi-supervised wrapper differs.
+Trackers mostly use `detector.`, but not all of them: MMDetection ships some tracker weights as
+the **detector alone**, already flat (`deepsort`, `sort` and `strongsort` are keyed
+`backbone.` / `neck.` / `bbox_head.`). So a prefix that matches nothing means one of two things,
+and they need opposite handling — already-flat, which should be used as-is, or a wrong guess,
+which must stop. Every detector has a `backbone`, and that is the signature that separates them.
+
+The other half of a wrapper is its `data_preprocessor`, and it is easy to drop. Six of the seven
+trackers declare it on the **wrapper** and give the inner detector none (`soft_teacher` is the
+exception, which is why it worked first). Unwrap without carrying it down and normalisation
+disappears — mean 0, std 1 — and the detector returns nothing at all. The reference side reads
+the same unwrapped config, so both sides return nothing; the harness reports `EMPTY` rather than
+a pass, so the failure is visible, but the family cannot be measured until the preprocessor comes
+down with it. The wrapper's preprocessor is a `TrackDataPreprocessor`, which expects video-shaped
+batches, so it is rewritten to `DetDataPreprocessor` on the way down — same numbers, no trap for
+whoever opens the dumped config with `inference_detector`.
+
+Trackers are trained on pedestrians with `num_classes=1`, so the harness picks a test image per
+family (`mmdet_families.test_image`); the cat photo the other families use yields no detections
+on either side, which reports as `EMPTY`. The chosen image is printed beside the numbers
+whenever it differs from the default, so a zero can be told apart from a wrong photo later.
 
 `fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export

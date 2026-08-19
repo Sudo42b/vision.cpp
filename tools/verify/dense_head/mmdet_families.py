@@ -19,6 +19,33 @@ SKIP_DIRS = {"_base_", "common", "misc", "legacy_1.x", "strong_baselines", "self
              "scratch", "dsdl", "objects365", "lvis", "openimages", "cityscapes", "wider_face",
              "pascal_voc", "deepfashion", "v3det"}
 
+# 계열별 시험 이미지. **여기 없으면 하네스의 기본 이미지를 쓴다.**
+#
+# ⚠️ 왜 필요한가 — MOT 트래커는 `num_classes=1`(보행자)로 학습됐다. 고양이 사진을 넣으면
+#    mmdet 쪽도 우리 쪽도 **0건**이 나온다. 그러면 하네스가 `EMPTY`("한쪽이 비었다")를
+#    내므로 **조용히 통과하지는 않지만**, 그 계열을 아예 못 재게 된다. 못 잰 것을
+#    "대상이 못 한다" 로 적지 않으려면 맞는 사진을 줘야 한다.
+#
+# `bench-image.jpg` 는 이미 저장소에 있고(새 자산·라이선스 불필요) 다섯 계열 전부에서
+# 2~5건이 나오는 것을 실측했다(2026-08-19, 800px·score>0.30):
+#   deepsort 2 · sort 2 · qdtrack 3 · masktrack_rcnn 5 · bytetrack 2
+_IMAGE = {f: "bench-image.jpg" for f in
+          ("bytetrack", "deepsort", "ocsort", "qdtrack", "sort", "strongsort",
+           "masktrack_rcnn")}
+# 이미지는 **저장소 안**에 있다. 사용자가 준 `--image` 의 디렉토리에서 찾으면
+# 엉뚱한 곳(`~/pics/bench-image.jpg`)을 가리키고, 상대경로면 하위 프로세스의 cwd 로 풀린다.
+_IMG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                        "..", "..", "..", "tests", "input"))
+
+
+def test_image(fam, default):
+    """이 계열로 잴 때 쓸 이미지 경로. 지정이 없거나 파일이 없으면 `default` 그대로."""
+    name = _IMAGE.get(fam)
+    if not name:
+        return default
+    p = os.path.join(_IMG_DIR, name)
+    return p if os.path.exists(p) else default
+
 
 def pick_cfgs(fam_dir):
     """대표 config 후보(점수순). `_` 로 시작하거나 `_base` 로 끝나는 뼈대는 뺀다.

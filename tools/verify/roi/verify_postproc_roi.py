@@ -42,6 +42,7 @@ MM = os.path.expanduser(os.environ.get("MMDET", "~/mmbuild/mmdetection"))
 CFGS = os.path.join(MM, "configs")
 CKPTS = os.path.join(MM, "checkpoints")
 BUILD = os.environ.get("VISP_BUILD", os.path.join(V, "build"))
+DEFAULT_IMAGE = os.path.join(V, "tests", "input", "cat-and-hat.jpg")
 PY = sys.executable
 
 sys.path.insert(0, DH)
@@ -194,6 +195,12 @@ def one(fam, size, image, workdir, keep, verbose):
 
 
 def _one(fam, size, image, workdir, keep, verbose):
+    # ⚠️ **계열마다 시험 이미지가 다를 수 있다.** MOT 트래커는 보행자 1클래스라 고양이
+    #    사진에서는 양쪽 다 0건이 나온다. 그때는 `match()` 가 None 을 돌려 `EMPTY` 로
+    #    보고되므로 **조용히 통과하지는 않지만**, 그 계열을 아예 못 재게 된다.
+    # `image` 가 None 이면 기본값이고, 그때만 계열별 지정이 끼어든다.
+    default_image = DEFAULT_IMAGE
+    image = MF.test_image(fam, DEFAULT_IMAGE) if image is None else image
     import numpy as np
     t0 = time.time()
     d = os.path.join(workdir, fam)
@@ -382,6 +389,10 @@ from shared.compile.pipeline import main; main()
     ok = worst_b < BOX_TOL and worst_s < SCORE_TOL and bad_label == 0 and n_gap == 0
     note = (f"박스 {worst_b:.2f}px · 점수 {worst_s:.4f} · 라벨 {bad_label} · 개수차 {n_gap}"
             f" · {len(ref)}/{len(got)}건")
+    # 계열마다 이미지가 다를 수 있으므로 **무엇으로 쟀는지**를 숫자 옆에 남긴다.
+    # 안 적으면 나중에 0건이 "대상이 못 한다" 인지 "안 맞는 사진을 넣었다" 인지 못 가른다.
+    if os.path.basename(image) != os.path.basename(default_image):
+        note += f" · {os.path.basename(image)}"
     if verbose and rows:
         for r, g, db in rows:
             print(f"     {int(r[5]):4d} [{r[0]:6.1f},{r[1]:6.1f},{r[2]:6.1f},{r[3]:6.1f}] {r[4]:.3f}"
@@ -423,7 +434,11 @@ def main():
     ap.add_argument("families", nargs="*")
     ap.add_argument("--all", action="store_true", help="two-stage 로 판정된 계열 전부")
     ap.add_argument("--size", type=int, default=800)
-    ap.add_argument("--image", default=os.path.join(V, "tests", "input", "cat-and-hat.jpg"))
+    # ⚠️ 기본값일 때만 계열별 이미지가 끼어든다. 사용자가 `--image` 를 **명시하면**
+    #    그 뜻을 존중해 전 계열에 그대로 쓴다 — 안 그러면 특정 계열에 다른 사진을 넣어
+    #    볼 방법이 없다.
+    ap.add_argument("--image", default=None,
+                    help="기본: tests/input/cat-and-hat.jpg. 명시하면 계열별 지정을 무시한다")
     ap.add_argument("--workdir", default="/tmp/visp-postproc-roi")
     ap.add_argument("--keep", action="store_true", help="중간 산출물(.pt·gguf·러너)을 남긴다")
     # ⚠️ **이미 통과한 계열을 다시 굽지 마라.** 계열 하나가 40~90초이고 그중 42% 가 g2c
@@ -446,7 +461,10 @@ def main():
         # 건너뛴 것을 **말한다.** 조용히 줄이면 다음 사람이 "전부 쟀다" 로 읽는다.
         print(f"이전 PASS {len(done)}계열 건너뜀: {' '.join(done)}\n")
     os.makedirs(a.workdir, exist_ok=True)
-    print(f"size={a.size} · image={os.path.basename(a.image)} · thr={THR}"
+    # 배너가 거짓말하지 않게 — 계열별 지정이 끼어들 수 있으면 그렇다고 적는다.
+    img_note = os.path.basename(a.image) if a.image else \
+        f"{os.path.basename(DEFAULT_IMAGE)} (계열별 지정 적용)"
+    print(f"size={a.size} · image={img_note} · thr={THR}"
           f" · 판정: 박스<{BOX_TOL}px 점수<{SCORE_TOL} 라벨0 개수차0")
     print(f"{len(fams)}계열: {' '.join(fams)}\n")
 
