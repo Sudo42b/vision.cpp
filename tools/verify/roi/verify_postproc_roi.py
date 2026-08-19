@@ -47,6 +47,17 @@ PY = sys.executable
 sys.path.insert(0, DH)
 import mmdet_families as MF                                   # noqa: E402
 
+# 트래커·반지도 래퍼의 껍데기를 벗기는 전처리기. dense_head 하네스가 쓰는 것과 **같은 파일**이다
+# (`verify.toml` 의 `unwrap`). 둘이 서로 다른 것을 쓰면 같은 계열이 다르게 풀린다.
+# ⚠️ **서브프로세스로 부르지 않는다.** 계열마다 파이썬을 새로 띄우면 `import mmdet` 재비용
+#    (실측 5.95초)이 그대로 붙는다 — 두 번 부르니 계열당 ~5초, 40계열이면 3분이다.
+#    이 하네스는 이미 부모에서 `mmengine.config` 를 쓴다(`two_stage_families()`).
+sys.path.insert(0, os.path.join(G2C, "test_script", "mmdet"))
+try:
+    import mmdet_unwrap_config as UW                          # noqa: E402
+except ImportError:                                           # 전처리기가 없는 트리
+    UW = None
+
 # mmpretrain 의 blip 이 이 조합에서 import 시 죽는다 — 하위 프로세스에도 같은 우회를 심는다.
 STUB = '''import sys, types
 for n in ("mmpretrain.models.multimodal.blip", "mmpretrain.models.multimodal.blip.language_model"):
@@ -166,6 +177,23 @@ def match(ref, got):
 
 
 def one(fam, size, image, workdir, keep, verbose):
+    """`_one` 을 돌리고, 벗긴 체크포인트를 **어느 경로로 끝나든** 지운다.
+
+    ⚠️ 본문의 `rmtree(fr)` 은 **성공 경로에서만** 닿는다. EXPORT_FAIL·COMPILE_FAIL 등
+    조기 반환이 일곱 군데인데, 래퍼 계열의 벗긴 `.pth` 는 계열당 150~500MB 라
+    실패가 몇 개만 나도 스윕이 수 GB 를 남긴다.
+    """
+    try:
+        return _one(fam, size, image, workdir, keep, verbose)
+    finally:
+        if not keep:
+            try:
+                os.remove(os.path.join(workdir, fam, "frcnn", f"{fam}.ckpt.pth"))
+            except OSError:
+                pass
+
+
+def _one(fam, size, image, workdir, keep, verbose):
     import numpy as np
     t0 = time.time()
     d = os.path.join(workdir, fam)
@@ -182,8 +210,33 @@ def one(fam, size, image, workdir, keep, verbose):
     if not os.path.exists(ckpt):
         return fam, "CKPT_MISSING", ckpt_name, None
 
-    # ① export — two-stage 를 두 subgraph 로 가른다. 여기서 죽으면 "왜" 를 그대로 옮긴다.
+    # ⚠️ **트래커·반지도 래퍼는 config 를 한 겹 벗겨야 한다.** `SoftTeacher`·`DeepSORT` 등은
+    #    검출기를 `model.detector` 안에 넣고 자기는 껍데기(tracker/reid/semi_train_cfg)만 갖는다
+    #    → `'ConfigDict' object has no attribute 'backbone'` 으로 export 에서 죽는다.
+    #    dense_head 하네스는 이미 이 단계를 갖고 있었고 여기만 없어서, 안쪽이 이미 통과한
+    #    검출기인 8계열이 통째로 못 걸리고 있었다. 풀 필요 없는 config 는 원본을 그대로
+    #    돌려주므로 분기 없이 전부 통과시킨다. 체크포인트도 같이 벗긴다(아래 순서 주의).
     fr = os.path.join(d, "frcnn")
+    if UW is not None:
+        # ⚠️ **체크포인트를 먼저, config 를 나중에.** 접두사는 **원본** config 의
+        #    `semi_test_cfg.predict_on` 이 정하는데 벗긴 config 에는 그 키가 없다.
+        #    순서를 바꾸면 한 텐서도 안 실리고, 그런데도 로드는 조용히 성공해서
+        #    가중치가 랜덤인 채로 박스가 수백 px 어긋난다(soft_teacher 562px 로 겪었다).
+        #    산출물은 **`fr` 안에** 둔다 — 정리(`rmtree(fr)`)에 같이 쓸려 나가야 한다.
+        #    계열 밖에 두면 벗긴 체크포인트(계열당 150~500MB)가 실행마다 쌓인다.
+        #    ⚠️ **둘 다 되거나 둘 다 안 되거나여야 한다.** 체크포인트만 벗기고 config 를
+        #    못 벗기면(또는 반대면) 짝이 어긋나 위와 똑같은 사고가 난다. 하나라도 실패하면
+        #    **둘 다 원본으로 되돌린다.**
+        cfg0, ckpt0 = cfg, ckpt
+        try:
+            ckpt = UW.unwrap_checkpoint(cfg0, ckpt0, os.path.join(fr, f"{fam}.ckpt.pth"))
+            cfg = UW.unwrap_config(cfg0, os.path.join(fr, f"{fam}.cfg.py"))
+        except Exception as e:
+            cfg, ckpt = cfg0, ckpt0
+            print(f"  [unwrap] 실패 — 원본으로 되돌린다: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+
+    # ① export — two-stage 를 두 subgraph 로 가른다. 여기서 죽으면 "왜" 를 그대로 옮긴다.
     # ⚠️ **단계마다 산출물을 먼저 지운다.** 존재 검사만 하면 이번 실행이 실패해도 지난
     #    실행의 것이 남아 있어 **그대로 통과한다** — 고친 코드가 반영 안 된 숫자를
     #    "통과" 로 보고하게 된다. 공유 코드를 자주 고치는 날에는 이게 제일 위험하다
@@ -339,7 +392,15 @@ from shared.compile.pipeline import main; main()
 
 
 def two_stage_families():
-    """config 로 판정한다 — 이름으로 짐작하지 않는다. roi_head 가 있으면 two-stage."""
+    """config 로 판정한다 — 이름으로 짐작하지 않는다. roi_head 가 있으면 two-stage.
+
+    ⚠️ **래퍼는 한 겹 안을 본다.** 트래커·반지도는 `roi_head` 를 `model.detector` 안에
+    넣으므로 최상위만 보면 통째로 빠진다 — 그러면 통과한 계열이 회귀 검사를 **안 받는다.**
+    안 재는 것이 실패보다 위험하다(안 재면 아무도 모른다).
+
+    안쪽이 one-stage 인 래퍼(YOLOX 기반 bytetrack·ocsort·strongsort)는 여기 안 걸린다.
+    그건 dense_head 하네스 몫이다 — 이 함수는 `roi_head` 유무로만 가른다.
+    """
     from mmengine.config import Config
     out = []
     for fam, cfg_rel, _ in MF.families(CFGS):
@@ -347,6 +408,11 @@ def two_stage_families():
             m = Config.fromfile(os.path.join(CFGS, cfg_rel)).get("model", {})
         except Exception:
             continue
+        # 안쪽 키 목록은 전처리기와 **한 곳**에서 온다. 여기 따로 적으면 한쪽이 늘 때
+        # 다른 쪽이 안 따라가고, 같은 계열이 두 하네스에서 다르게 분류된다.
+        keys = getattr(UW, "_INNER_KEYS", ("detector",)) if UW else ("detector",)
+        if not m.get("roi_head") and "backbone" not in m:
+            m = next((m[k] for k in keys if isinstance(m.get(k), dict)), m)
         if m.get("roi_head"):
             out.append(fam)
     return out

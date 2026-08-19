@@ -537,13 +537,37 @@ def one(fam, rel, ckpt):
     #    `'ConfigDict' object has no attribute 'backbone'` 으로 죽는다.
     #    저장소에 전처리기가 이미 있다(`mmdet_unwrap_config.py`). 풀 필요 없는 config 는
     #    원본을 그대로 돌려주므로 분기 없이 전부 통과시킨다.
+    #    ⚠️ **config 만 벗기면 안 된다 — 체크포인트도 같이 벗겨야 한다.** 여기가 오래
+    #    반쪽이었다: 벗긴 config 는 `backbone.…` 을 기대하는데 래퍼 체크포인트는
+    #    `detector.backbone.…`(트래커) 또는 `teacher.…`(반지도)로 저장돼 있다.
+    #    이름이 안 맞으면 **한 텐서도 안 실리는데** `load_checkpoint` 는 조용히 넘어가고,
+    #    이 하네스의 기준값은 그 `bb.pt` 자신이라 **랜덤 가중치끼리 일치해 PASS 가 뜬다.**
+    #    실제로 soft_teacher 가 L1 1.04e-03 로 통과했는데 체크포인트 일치는 0/348 이었다.
+    #    ⚠️ **체크포인트를 먼저, config 를 나중에.** 접두사는 원본 config 의
+    #    `semi_test_cfg.predict_on` 이 정하는데 벗긴 config 에는 그 키가 없다.
+    #    하나라도 실패하면 **둘 다 원본으로 되돌린다**(짝이 어긋나는 게 더 나쁘다).
     if os.path.exists(UNWRAP):
-        ru = run([PY, UNWRAP, cfg_path, "-o", os.path.join(d, "cfg.py")],
-                 os.path.dirname(os.path.dirname(os.path.dirname(UNWRAP))), phase="0_unwrap")
-        if ru is not None and ru.returncode == 0:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(UNWRAP)))
+        cfg0, cw0 = cfg_path, cw
+
+        def _unwrap(out_name, *extra):
+            ru = run([PY, UNWRAP, cfg0, "-o", os.path.join(d, out_name), *extra],
+                     base, phase="0_unwrap")
+            if ru is None or ru.returncode != 0:
+                raise RuntimeError((ru.stderr or "").strip().splitlines()[-1:] or "unwrap 실패")
             lines = (ru.stdout or "").strip().splitlines()
-            if lines and os.path.exists(lines[-1].strip()):
-                cfg_path = lines[-1].strip()
+            last = lines[-1].strip() if lines else ""
+            if not (last and os.path.exists(last)):
+                raise RuntimeError(f"경로를 못 받았다: {last!r}")
+            return last
+
+        try:
+            cw = _unwrap("ckpt.pth", "--checkpoint", cw0)
+            cfg_path = _unwrap("cfg.py")
+        except Exception as e:
+            cfg_path, cw = cfg0, cw0
+            print(f"  [unwrap] 실패 — 원본으로 되돌린다: {type(e).__name__}: {e}",
+                  file=sys.stderr)
     # ⚠️ **먼저 지운다.** export 가 실패해도 지난 실행의 bb.pt/헤더가 남아 있으면 아래 존재
     #    검사를 통과해 **낡은 산출물로 계속 간다** — 그러면 고친 것이 반영 안 된 채 통과/실패가
     #    나온다(dab_detr 에서 실제로 겪었다: 헤더에 새 플래그가 없는데 조용히 진행됐다).

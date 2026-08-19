@@ -288,8 +288,8 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Sixty-six families produce the same boxes MMDetection does** — thirty-six single-stage
-below, thirty two-stage further down. Assembling a head and decoding its output are
+**Sixty-seven families produce the same boxes MMDetection does** — thirty-six single-stage
+below, thirty-one two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
@@ -398,7 +398,9 @@ table, and the two deserve different columns.
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Thirty of the forty families with a `roi_head` agree:
+and the thresholds are the same. Thirty-one of the forty-five families with a `roi_head` agree —
+forty-five rather than forty because the harness now looks one layer inside wrapper detectors
+(see below):
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
@@ -432,6 +434,7 @@ and the thresholds are the same. Thirty of the forty families with a `roi_head` 
 | `fpg` | `detect_roi` (at 1024) | 0.28 px | 0.0036 |
 | `dcn` | `detect_roi` | 0.37 px | 0.0002 |
 | `instaboost` | `detect_roi` | 0.39 px | 0.0079 |
+| `soft_teacher` | `detect_roi` (semi-supervised wrapper) | 0.42 px | 0.0017 |
 
 `panoptic_fpn` is back in the table, and the round trip it took is the useful part. It was
 recorded at 0.04 px, then removed when the harness started deleting each stage's outputs before
@@ -454,6 +457,23 @@ Checking this needs the failing call, not an import. `import panopticapi` and ev
 deferred to `LoadPanopticAnnotations.__init__` (`mmdet/datasets/transforms/loading.py:572`).
 The discriminating command is
 `python -c "from mmdet.datasets.transforms.loading import LoadPanopticAnnotations as L; L()"`.
+
+`soft_teacher` is the first family measured through a **wrapper**. Trackers and semi-supervised
+detectors are not detectors themselves: they put one inside `model.detector` and keep only their
+own machinery at the top level, so reading `model.backbone` raises
+`'ConfigDict' object has no attribute 'backbone'` and the export stops. Unwrapping the config
+fixes the export, and the harness now also looks one layer inside when it decides which families
+are two-stage — otherwise a family that passes is never swept again.
+
+Unwrapping the config is only half of it, and the other half fails silently. The checkpoint is
+keyed by the **attribute name the wrapper class created**, which is not the config key: both
+write `model.detector`, but `SoftTeacher` builds `self.student` and `self.teacher`, so its
+weights are stored under `teacher.` / `student.` and the config decides which one inference uses
+(`semi_test_cfg.predict_on`). Stripping `detector.` from such a checkpoint matches nothing,
+`load_state_dict` reports it and carries on, and the graph is built on random weights — which
+reads as a decode bug, not a loading bug: boxes 562 px out, 91 labels wrong, 100 detections
+against MMDetection's 5. Check the count of unloaded tensors, not whether loading raised.
+Trackers do use `detector.`; only the semi-supervised wrapper differs.
 
 `fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
