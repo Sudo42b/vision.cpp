@@ -273,6 +273,18 @@ def frcnn_cfg(det, size=800):
     # 앞은 낼 주체가 없어 고정 격자를, 뒤는 자기 rpn_head 가 낸 것을 써야 한다.
     has_own_rpn = rh is not None
     if rh is not None and not hasattr(rh, "prior_generator"):
+        # ⚠️ **외부 proposal 로 돌릴 수 있는 건 RoI head 가 표준일 때뿐이다.**
+        #    `EmbeddingRPNHead`(sparse_rcnn·queryinst)는 RPN 만 다른 게 아니라
+        #    `SparseRoIHead` 6단계 DIIHead 로 **디코드 규약 자체가 다르다**
+        #    (`test_cfg.rcnn` 에 score_thr·NMS 가 없고 DETR 처럼 top-k 를 쓴다).
+        #    proposal 을 넣어줘도 안 열리므로 **왜 안 되는지 말하고 멈춘다** —
+        #    그냥 두면 저 아래에서 `AttributeError: no attribute 'score_thr'` 로 죽어
+        #    "미지원" 인지 "우리 버그" 인지 구분이 안 된다.
+        if type(rh).__name__ == "EmbeddingRPNHead":
+            raise NotImplementedError(
+                f"{type(rh).__name__}: 학습된 proposal + SparseRoIHead 6단계 DIIHead. "
+                "RPN 만의 문제가 아니라 디코드 규약이 다르다(score_thr·NMS 없이 DETR 식 top-k) "
+                "— 조립기를 새로 짜야 한다")
         rh = None                      # 아래부터 외부 proposal 계약으로 간다
     pg = rh.prior_generator if rh is not None else None
     bc = rh.bbox_coder if rh is not None else None
@@ -283,8 +295,18 @@ def frcnn_cfg(det, size=800):
     # ⚠️ bbox extractor 가 `GenericRoIExtractor` 면 **레벨을 고르지 않고 전 레벨을 합친다**
     #    (게다가 groie 는 레벨마다 5x5 conv + GeneralizedAttention 을 건다). 호스트
     #    RoIAlign 은 그걸 표현 못 한다 — 조용히 레벨 선택으로 떨어뜨리면 값만 틀린다.
-    # GenericRoIExtractor(groie)는 이제 지원한다 — 러너가 레벨별로 RoIAlign 을 걸어
-    # 배치로 이어붙이고, SubB 가 pre→합산→post 를 그래프 안에서 한다.
+    # GenericRoIExtractor(groie): **집계 경로는 지원한다** — 러너가 레벨별로 RoIAlign 을
+    # 걸어 배치로 이어붙이고, SubB 가 pre→합산→post 를 그래프 안에서 한다.
+    # ⚠️ 다만 `post_cfg` 가 `GeneralizedAttention` 이면 아직 못 굽는다. 위치 임베딩
+    #    broadcast 가 **5차원**인데 ggml 은 4D 까지라, 렌더러가 `ggml_cont` 로 떨어뜨리고
+    #    (생성 코드에 `repeat [N,6,7,4,42]` 주석이 남는다) 뒤의 add 가
+    #    `GGML_ASSERT(ggml_can_repeat)` 로 죽는다. 러너 크래시로 흘려보내지 말고
+    #    **여기서 이유를 말한다** — 렌더러 작업이지 하네스 작업이 아니다.
+    if type(ext).__name__ == "GenericRoIExtractor" and getattr(ext, "with_post", False):
+        if type(getattr(ext, "post_module", None)).__name__ == "GeneralizedAttention":
+            raise NotImplementedError(
+                "GenericRoIExtractor + GeneralizedAttention: 집계는 되지만 post 의 위치 임베딩 "
+                "broadcast 가 5차원이라 ggml(4D)로 못 편다 — g2c 렌더러 작업이다")
     bh = det.roi_head.bbox_head
     # 캐스케이드는 bbox_head 도 ModuleList 다. 클래스 수·coder 종류는 단계 공통이라
     # **마지막 단계**를 쓴다(최종 박스를 내는 단계라 디코드 규약이 거기 맞춰져 있다).
