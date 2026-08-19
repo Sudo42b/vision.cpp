@@ -22,110 +22,7 @@ import sys
 
 # (계열, config, 학습된 체크포인트). **랜덤 초기화로 재지 않는다** — 항등 초기값이
 # 빠진 연산을 덮어 검증을 통과시킨다(group_norm affine 이 실제로 그랬다).
-FAMILIES = [
-    ("retinanet", "retinanet/retinanet_r18_fpn_1x_coco.py",
-     "retinanet_r18_fpn_1x_coco_20220407_171055-614fd399.pth"),
-    ("atss", "atss/atss_r50_fpn_1x_coco.py",
-     "atss_r50_fpn_1x_coco_20200209-985f7bd0.pth"),
-    ("paa", "paa/paa_r50_fpn_1x_coco.py",
-     "paa_r50_fpn_1x_coco_20200821-936edec3.pth"),
-    ("fcos", "fcos/fcos_r50-caffe_fpn_gn-head_1x_coco.py",
-     "fcos_r50_caffe_fpn_gn-head_1x_coco-821213aa.pth"),
-    ("gfl", "gfl/gfl_r50_fpn_1x_coco.py",
-     "gfl_r50_fpn_1x_coco_20200629_121244-25944287.pth"),
-    ("vfnet", "vfnet/vfnet_r50_fpn_1x_coco.py",
-     "vfnet_r50_fpn_1x_coco_20201027-38db6f58.pth"),
-    ("reppoints", "reppoints/reppoints-moment_r50_fpn_1x_coco.py",
-     "reppoints_moment_r50_fpn_1x_coco_20200330-b73db8d1.pth"),
-    ("tood", "tood/tood_r50_fpn_1x_coco.py",
-     "tood_r50_fpn_1x_coco_20211210_103425-20e20746.pth"),
-
-    # ⚠️ `reid` 는 **자기 metafile 에 가중치가 없다** — metafile 만 보면 `CKPT_NONE` 으로
-    #    멈춘다. 학습 가중치는 없는 게 아니라 **다른 데 있다**: 트래커 config 가
-    #    `reid.init_cfg.checkpoint` 로 가리킨다(deepsort·sort 가 같은 것을 쓴다).
-    ("reid", "reid/reid_r50_8xb32-6e_mot15train80_test-mot15val20.py",
-     "tracktor_reid_r50_iter25245-a452f51f.pth"),
-
-    # 위 8계열의 head 를 **그대로 상속**한 계열들. 손실이나 백본만 다르므로 조립기는
-    # 같은 것을 탄다. 새 함수를 쓰기 전에 이런 게 있는지 먼저 본다.
-    ("ghm", "ghm/retinanet_r50_fpn_ghm-1x_coco.py",              # RetinaHead
-     "retinanet_ghm_r50_fpn_1x_coco_20200130-a437fda3.pth"),
-    ("pvt", "pvt/retinanet_pvt-t_fpn_1x_coco.py",                # RetinaHead
-     "retinanet_pvt-t_fpn_1x_coco_20210831_103110-17b566bd.pth"),
-    ("free_anchor", "free_anchor/freeanchor_r50_fpn_1x_coco.py", # RetinaHead 상속
-     "retinanet_free_anchor_r50_fpn_1x_coco_20200130-0f67375f.pth"),
-    ("fsaf", "fsaf/fsaf_r50_fpn_1x_coco.py",                     # RetinaHead 상속
-     "fsaf_r50_fpn_1x_coco-94ccc51f.pth"),
-    ("dyhead", "dyhead/atss_r50-caffe_fpn_dyhead_1x_coco.py",    # ATSSHead
-     "atss_r50_fpn_dyhead_for_reproduction_4x4_1x_coco_20220107_213939-162888e6.pth"),
-    ("nas_fcos", "nas_fcos/nas-fcos_r50-caffe_fpn_nashead-gn-head_4xb4-1x_coco.py",  # FCOSHead
-     "nas_fcos_nashead_r50_caffe_fpn_gn-head_4x4_1x_coco_20200520-1bdba3ce.pth"),
-    ("ld", "ld/ld_r50-gflv1-r101_fpn_1x_coco.py",                # GFLHead 상속
-     "ld_r50_gflv1_r101_fpn_coco_1x_20220629_145355-8dc5bad8.pth"),
-    ("lad", "lad/lad_r101-paa-r50_fpn_2xb8_coco_1x.py",          # PAAHead 상속
-     "lad_r101_paa_r50_fpn_coco_1x_20220708_124357-9407ac54.pth"),
-
-
-    # ── 텍스트+이미지 계열 ─────────────────────────────────────────────────
-    # 언어 모델(BERT)이 함께 들어 있다. head 는 ATSS/DINO 계열을 상속하므로 조립기가
-    # 있을 수도 있는데, **재본 적이 없어서** 결과를 말할 수 없었다 → 체크포인트를 받아 등록한다.
-    ("glip", "glip/glip_atss_swin-t_a_fpn_dyhead_pretrain_obj365.py",
-     "glip_tiny_a_mmdet-b3654169.pth"),
-    ("grounding_dino", "grounding_dino/grounding_dino_swin-t_finetune_16xb2_1x_coco.py",
-     "groundingdino_swint_ogc_mmdet-822d7e9d.pth"),
-    ("mm_grounding_dino", "mm_grounding_dino/grounding_dino_swin-t_pretrain_obj365.py",
-     "grounding_dino_swin-t_pretrain_obj365_goldg_grit9m_v3det_20231204_095047-b448804b.pth"),
-
-    # ── 아직 조립기가 없는 계열 ─────────────────────────────────────────────
-    # 여기 있다고 지원한다는 뜻이 아니다. **어디서 어떻게 막히는지 재려고** 둔다 —
-    # 실패도 기록해야 다음 사람이 같은 걸 다시 조사하지 않는다.
-    ("ddod", "ddod/ddod_r50_fpn_1x_coco.py",
-     "ddod_r50_fpn_1x_coco_20220523_223737-29b2fc67.pth"),
-    ("autoassign", "autoassign/autoassign_r50-caffe_fpn_1x_coco.py",
-     "auto_assign_r50_fpn_1x_coco_20210413_115540-5e17991f.pth"),
-    ("foveabox", "foveabox/fovea_r50_fpn_4xb4-1x_coco.py",
-     "fovea_r50_fpn_4x4_1x_coco_20200219-ee4d5303.pth"),
-    ("yolof", "yolof/yolof_r50-c5_8xb8-1x_coco.py",
-     "yolof_r50_c5_8x8_1x_coco_20210425_024427-8e864411.pth"),
-    ("efficientnet", "efficientnet/retinanet_effb3_fpn_8xb4-crop896-1x_coco.py",
-     "retinanet_effb3_fpn_crop896_8x4_1x_coco_20220322_234806-615a0dda.pth"),
-    ("nas_fpn", "nas_fpn/retinanet_r50_fpn_crop640-50e_coco.py",
-     "retinanet_r50_fpn_crop640_50e_coco-9b953d76.pth"),
-    ("ssd", "ssd/ssd300_coco.py",
-     "ssd300_coco_20210803_015428-d231a06e.pth"),
-    ("yolo", "yolo/yolov3_d53_8xb8-320-273e_coco.py",
-     "yolov3_d53_320_273e_coco-421362b6.pth"),
-    ("yolox", "yolox/yolox_s_8xb8-300e_coco.py",
-     "yolox_s_8x8_300e_coco_20211121_095711-4592a793.pth"),
-    ("rtmdet", "rtmdet/rtmdet_tiny_8xb32-300e_coco.py",
-     "rtmdet_tiny_8xb32-300e_coco_20220902_112414-78e30dcc.pth"),
-    ("centernet", "centernet/centernet_r18-dcnv2_8xb16-crop512-140e_coco.py",
-     "centernet_resnet18_dcnv2_140e_coco_20210702_155131-c8cd631f.pth"),
-    ("cornernet", "cornernet/cornernet_hourglass104_10xb5-crop511-210e-mstest_coco.py",
-     "cornernet_hourglass104_mstest_10x5_210e_coco_20200824_185720-5fefbf1c.pth"),
-    ("centripetalnet", "centripetalnet/centripetalnet_hourglass104_16xb6-crop511-210e-mstest_coco.py",
-     "centripetalnet_hourglass104_mstest_16x6_210e_coco_20200915_204804-3ccc61e5.pth"),
-    ("yolact", "yolact/yolact_r50_1xb8-55e_coco.py",
-     "yolact_r50_1x8_coco_20200908-f38d58df.pth"),
-    ("condinst", "condinst/condinst_r50_fpn_ms-poly-90k_coco_instance.py",
-     "condinst_r50_fpn_ms-poly-90k_coco_instance_20221129_125223-4c186406.pth"),
-    ("boxinst", "boxinst/boxinst_r50_fpn_ms-90k_coco.py",
-     "boxinst_r50_fpn_ms-90k_coco_20221228_163052-6add751a.pth"),
-
-    # DETR 계열 — transformer decoder 라 conv 타워 구조 자체가 없다. 별개 작업이다.
-    ("detr", "detr/detr_r50_8xb2-150e_coco.py",
-     "detr_r50_8xb2-150e_coco_20221023_153551-436d03e8.pth"),
-    ("conditional_detr", "conditional_detr/conditional-detr_r50_8xb2-50e_coco.py",
-     "conditional-detr_r50_8xb2-50e_coco_20221121_180202-c83a1dc0.pth"),
-    ("dab_detr", "dab_detr/dab-detr_r50_8xb2-50e_coco.py",
-     "dab-detr_r50_8xb2-50e_coco_20221122_120837-c1035c8c.pth"),
-    ("deformable_detr", "deformable_detr/deformable-detr_r50_16xb2-50e_coco.py",
-     "deformable-detr_r50_16xb2-50e_coco_20221029_210934-6bc7d21b.pth"),
-    ("dino", "dino/dino-4scale_r50_8xb2-12e_coco.py",
-     "dino-4scale_r50_8xb2-12e_coco_20221202_182705-55b2bba2.pth"),
-    ("ddq", "ddq/ddq-detr-4scale_r50_8xb2-12e_coco.py",
-     "ddq-detr-4scale_r50_8xb2-12e_coco_20230809_170711-42528127.pth"),
-]
+# 손목록은 `mmdet_families.OVERRIDE` 로 옮겼다 — two-stage 하네스도 같은 것을 봐야 한다.
 # 설정은 **파일**에서 온다(`verify.toml`). 환경변수로 받으면 어떤 값으로 잰 숫자인지
 # 로그에 안 남아 재현이 안 된다. 덮어쓰려면 `--set run.workers=2` 처럼 준다 — 그것도 찍힌다.
 # ⚠️ **파이프로 보내면 블록 버퍼링**이라 30분간 아무것도 안 보이고, 중간에 죽으면 통째로
@@ -152,7 +49,7 @@ import mmdet_families                                       # noqa: E402
 
 
 def _all_families():
-    override = {f[0]: f for f in FAMILIES}
+    override = {f: (f, c, k) for f, (c, k) in mmdet_families.OVERRIDE.items()}
     out = []
     for name, cfg, ckpt in mmdet_families.families(MM):
         if name in override:

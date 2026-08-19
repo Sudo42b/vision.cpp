@@ -106,7 +106,19 @@ meta = {"img_shape": (size, size), "ori_shape": (size, size),
 ds = DetDataSample(); ds.set_metainfo(meta)
 with torch.no_grad():
     try:
-        res = det.predict(t, [ds], rescale=False)[0].pred_instances
+        if getattr(det, "rpn_head", None) is None:
+            # ⚠️ **proposal 을 밖에서 받는 계열**(FastRCNN). `predict` 는 proposal 을
+            #    데이터에서 기대하므로 못 부른다. 러너와 **같은 파일**을 읽어
+            #    `roi_head.predict` 에 직접 넣는다 — 각자 만들면 proposal 생성기를 재게 된다.
+            from mmengine.structures import InstanceData
+            pb = np.fromfile(os.environ["FRCNN_PROPOSALS"], dtype="float32").reshape(-1, 4)
+            pr = InstanceData(metainfo=meta)
+            pr.bboxes = torch.from_numpy(pb.copy())
+            pr.scores = torch.ones(len(pb))
+            pr.labels = torch.zeros(len(pb), dtype=torch.long)
+            res = det.roi_head.predict(det.extract_feat(t), [pr], [ds], rescale=False)[0]
+        else:
+            res = det.predict(t, [ds], rescale=False)[0].pred_instances
     except AttributeError:
         # ⚠️ **`predict` 가 박스를 안 내는 계열이 있다.** PanopticFPN 은 파놉틱 융합까지 하고
         #    `pred_panoptic_seg` 만 남겨 `pred_instances` 가 없다. 그렇다고 "측정 불가" 로
@@ -207,12 +219,13 @@ def _one(fam, size, image, workdir, keep, verbose):
     os.makedirs(d, exist_ok=True)
     open(os.path.join(d, "_stub.py"), "w").write(STUB)
 
-    cfg_rel, ckpt_name, _ = MF.resolve(CFGS, fam)
-    if not cfg_rel:
+    # ⚠️ **짝은 공용 자리에서 받는다**(`mmdet_families.resolve_pair`). 예전엔 이 하네스만
+    #    metafile 을 보고 one-stage 는 손목록을 봐서 **같은 계열이 다르게 풀렸다.**
+    cfg, ckpt_name = MF.resolve_pair(CFGS, fam)
+    if not cfg:
         return fam, "CONFIG_NONE", "-", None
-    cfg = os.path.join(CFGS, cfg_rel)
     if not ckpt_name:
-        return fam, "CKPT_NONE", f"metafile 에 가중치 없음 ({cfg_rel})", None
+        return fam, "CKPT_NONE", "가중치 없음 (metafile·손목록 둘 다)", None
     ckpt = os.path.join(CKPTS, ckpt_name)
     if not os.path.exists(ckpt):
         return fam, "CKPT_MISSING", ckpt_name, None
@@ -260,6 +273,23 @@ def _one(fam, size, image, workdir, keep, verbose):
         kind = "UNSUPPORTED" if "NotImplementedError" in (r.stderr or "") else "EXPORT_FAIL"
         return fam, kind, err[:110], None
     J = json.load(open(os.path.join(fr, "frcnn.json")))
+    # ⚠️ **proposal 을 밖에서 받는 계열**(FastRCNN)은 우리가 넣어 줘야 한다. mmdet 은
+    #    proposal 파일을 안 배포하고, 이 계열은 RPN 설정 자체가 없다.
+    #    **RPN 출력을 쓰면 그 순간 faster_rcnn 을 재는 것**이 되므로(같은 백본·넥·RoI head),
+    #    독립적인 증거가 되도록 **고정 격자**를 쓴다. 결정적이라 재현되고,
+    #    RoIAlign+RoI head 를 proposal 생성기와 분리해서 본다.
+    #    ⚠️ 러너와 기준값이 **같은 파일**을 읽는다 — 각자 만들면 생성기를 재게 된다.
+    prop_env = {}
+    if J.get("external_proposals"):
+        import numpy as _np
+        # 개수는 `frcnn.json` 이 정한다(SubB 가 그 수로 구워졌다). 격자 한 변은 √N.
+        want = int(J.get("rpn_max") or 64)
+        n = int(round(want ** 0.5)); step = size / n
+        boxes = [[c * step, rr * step, (c + 2) * step, (rr + 2) * step]
+                 for rr in range(n) for c in range(n)][:want]
+        pf = os.path.join(fr, "proposals.bin")
+        _np.asarray(boxes, dtype="float32").clip(0, size).tofile(pf)
+        prop_env = {"FRCNN_PROPOSALS": pf}
     O, RC = int(J["roi_out"]), int(J.get("roi_channels", 256))
     MX = int(J["rpn_max"])
     # Double-Head 는 (cls용, reg용) 두 벌을 배치로 이어 넣는다 → 배치가 2배다.
@@ -363,7 +393,7 @@ from shared.compile.pipeline import main; main()
         while len(argv) < 9:
             argv.append("")
         argv.append("out_GridRCNN_SubE/GridRCNN_SubE.gguf")
-    rr = run(argv, fr, {"VISP_BACKEND": "cpu"})
+    rr = run(argv, fr, {"VISP_BACKEND": "cpu", **prop_env})
     if not os.path.exists(pref + ".boxes.bin"):
         return fam, "RUN_FAIL", last_error(rr.stderr)[:110], None
     got = np.fromfile(pref + ".boxes.bin", dtype="float32").reshape(-1, 6)
@@ -372,7 +402,8 @@ from shared.compile.pipeline import main; main()
     # ⑥ mmdet 기준값
     open(os.path.join(d, "ref.py"), "w").write(REF % {"FE": FE})
     refnpy = os.path.join(d, "ref.npy")
-    q = run([PY, "ref.py", cfg, ckpt, str(size), npy, refnpy], d, {"PYTHONPATH": f"{d}:{FE}"})
+    q = run([PY, "ref.py", cfg, ckpt, str(size), npy, refnpy], d,
+            {"PYTHONPATH": f"{d}:{FE}", **prop_env})
     if "REF_OK" not in (q.stdout or ""):
         return fam, "REF_FAIL", last_error(q.stderr)[:110], None
     ref = np.load(refnpy)

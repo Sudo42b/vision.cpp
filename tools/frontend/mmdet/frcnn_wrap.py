@@ -37,7 +37,11 @@ class FRCNN_SubA(nn.Module):
         # ⚠️ **neck 이 항상 있다고 보면 안 된다.** C4 계열(TridentFasterRCNN)은 FPN 없이
         #    백본 C4 를 그대로 쓰고 `shared_head`(ResLayer)가 C5 역할을 한다.
         self.neck = getattr(det, "neck", None)
-        self.rpn_head = det.rpn_head
+        # ⚠️ **RPN 이 없는 계열이 있다.** `FastRCNN` 은 proposal 을 **밖에서** 받는 구조라
+        #    `rpn_head` 를 아예 안 갖는다(config 에 `test_cfg.rpn` 도 없다). 없는 게
+        #    결함이 아니라 그 계열의 정의다 — SubA 는 백본+넥까지만 내고, proposal 은
+        #    러너가 파일에서 읽는다.
+        self.rpn_head = getattr(det, "rpn_head", None)
         self.n_roi = _n_roi_levels(det)
         # HTC 계열의 **시맨틱 갈래**. FPN 위에 FCN 을 따로 돌려 나온 융합 feature 를
         # RoIAlign 해서 `bbox_feats` 에 더한다(htc_roi_head.py:99-104).
@@ -54,8 +58,10 @@ class FRCNN_SubA(nn.Module):
         feats = self.backbone(x)
         if getattr(self, "neck", None) is not None:
             feats = self.neck(feats)                 # tuple len 5: P2..P6
-        rpn_cls, rpn_bbox = self.rpn_head(feats)     # (listL, listL)
-        out = tuple(feats[:getattr(self, "n_roi", 4)]) + tuple(rpn_cls) + tuple(rpn_bbox)
+        out = tuple(feats[:getattr(self, "n_roi", 4)])
+        if getattr(self, "rpn_head", None) is not None:
+            rpn_cls, rpn_bbox = self.rpn_head(feats)     # (listL, listL)
+            out = out + tuple(rpn_cls) + tuple(rpn_bbox)
         if getattr(self, "semantic_head", None) is not None:
             # `(mask_preds, fused)` 중 **fused** 가 bbox 융합에 쓰이는 쪽이다.
             _, sem = self.semantic_head(feats)
@@ -212,20 +218,28 @@ class GridRCNN_SubE(nn.Module):
         return self.grid_head(grid_feat)["fused"]
 
 
+# 외부 proposal 계열(FastRCNN)에 넣을 proposal 개수. 8×8 격자 = 64.
+# 러너·기준값·SubB 가 **이 하나의 숫자**를 공유해야 한다.
+EXTERNAL_PROPOSAL_COUNT = 64
+
+
 def frcnn_cfg(det, size=800):
     """host 부품(rpn_proposals/roi_align/detect_roi)용 config 추출 → .frcnn.json."""
-    rh = det.rpn_head
+    rh = getattr(det, "rpn_head", None)
+    # ⚠️ **RPN 이 아예 없는 계열이 있다.** `FastRCNN` 은 proposal 을 밖에서 받는 것이
+    #    정의이므로 `rpn_head` 도 `test_cfg.rpn` 도 없다. 이건 미지원이 아니라 **다른 계약**이다
+    #    — 러너가 proposal 을 파일에서 읽도록 표시만 하고 나머지(RoIAlign·RoI head)는 같다.
     # ⚠️ RPN 이 표준 `AnchorGenerator` 를 안 쓰는 계열이 있다. 호스트 `rpn_proposals` 는
     #    (strides, scale, ratios) 로 앵커를 깔아 디코드하는 구조라 그대로는 못 쓴다.
     #    **`AttributeError` 로 흘려보내지 말고** 왜 안 되는지 말한다 — 그래야 "미지원" 과
     #    "우리 버그" 가 구분된다.
-    if not hasattr(rh, "prior_generator"):
+    if rh is not None and not hasattr(rh, "prior_generator"):
         raise NotImplementedError(
             f"{type(rh).__name__}: 표준 앵커 RPN 이 아니다. "
             "CascadeRPNHead=다단계 정제(stages), GARPNHead=앵커 모양을 예측, "
             "EmbeddingRPNHead=학습된 proposal — 각각 호스트 proposal 생성이 달라진다")
-    pg = rh.prior_generator
-    bc = rh.bbox_coder
+    pg = rh.prior_generator if rh is not None else None
+    bc = rh.bbox_coder if rh is not None else None
     ext = det.roi_head.bbox_roi_extractor
     # 캐스케이드는 extractor 도 ModuleList 다(단계마다 하나). 설정은 전부 같으므로 0번을 쓴다.
     if isinstance(ext, nn.ModuleList):
@@ -242,9 +256,27 @@ def frcnn_cfg(det, size=800):
     # **마지막 단계**를 쓴다(최종 박스를 내는 단계라 디코드 규약이 거기 맞춰져 있다).
     if isinstance(bh, nn.ModuleList):
         bh = bh[-1]
-    rpn_c, rcnn_c = det.test_cfg.rpn, det.test_cfg.rcnn
-    strides = [s[0] if isinstance(s, (tuple, list)) else int(s) for s in pg.strides]
-    scales = pg.scales.tolist() if hasattr(pg.scales, "tolist") else list(pg.scales)
+    rcnn_c = det.test_cfg.rcnn
+    if rh is not None:
+        rpn_c = det.test_cfg.rpn
+        strides = [s[0] if isinstance(s, (tuple, list)) else int(s) for s in pg.strides]
+        scales = pg.scales.tolist() if hasattr(pg.scales, "tolist") else list(pg.scales)
+        rpn_means, rpn_stds = [float(v) for v in bc.means], [float(v) for v in bc.stds]
+        rpn_nms_pre, rpn_nms_thr = int(rpn_c.nms_pre), float(rpn_c.nms.iou_threshold)
+        rpn_max = int(rpn_c.max_per_img)
+    else:
+        # **외부 proposal 계약**(FastRCNN). RPN 파라미터가 존재하지 않으므로 만들지 않는다 —
+        # 0 이나 기본값을 채워 넣으면 나중에 "RPN 설정이 이상하다" 로 읽힌다. 러너는
+        # `external_proposals` 를 보고 proposal 을 파일에서 읽는다.
+        strides = [float(v) for v in (det.roi_head.bbox_roi_extractor.featmap_strides
+                                      if not isinstance(det.roi_head.bbox_roi_extractor, nn.ModuleList)
+                                      else det.roi_head.bbox_roi_extractor[0].featmap_strides)]
+        scales, rpn_means, rpn_stds = [], [], []
+        rpn_nms_pre, rpn_nms_thr = 0, 0.0
+        # ⚠️ **개수는 계약이다.** SubB 는 proposal 행 수를 그래프에 상수로 굽는다
+        #    (`flatten` 이 `reshape(…, N)` 으로 박힌다) — 다른 개수를 넣으면 러너가 죽는다.
+        #    그래서 여기서 정한 값을 하네스가 읽어 **정확히 그만큼** 만든다.
+        rpn_max = EXTERNAL_PROPOSAL_COUNT
     mask = {}
     if getattr(det.roi_head, "with_mask", False):
         mext = det.roi_head.mask_roi_extractor
@@ -342,21 +374,26 @@ def frcnn_cfg(det, size=800):
         #    준다 — 스케일이 하나인 계열은 결과가 완전히 같다.
         "rpn_scale": 1.0,
         "rpn_scales": [float(v) for v in scales],
-        "rpn_ratios": [float(r) for r in pg.ratios.tolist()],
-        "rpn_means": [float(v) for v in bc.means], "rpn_stds": [float(v) for v in bc.stds],
-        "rpn_nms_pre": int(rpn_c.nms_pre), "rpn_nms_thr": float(rpn_c.nms.iou_threshold),
-        "rpn_max": int(rpn_c.max_per_img),
+        "rpn_ratios": [float(r) for r in pg.ratios.tolist()] if rh is not None else [],
+        "rpn_means": rpn_means, "rpn_stds": rpn_stds,
+        "rpn_nms_pre": rpn_nms_pre, "rpn_nms_thr": rpn_nms_thr,
+        "rpn_max": rpn_max,
+        # ⚠️ proposal 을 밖에서 받는 계열인가(FastRCNN). 러너는 이 값이 참이면
+        #    RPN 계산을 건너뛰고 proposal 파일을 읽는다.
+        "external_proposals": rh is None,
         # ⚠️ 아래 셋은 **기본값이 아닌 계열이 있다**(crowddet 이 셋 다 다르다).
         #    전부 shape 를 안 바꾸므로 빼먹으면 크래시 없이 proposal 만 달라진다.
         #    `centers` — 주어지면 그 값이 base anchor 중심이고 center_offset 은 무시된다.
-        "rpn_centers": [float(v) for c in (getattr(pg, "centers", None) or []) for v in c],
+        "rpn_centers": [float(v) for c in (getattr(pg, "centers", None) or []) for v in c]
+                       if rh is not None else [],
         #    `clip_border` — false 면 proposal 을 이미지로 안 자른다(800 입력에 1054 가 나온다).
-        "rpn_clip_border": 1.0 if getattr(bc, "clip_border", True) else 0.0,
+        "rpn_clip_border": (1.0 if getattr(bc, "clip_border", True) else 0.0)
+                          if rh is not None else 0.0,
         #    `min_bbox_size` — NMS **앞에서** 작은 상자를 버린다.
-        "rpn_min_bbox_size": float(getattr(rpn_c, "min_bbox_size", 0) or 0),
+        "rpn_min_bbox_size": float(getattr(rpn_c, "min_bbox_size", 0) or 0) if rh is not None else 0.0,
         #    `cls_out_channels` — RPNHead 는 보통 1(sigmoid)이지만 loss_cls 에
         #    use_sigmoid 를 안 적으면 2(softmax, 전경 index 0)가 된다. **모듈에서 읽는다.**
-        "rpn_cls_out_channels": int(getattr(rh, "cls_out_channels", 1) or 1),
+        "rpn_cls_out_channels": int(getattr(rh, "cls_out_channels", 1) or 1) if rh is not None else 0,
         # RoIAlign
         # ⚠️ **RoI feature 채널을 256 으로 박으면 안 된다.** FPN 계열은 256 이지만
         #    C4 계열(TridentNet)은 neck 이 없어 백본 C4 채널(1024)이 그대로 온다.

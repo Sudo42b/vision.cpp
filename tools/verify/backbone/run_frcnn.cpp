@@ -179,7 +179,11 @@ int main(int argc, char** argv) {
     //    (프론트엔드의 `_n_roi_levels` 와 같은 근거를 쓴다).
     std::vector<std::pair<int, int>> all_hw;
     auto outs = read_outputs(g0, 64, &all_hw);
-    const int L = (int)J.arr("rpn_strides").size();
+    // ⚠️ **RPN 이 없는 계열이 있다.** `FastRCNN` 은 proposal 을 밖에서 받는 것이 정의라
+    //    `rpn_head` 도 `test_cfg.rpn` 도 없다 — SubA 는 feats 만 낸다. 미지원이 아니라
+    //    **다른 계약**이므로 proposal 을 파일에서 읽고 RPN 계산을 건너뛴다.
+    const bool ext_props = J.num("external_proposals", 0.0f) != 0.0f;
+    const int L = ext_props ? 0 : (int)J.arr("rpn_strides").size();
     const int NF = (int)J.arr("roi_strides").size();
     if ((int)outs.size() < NF + 2 * L) {
         fprintf(stderr, "SubA 출력 %zu 개 < 기대 %d (feats %d + rpn %d×2)\n",
@@ -222,7 +226,23 @@ int main(int argc, char** argv) {
     rp.min_bbox_size = J.num("rpn_min_bbox_size", 0.0f);
     rp.cls_out_channels = (int)J.num("rpn_cls_out_channels", 1.0f);
     rp.input_w = rp.input_h = SZ;
-    std::vector<float> props = rpn_proposals(rpn_cls, rpn_box, rpn_hw, rp);
+    std::vector<float> props;
+    if (ext_props) {
+        // proposal 파일: float32 x1,y1,x2,y2 반복. 기준값 쪽과 **같은 파일**을 읽어야
+        // 비교가 성립한다 — 각자 만들면 proposal 생성기를 재게 된다.
+        const char* pp = getenv("FRCNN_PROPOSALS");
+        if (!pp) { fprintf(stderr, "external_proposals 인데 FRCNN_PROPOSALS 가 없다\n"); return 3; }
+        std::ifstream f(pp, std::ios::binary);
+        if (!f) { fprintf(stderr, "proposal 파일을 못 연다: %s\n", pp); return 3; }
+        f.seekg(0, std::ios::end);
+        const size_t n = (size_t)f.tellg() / sizeof(float);
+        f.seekg(0);
+        props.resize(n);
+        f.read(reinterpret_cast<char*>(props.data()), (std::streamsize)(n * sizeof(float)));
+        rp.max_per_img = (int)(n / 4);
+    } else {
+        props = rpn_proposals(rpn_cls, rpn_box, rpn_hw, rp);
+    }
     const int M_real = (int)(props.size() / 4);
     // ⚠️ **proposal 이 상한보다 적게 나오는 계열이 있다.** SubB 는 상한(rpn_max)으로
     //    구워지고 그 안의 `flatten` 이 `ggml_reshape_2d(…, 2048, 1000)` 처럼 **행 수를
