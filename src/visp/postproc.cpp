@@ -138,8 +138,19 @@ static std::vector<float> level_anchors(det_params const& p, int l, int fh, int 
         return a;
     }
     num_base = (int)(p.octave_scales.size() * p.ratios.size());
-    return gen_anchors(fh, fw, stride, stride * p.octave_base_scale,
-                       p.octave_scales, p.ratios, p.center_offset);
+    // ⚠️ **`base_size` 는 stride 다 — `stride * octave_base_scale` 이 아니다.**
+    //    mmdet `AnchorGenerator` 는 `base_sizes = [min(stride) …]` 로 두고
+    //    `octave_base_scale` 은 **`scales` 쪽**에 넣는다(`scales = obs * octave_scales`).
+    //    앵커 **크기**는 어느 쪽으로 접든 같지만 **중심**이 달라진다:
+    //      mmdet    center = center_offset * stride
+    //      접은 식  center = center_offset * stride * octave_base_scale
+    //    `center_offset` 이 0 인 계열(retinanet·atss·gfl…)은 양쪽 다 0 이라 안 드러나고,
+    //    0.5 인 계열에서만 나온다 — stride 32 · obs 8 이면 **정확히 112px** 어긋난다.
+    //    노출된 계열은 `dyhead`·`glip` 둘뿐이다(2026-08-19 전 계열 확인).
+    std::vector<float> scales;
+    scales.reserve(p.octave_scales.size());
+    for (float s : p.octave_scales) scales.push_back(s * p.octave_base_scale);
+    return gen_anchors(fh, fw, stride, stride, scales, p.ratios, p.center_offset);
 }
 
 // ── 앵커-기반 검출 후처리 (mmdet _predict_by_feat_single) ────────────────────

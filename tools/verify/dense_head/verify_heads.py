@@ -584,6 +584,17 @@ def one(fam, rel, ckpt):
     ph = os.path.join(d, "bb.postproc.h")
     if not os.path.exists(ph):
         return fam, "PARAMS_NONE", "postproc.h 미생성 (head_type=raw?)"
+    # ⚠️ **어떤 짝으로 구웠는지 남긴다.** 계열마다 변종이 여럿이라(retinanet r18 vs r50-caffe,
+    #    tood anchor-free vs anchor-based) 나중에 `verify_postproc.py` 를 손으로 부를 때
+    #    다른 짝을 주기 쉽다. 그러면 **남의 가중치를 진 그래프**를 대조하게 되고, 결과가
+    #    그럴듯하게 틀려서(20px·13px) 결함으로 오해한다 — 오늘만 두 번 겪었다.
+    #    `verify_postproc.py` 가 이 파일을 읽어 어긋나면 알린다.
+    try:
+        import json as _json
+        _json.dump({"family": fam, "config": cfg_path, "checkpoint": cw},
+                   open(os.path.join(d, "used.json"), "w"), ensure_ascii=False, indent=1)
+    except OSError:
+        pass
     kind = next((l.split(":")[-1].strip() for l in open(ph) if l.startswith("// head_type")), "?")
     if kind == "raw":
         # 프론트엔드가 이 head 를 인식하지 못했다 = 조립기가 없다. 여기서 끝낸다 —

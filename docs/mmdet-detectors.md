@@ -288,7 +288,7 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Seventy-four families produce the same boxes MMDetection does** — thirty-nine single-stage
+**Seventy-five families produce the same boxes MMDetection does** — forty single-stage
 below, thirty-five two-stage further down. Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
@@ -309,6 +309,7 @@ no label mismatch and no difference in how many boxes survive.
 | `ocsort` | `detect_yolox` (tracker wrapper) | 0.15 px | 0.041 |
 | `centernet` | `detect_centernet` (heatmap peaks) | 0.13 px | 0.001 |
 | `atss` | `detect_anchor` | 0.14 px | 0.000 |
+| `dyhead` | `detect_anchor` (center_offset 0.5) | 0.21 px | 0.000 |
 | `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
 | `pisa` | `detect_anchor` | 0.18 px | 0.005 |
 | `nas_fcos` | `detect_fcos` | 0.19 px | 0.001 |
@@ -592,15 +593,17 @@ Three groups do not decode, and they fail for different reasons:
   up" and that `dyhead`'s neck sat at 0.7 relative L1 described a tree that no longer exists.
   Re-running a recorded failure after unrelated fixes is cheaper than reading it.
 
-  `dyhead` still disagrees, but not where this entry claimed. Measured level by level on the
-  real image, its neck agrees at 2e-03 relative L1 and its head at 1e-04; the boxes are still
-  112 px out with the score identical to four digits. Feeding the runner's own head dumps into
-  MMDetection's `predict_by_feat` returns MMDetection's box (66.9, 136.2, 468.1, 474.6 at
-  0.4471) rather than the runner's, which places the fault squarely in the host decoder and
-  nowhere else. It is not the coder constants — `target_stds` (0.1, 0.1, 0.2, 0.2), strides,
-  `center_offset` and `octave_base_scale` all match the config, and `atss` passes at 0.14 px
-  with the same anchor generator. A constant shift with an exact score means the right cell won
-  and was placed at the wrong pixel.
+  `dyhead` closed too, and where it hid is worth keeping. Its neck agreed at 2e-03 relative L1
+  and its head at 1e-04, yet the boxes were 112 px out with the score identical to four digits —
+  the right cell won and was placed at the wrong pixel. The cause was in anchor generation:
+  `AnchorGenerator` keeps `base_sizes` equal to the strides and puts `octave_base_scale` into
+  `scales`, but the host folded the two together into `base_size = stride * octave_base_scale`.
+  Anchor *sizes* come out the same either way, which is why no shape check ever complained; the
+  *centre* does not, because it is `center_offset * base_size`. At stride 32 with
+  `octave_base_scale` 8 that is 128 against MMDetection's 16 — exactly the 112 px observed.
+  Families with `center_offset` 0 (retinanet, atss, gfl, …) are immune, since both readings give
+  zero, so a single family carried the defect for the whole anchor decoder. Only `dyhead` and
+  `glip` set it non-zero. Now 0.21 px, with the anchor families re-measured unchanged.
 
   `MMDET_DUMP_HEAD` writes the neck output beside the head output for exactly this split — a
   family whose `feat` dumps match and whose `cls`/`box` dumps do not is a head problem, and the

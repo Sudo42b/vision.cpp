@@ -191,6 +191,27 @@ def main():
                 to_rgb = "c.to_rgb = true" in txt
     print(f"to_rgb={to_rgb} (파라미터 헤더 기준) · thr={thr} · size={size}")
 
+    # ⚠️ **이 gen_dir 를 구울 때 쓴 짝과 같은지 본다.** 계열마다 변종이 여럿이라
+    #    (retinanet r18 vs r50-caffe · tood anchor-free vs anchor-based) 손으로 부를 때
+    #    다른 config·체크포인트를 주기 쉽다. 그러면 **남의 가중치를 진 그래프**를 대조하는
+    #    것이고, 결과가 그럴듯하게 틀려(20px·13px) 결함으로 오해하게 된다.
+    for _d in (gen, os.path.dirname(gen) or "."):
+        _u = os.path.join(_d, "used.json")
+        if not os.path.exists(_u):
+            continue
+        try:
+            import json as _json
+            _used = _json.load(open(_u, encoding="utf-8"))
+        except Exception:
+            break
+        for _k, _got in (("config", cfg), ("checkpoint", ckpt)):
+            _want = _used.get(_k)
+            if _want and os.path.basename(_want) != os.path.basename(_got):
+                print(f"  ⚠️ **짝이 다르다** — 이 gen_dir 는 {os.path.basename(_want)} 로 "
+                      f"구웠는데 {os.path.basename(_got)} 로 재고 있다. "
+                      f"수치가 크게 틀리면 결함이 아니라 이것부터 의심하라")
+        break
+
     # ⚠️ **계열에 안 맞는 사진이면 크게 알린다.** MOT 트래커는 보행자 1클래스라 고양이
     #    사진에서는 양쪽 다 0건이 나오고, 그러면 "한쪽이 비어 비교 불가" 로 끝나 그 계열을
     #    아예 못 잰다. 이 도구는 이미지를 **인자로** 받으므로 덮어쓰지 않고 경고만 한다 —
