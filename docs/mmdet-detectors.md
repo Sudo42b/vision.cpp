@@ -288,8 +288,10 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Seventy-five families produce the same boxes MMDetection does** — forty single-stage
-below, thirty-five two-stage further down. Assembling a head and decoding its output are
+**Eighty-six families are verified against MMDetection** — forty-one single-stage and
+thirty-eight two-stage agree on boxes; seven more are checked at the compiled-graph level
+because they emit no boxes to compare (five mask-only families and three text-conditioned ones,
+one of which is also single-stage). Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode

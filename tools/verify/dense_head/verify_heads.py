@@ -608,6 +608,17 @@ def one(fam, rel, ckpt):
     except OSError:
         pass
     kind = next((l.split(":")[-1].strip() for l in open(ph) if l.startswith("// head_type")), "?")
+    # ⚠️ **텍스트 조건부 계열은 `bbox_head(feats)` 로 못 부른다.** GLIP·GroundingDINO 는
+    #    이미지 feature 말고 **텍스트 임베딩**을 같이 받는다(`ATSSVLFusionHead.forward()
+    #    missing 1 required positional argument`). 박스를 판정 기준으로 삼을 수가 없으므로
+    #    박스 없는 계열과 같은 자로 잰다 — **컴파일된 그래프**를 torch 와 댄다.
+    #    ⚠️ 그래서 이 숫자는 "이 계열이 검증됐다" 가 아니라 "컴파일 범위가 맞다" 는 뜻이다.
+    try:
+        from mmengine.config import Config as _C
+        if (_C.fromfile(cfg_path).get("model") or {}).get("language_model"):
+            return _no_box(fam, cfg_path, cw, d)
+    except Exception:
+        pass
     if kind == "raw":
         # 프론트엔드가 이 head 를 인식하지 못했다 = 조립기가 없다. 여기서 끝낸다 —
         # 계속 가면 러너에서 크래시로 나타나 "버그" 처럼 보인다.
