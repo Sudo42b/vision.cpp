@@ -120,6 +120,12 @@ with torch.no_grad():
             pr.bboxes = torch.from_numpy(pb.copy())
             pr.scores = torch.ones(len(pb))
             pr.labels = torch.zeros(len(pb), dtype=torch.long)
+            # ⚠️ `SparseRoIHead` 는 proposal 에 **query(features)** 가 붙어 있길 기대한다
+            #    (`res.pop('features')`). 러너와 **같은 파일**을 읽어야 비교가 성립한다.
+            _qp = os.environ["FRCNN_PROPOSALS"] + ".q"
+            if os.path.exists(_qp):
+                _q = np.fromfile(_qp, dtype="float32").reshape(len(pb), -1)
+                pr.features = torch.from_numpy(_q.copy())
             res = det.roi_head.predict(det.extract_feat(t), [pr], [ds], rescale=False)[0]
         else:
             res = det.predict(t, [ds], rescale=False)[0].pred_instances
@@ -199,6 +205,11 @@ with torch.no_grad():
     feats = det.extract_feat(t)
     pr = det.rpn_head.predict(feats, [ds], rescale=False)[0]
 b = pr.bboxes.numpy()[:want]
+# ⚠️ `EmbeddingRPNHead` 는 박스와 **query(features)** 를 같이 낸다 — SparseRoIHead 가
+#    단계마다 그 query 를 갱신하며 나르므로 초기값을 러너에 넘겨야 한다.
+if "features" in pr:
+    np.ascontiguousarray(pr.features.numpy()[:want], dtype="float32").tofile(out + ".q")
+    print("QUERIES_OK", pr.features.shape)
 # ⚠️ **개수를 상한까지 채운다.** SubB 가 그 행 수로 구워져 있어 모자라면 reshape 이 죽는다.
 if len(b) < want:
     b = np.vstack([b, np.zeros((want - len(b), 4), "float32")])
@@ -359,7 +370,16 @@ def _one(fam, size, image, workdir, keep, verbose):
     #    레벨별 결과를 배치로 이어붙여 넘긴다(SubB 안에서 pre→합산→post). N 으로 구우면
     #    슬라이스가 빈 텐서가 되어 "tensor a (1000) vs b (0)" 로 죽는다.
     GL = int(J.get("groie_levels") or 0)
-    MB = MX * GL if GL > 0 else MX
+    # ⚠️ SparseR-CNN 은 RoI feature 와 **query 를 배치로 이어붙여** 받는다(2N).
+    #    proposal 수도 rpn_max 가 아니라 `num_proposals`(학습된 query 개수)다.
+    SP = int(J.get("sparse_stages") or 0)
+    if SP > 0:
+        NP = int(J.get("num_proposals") or MX)
+        MB = 2 * NP
+    elif GL > 0:
+        MB = MX * GL
+    else:
+        MB = MX
     jobs += [(s, subs[0], "out_" + s, f"{MB},{RC},{O},{O}") for s in subs]
     # Mask Scoring R-CNN 은 점수를 마스크 IoU 로 다시 매긴다 → 그래프가 둘 더 필요하다.
     #   SubC = mask head      (1, 256, 14, 14) → 마스크 로짓 (1, 80, 28, 28)

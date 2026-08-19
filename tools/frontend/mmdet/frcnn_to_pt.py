@@ -79,9 +79,14 @@ def main(argv=None):
         if getattr(det, "neck", None) is not None:
             feats = det.neck(feats)
     torch.save(FRCNN_SubA(det).eval(), f"{a.out}/FRCNN_SubA.pt")   # 이미지 → 14 출력
-    from frcnn_wrap import num_bbox_stages
+    from frcnn_wrap import num_bbox_stages, SPARSE_SubB
     ns = num_bbox_stages(det)
-    if ns == 1:
+    # SparseR-CNN/QueryInst 은 단계마다 query 를 함께 나르므로 전용 래퍼를 쓴다.
+    # 파일 이름은 캐스케이드와 같게 둔다 — 러너·하네스가 같은 경로를 탄다.
+    if type(det.roi_head).__name__ == "SparseRoIHead":
+        for i in range(ns):
+            torch.save(SPARSE_SubB(det, i).eval(), f"{a.out}/FRCNN_SubB{i}.pt")
+    elif ns == 1:
         torch.save(FRCNN_SubB(det).eval(), f"{a.out}/FRCNN_SubB.pt")   # roi_feat → cls/bbox
     else:
         # 캐스케이드: 단계마다 따로 낸다. 러너가 사이에 호스트 RoIAlign 을 끼워 돈다.

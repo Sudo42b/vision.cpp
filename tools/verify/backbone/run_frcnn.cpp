@@ -387,6 +387,25 @@ int main(int argc, char** argv) {
         return rf;
     };
 
+    // ── SparseR-CNN / QueryInst ────────────────────────────────────────────
+    // ⚠️ 캐스케이드와 달리 **query(object_feats)를 단계 사이로 나른다.** 그래프 입력이
+    //    하나뿐이라 RoI feature 뒤에 query 를 배치로 이어붙여 넣고(앞 N=feature,
+    //    뒤 N 의 (0,0) 자리=query), SubB 가 세 번째 출력으로 갱신된 query 를 돌려준다.
+    //    초기 query 는 `EmbeddingRPNHead` 의 학습된 상수라 파일로 받는다.
+    const int SPARSE = (int)J.num("sparse_stages", 0.0f);
+    const bool RCLIP = J.num("rcnn_clip_border", 1.0f) != 0.0f;
+    std::vector<float> qfeat;                       // (M, C) — 단계 사이 상태
+    if (SPARSE > 0) {
+        const char* pp = getenv("FRCNN_PROPOSALS");
+        std::string qp = std::string(pp ? pp : "") + ".q";
+        std::ifstream qf(qp, std::ios::binary);
+        if (!qf) { fprintf(stderr, "sparse 인데 query 파일이 없다: %s\n", qp.c_str()); return 3; }
+        qf.seekg(0, std::ios::end);
+        qfeat.resize((size_t)qf.tellg() / sizeof(float));
+        qf.seekg(0);
+        qf.read(reinterpret_cast<char*>(qfeat.data()), (std::streamsize)(qfeat.size() * sizeof(float)));
+    }
+
     for (int st = 0; st < NS; ++st) {
         // ⚠️ 시맨틱 융합은 **단계마다** 건다. mmdet 의 `_bbox_forward(stage, …, semantic_feat)`
         //    가 매 단계 부른다 — 0단계만 더하면 뒤 단계가 융합 없이 돈다.
@@ -401,7 +420,10 @@ int main(int argc, char** argv) {
         std::vector<float> roi_st = with_reg_half(base_st, (st == 0) ? props : rois);
         // SubB 에 넣는 행 수. Double-Head 는 2배(cls+reg), groie 는 레벨 배다 —
         // 둘 다 "그래프 입력이 하나뿐이라 배치로 이어붙인다" 는 같은 이유다.
-        const int MB = (RSF > 0.0f) ? 2 * M : (groie_lv > 0 ? groie_lv * M : M);
+        // Double-Head=2배(cls+reg) · groie=레벨배 · sparse=2배(feature+query).
+        // 셋 다 "그래프 입력이 하나뿐이라 배치로 이어붙인다" 는 같은 이유다.
+        const int MB = (RSF > 0.0f) ? 2 * M
+                     : (groie_lv > 0 ? groie_lv * M : (SPARSE > 0 ? 2 * M : M));
 
         model_file fb = model_load(gbs[st].c_str());
         model_weights wb = model_init(fb.n_tensors());
@@ -420,10 +442,37 @@ int main(int argc, char** argv) {
                     for (int x = 0; x < O; ++x)
                         roi_cwhn[(((size_t)n * O + y) * O + x) * C + c] =
                             roi_st[(((size_t)n * C + c) * O + y) * O + x];
+        // sparse: 뒤 M 행의 (0,0) 자리에 query 를 심는다(래퍼가 거기서 꺼낸다).
+        if (SPARSE > 0) {
+            for (int n = 0; n < M; ++n)
+                for (int c = 0; c < C; ++c)
+                    roi_cwhn[((((size_t)(M + n)) * O + 0) * O + 0) * C + c] =
+                        qfeat[(size_t)n * C + c];
+        }
         transfer_to_backend(rin, std::span<const float>(roi_cwhn.data(), roi_cwhn.size()));
         compute(g1, backend);
 
         auto bo = read_outputs(g1, 8, nullptr);
+        // sparse: 세 번째 출력이 갱신된 query 다 — 다음 단계로 나른다.
+        // ⚠️ **여기서 안 받으면 6단계가 전부 같은 초기 query 로 돈다.** 크래시는 없고
+        //    박스만 덜 정제된다 — 조용히 틀리는 부류라 개수를 확인하고 받는다.
+        if (SPARSE > 0) {
+            if (bo.size() < 3) {
+                fprintf(stderr, "sparse 인데 SubB 출력이 %zu 개다(cls/bbox/query 셋 필요)\n", bo.size());
+                return 5;
+            }
+            if (getenv("FRCNN_DEBUG")) {
+                float mx = -1e9f;
+                for (float v : bo[0]) mx = std::max(mx, v);
+                float qm = 0.0f;
+                for (float v : bo[2]) qm += std::fabs(v);
+                fprintf(stderr, "[sparse] stage %d: cls logit max %.4f (sigmoid %.4f) · "
+                        "query |mean| %.4f · out %zu개\n", st, mx, 1.0f/(1.0f+std::exp(-mx)),
+                        qm / (float)bo[2].size(), bo.size());
+            }
+            qfeat = bo[2];
+            bo.resize(2);                    // 아래 로직은 (cls, bbox) 쌍만 본다
+        }
         if (bo.size() == 1) {
             // ⚠️ **회귀 분기가 없는 bbox head 가 있다.** Grid R-CNN 은 `with_reg=False`
             //    로 박스를 아예 예측하지 않고 격자 head 가 나중에 다시 낸다. mmdet 도
@@ -490,10 +539,14 @@ int main(int argc, char** argv) {
                 const float pw = x2 - x1, ph = y2 - y1;
                 const float cx = x1 + pw * 0.5f + d[0] * pw, cy = y1 + ph * 0.5f + d[1] * ph;
                 const float w = pw * std::exp(d[2]), h = ph * std::exp(d[3]);
-                nb[(size_t)i * 4 + 0] = std::max(0.0f, cx - w * 0.5f);
-                nb[(size_t)i * 4 + 1] = std::max(0.0f, cy - h * 0.5f);
-                nb[(size_t)i * 4 + 2] = std::min((float)SZ, cx + w * 0.5f);
-                nb[(size_t)i * 4 + 3] = std::min((float)SZ, cy + h * 0.5f);
+                // ⚠️ coder 가 `clip_border=False` 면 **자르지 않는다**(SparseR-CNN).
+                //    자르면 다음 단계가 다른 feature 를 읽어 점수가 무너진다.
+                const float bx1 = cx - w * 0.5f, by1 = cy - h * 0.5f;
+                const float bx2 = cx + w * 0.5f, by2 = cy + h * 0.5f;
+                nb[(size_t)i * 4 + 0] = RCLIP ? std::max(0.0f, bx1) : bx1;
+                nb[(size_t)i * 4 + 1] = RCLIP ? std::max(0.0f, by1) : by1;
+                nb[(size_t)i * 4 + 2] = RCLIP ? std::min((float)SZ, bx2) : bx2;
+                nb[(size_t)i * 4 + 3] = RCLIP ? std::min((float)SZ, by2) : by2;
             }
             rois.swap(nb);
         }
@@ -647,6 +700,32 @@ int main(int argc, char** argv) {
         // 마지막 단계의 박스는 그 단계에 **들어간** RoI 기준이다. 캐스케이드에서 `rois` 는
         // 이미 다음 단계용으로 갱신되지 않으므로(마지막 단계는 정제를 건너뛴다) 그대로 쓴다.
         dets = detect_roi(prob.data(), box_st[last].data(), rois.data(), M_real, rp2);
+    }
+
+    // ── SparseR-CNN / QueryInst: NMS 가 없다 ──────────────────────────────────
+    // ⚠️ `test_cfg.rcnn` 이 `{max_per_img}` 뿐이다 — score_thr 도 NMS 도 없다.
+    //    DETR 처럼 **sigmoid 뒤 (query x class) 전체에서 top-k** 를 뽑는다.
+    //    박스는 마지막 단계가 이미 정제해 `rois` 에 들어 있다(단계마다 갱신된다).
+    //    NMS 경로로 흘리면 임계값이 0 이라 전부 걸러져 **0건**이 나온다(실측).
+    if (SPARSE > 0) {
+        const int NCLS2 = (int)(cls_st[NS - 1].size() / M) ;   // sigmoid head — 배경 없음
+        const int KMAX = (int)J.num("rcnn_max", 100.0f);
+        struct cand { float sc; int q, c; };
+        std::vector<cand> all;
+        all.reserve((size_t)M * NCLS2);
+        for (int i = 0; i < M_real; ++i)
+            for (int c = 0; c < NCLS2; ++c) {
+                const float z = cls_st[NS - 1][(size_t)i * NCLS2 + c];
+                all.push_back({1.0f / (1.0f + std::exp(-z)), i, c});
+            }
+        const int k = std::min<int>(KMAX, (int)all.size());
+        std::partial_sort(all.begin(), all.begin() + k, all.end(),
+                          [](cand const& a, cand const& b) { return a.sc > b.sc; });
+        dets.clear();
+        for (int i = 0; i < k; ++i) {
+            const float* b = rois.data() + (size_t)all[i].q * 4;
+            dets.push_back({b[0], b[1], b[2], b[3], all[i].sc, all[i].c});
+        }
     }
 
 #if defined(ARCH_C) && defined(ARCH_D)

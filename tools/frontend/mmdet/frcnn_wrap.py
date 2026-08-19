@@ -313,11 +313,9 @@ def frcnn_cfg(det, size=800):
         #    proposal 을 넣어줘도 안 열리므로 **왜 안 되는지 말하고 멈춘다** —
         #    그냥 두면 저 아래에서 `AttributeError: no attribute 'score_thr'` 로 죽어
         #    "미지원" 인지 "우리 버그" 인지 구분이 안 된다.
-        if type(rh).__name__ == "EmbeddingRPNHead":
-            raise NotImplementedError(
-                f"{type(rh).__name__}: 학습된 proposal + SparseRoIHead 6단계 DIIHead. "
-                "RPN 만의 문제가 아니라 디코드 규약이 다르다(score_thr·NMS 없이 DETR 식 top-k) "
-                "— 조립기를 새로 짜야 한다")
+        # `EmbeddingRPNHead` 는 proposal 이 **학습된 상수**다(이미지 무관). 외부 proposal
+        # 경로로 받되, RoI head 가 SparseRoIHead(6단계 DIIHead)라 단계마다 query 를
+        # 함께 실어 날라야 한다 — `sparse_stages` 로 러너에 알린다.
         rh = None                      # 아래부터 외부 proposal 계약으로 간다
     pg = rh.prior_generator if rh is not None else None
     bc = rh.bbox_coder if rh is not None else None
@@ -364,8 +362,10 @@ def frcnn_cfg(det, size=800):
         rpn_nms_pre, rpn_nms_thr = 0, 0.0
         # ⚠️ **개수는 계약이다.** SubB 는 proposal 행 수를 그래프에 상수로 굽는다
         #    (`flatten` 이 `reshape(…, N)` 으로 박힌다) — 다른 개수를 넣으면 러너가 죽는다.
-        #    그래서 여기서 정한 값을 하네스가 읽어 **정확히 그만큼** 만든다.
-        rpn_max = EXTERNAL_PROPOSAL_COUNT
+        #    SparseR-CNN 은 그 수가 **학습된 query 개수**로 이미 정해져 있다(100).
+        #    RPN 이 아예 없는 계열(FastRCNN)만 우리가 정한 격자 수를 쓴다.
+        _np = int(getattr(getattr(det, "rpn_head", None), "num_proposals", 0) or 0)
+        rpn_max = _np if _np else EXTERNAL_PROPOSAL_COUNT
     mask = {}
     if getattr(det.roi_head, "with_mask", False):
         mext = det.roi_head.mask_roi_extractor
@@ -473,6 +473,10 @@ def frcnn_cfg(det, size=800):
         # 비표준 RPN 이라 외부로 돌린 것인가(참) vs RPN 이 아예 없는 것인가(거짓).
         # 참이면 하네스가 **그 계열 자신의 rpn_head** 로 proposal 을 뽑는다.
         "own_rpn": rh is None and has_own_rpn,
+        # SparseR-CNN/QueryInst: 단계마다 query(object_feats)를 함께 나른다.
+        # 0 이면 평범한 캐스케이드다.
+        "sparse_stages": ns if type(det.roi_head).__name__ == "SparseRoIHead" else 0,
+        "num_proposals": int(getattr(det.rpn_head, "num_proposals", 0) or 0),
         # groie: 러너가 레벨마다 RoIAlign 을 걸어 배치로 이어붙여야 한다(0 이면 평소대로).
         "groie_levels": len(getattr(ext, "featmap_strides", []) or [])
                         if type(ext).__name__ == "GenericRoIExtractor" else 0,
@@ -507,6 +511,15 @@ def frcnn_cfg(det, size=800):
         "rcnn_means": [float(v) for v in bh.bbox_coder.means],
         "rcnn_stds": [float(v) for v in bh.bbox_coder.stds],
         "class_agnostic": bool(getattr(bh, "reg_class_agnostic", False)),
-        "rcnn_score_thr": float(rcnn_c.score_thr), "rcnn_nms_thr": float(rcnn_c.nms.iou_threshold),
+        # ⚠️ SparseR-CNN 은 `test_cfg.rcnn` 이 `{max_per_img}` 뿐이다 — score_thr 도 NMS 도
+        #    없다. DETR 처럼 sigmoid 뒤 (query x class) top-k 로 끝내기 때문이다.
+        #    `getattr` 로 방어하고, 러너는 `sparse_stages` 를 보고 디코드를 가른다.
+        "rcnn_score_thr": float(getattr(rcnn_c, "score_thr", 0.0) or 0.0),
+        "rcnn_nms_thr": float(getattr(getattr(rcnn_c, "nms", None), "iou_threshold", 0.0) or 0.0),
         "rcnn_max": int(rcnn_c.max_per_img),
+        # ⚠️ **RoI 단계 정제에서 박스를 이미지로 자를지.** SparseR-CNN 의 coder 는
+        #    `clip_border=False` 라 자르지 않는다(실측: torch stage 0 박스가 820.5 까지 간다).
+        #    우리가 자르면 다음 단계가 **다른 feature 를 읽어** 점수가 무너진다
+        #    (실측: stage 1 에서 0.54 → 0.18). 크래시는 없고 조용히 틀린다.
+        "rcnn_clip_border": 1.0 if getattr(bh.bbox_coder, "clip_border", True) else 0.0,
     }
