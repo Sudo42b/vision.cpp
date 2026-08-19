@@ -669,6 +669,7 @@ std::vector<float> roi_align(
         int lvl = (int)std::floor(std::log2(scale / p.finest_scale + 1e-6f));
         if (lvl < 0) lvl = 0;
         if (lvl > L - 1) lvl = L - 1;
+        if (p.force_level >= 0) lvl = std::min(p.force_level, L - 1);
         float ss = 1.0f / p.strides[lvl];
         int H = feat_hw[lvl].first, W = feat_hw[lvl].second;
         float const* feat = feats[lvl].data();

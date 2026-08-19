@@ -101,6 +101,22 @@ class FRCNN_SubB(nn.Module):
         #    폴백**한다 — 두 슬라이스가 같은 자리를 읽어 확대판 RoI 가 무시된다(L1 0.740).
         #    proposal 개수는 `test_cfg.rpn.max_per_img` 로 이미 정해져 있다.
         self.n_half = int(det.test_cfg.rpn.max_per_img) if self.two_in else 0
+        # ⚠️ **GenericRoIExtractor(groie)는 레벨을 고르지 않는다** — 전 레벨에 RoIAlign 을
+        #    걸고, 레벨마다 5x5 conv+ReLU 를 통과시킨 뒤 **더한다**. conv+ReLU 는 비선형이라
+        #    합과 교환이 안 되므로 "합쳐서 한 번" 으로 접을 수 없다.
+        #    그래프 입력이 하나뿐이므로 Double-Head 와 **같은 수법**을 쓴다 — 러너가 레벨별
+        #    RoI feature 를 **배치로 이어붙여** 넣고 여기서 가른다.
+        #    pre 는 레벨 공통(가중치 하나)이라 (L*N) 배치에 한 번만 걸면 된다.
+        ext = det.roi_head.bbox_roi_extractor
+        if isinstance(ext, nn.ModuleList):
+            ext = ext[0]
+        self.groie_pre = getattr(ext, "pre_module", None) if getattr(ext, "with_pre", False) else None
+        self.groie_post = getattr(ext, "post_module", None) if getattr(ext, "with_post", False) else None
+        self.groie_agg = getattr(ext, "aggregation", None) if type(ext).__name__ == "GenericRoIExtractor" else None
+        # 레벨 수와 레벨당 RoI 수를 **export 시점 상수**로 박는다. shape 에서 뽑으면
+        # trace 가 실행 중 값으로 봐서 렌더러가 슬라이스 시작을 모른다(n_half 와 같은 함정).
+        self.groie_lvls = len(getattr(ext, "featmap_strides", []) or []) if self.groie_agg else 0
+        self.groie_n = int(det.test_cfg.rpn.max_per_img) if self.groie_agg else 0
         _fold_normed_linear(self.bbox_head)
 
     def forward(self, roi_feat):
@@ -109,6 +125,17 @@ class FRCNN_SubB(nn.Module):
         #    불러오기는 **새 서브프로세스**(새 코드)가 한다. 코드를 고치는 순간 그 사이가
         #    갈라져 `AttributeError: no attribute 'two_in'` 이 난다(스윕 도중 실측).
         #    새 속성은 항상 `getattr(..., 기본값)` 으로 읽는다.
+        # groie: (L*N, C, 7, 7) 로 들어온다 → pre 한 번 → 레벨별로 갈라 합산 → post
+        if getattr(self, "groie_agg", None) is not None:
+            if getattr(self, "groie_pre", None) is not None:
+                roi_feat = self.groie_pre(roi_feat)
+            n, L = self.groie_n, self.groie_lvls
+            acc = roi_feat[:n]
+            for i in range(1, L):
+                acc = acc + roi_feat[i * n:(i + 1) * n]
+            roi_feat = acc
+            if getattr(self, "groie_post", None) is not None:
+                roi_feat = self.groie_post(roi_feat)
         if getattr(self, "shared_head", None) is not None:
             roi_feat = self.shared_head(roi_feat)
         if getattr(self, "two_in", False):
@@ -247,10 +274,8 @@ def frcnn_cfg(det, size=800):
     # ⚠️ bbox extractor 가 `GenericRoIExtractor` 면 **레벨을 고르지 않고 전 레벨을 합친다**
     #    (게다가 groie 는 레벨마다 5x5 conv + GeneralizedAttention 을 건다). 호스트
     #    RoIAlign 은 그걸 표현 못 한다 — 조용히 레벨 선택으로 떨어뜨리면 값만 틀린다.
-    if type(ext).__name__ == "GenericRoIExtractor":
-        raise NotImplementedError(
-            "GenericRoIExtractor(bbox): 전 레벨 집계 + pre/post 모듈이라 호스트 RoIAlign 으로 "
-            "표현 못 한다. 레벨별 conv 가 그래프에 들어가야 한다")
+    # GenericRoIExtractor(groie)는 이제 지원한다 — 러너가 레벨별로 RoIAlign 을 걸어
+    # 배치로 이어붙이고, SubB 가 pre→합산→post 를 그래프 안에서 한다.
     bh = det.roi_head.bbox_head
     # 캐스케이드는 bbox_head 도 ModuleList 다. 클래스 수·coder 종류는 단계 공통이라
     # **마지막 단계**를 쓴다(최종 박스를 내는 단계라 디코드 규약이 거기 맞춰져 있다).
@@ -381,6 +406,9 @@ def frcnn_cfg(det, size=800):
         # ⚠️ proposal 을 밖에서 받는 계열인가(FastRCNN). 러너는 이 값이 참이면
         #    RPN 계산을 건너뛰고 proposal 파일을 읽는다.
         "external_proposals": rh is None,
+        # groie: 러너가 레벨마다 RoIAlign 을 걸어 배치로 이어붙여야 한다(0 이면 평소대로).
+        "groie_levels": len(getattr(ext, "featmap_strides", []) or [])
+                        if type(ext).__name__ == "GenericRoIExtractor" else 0,
         # ⚠️ 아래 셋은 **기본값이 아닌 계열이 있다**(crowddet 이 셋 다 다르다).
         #    전부 shape 를 안 바꾸므로 빼먹으면 크래시 없이 proposal 만 달라진다.
         #    `centers` — 주어지면 그 값이 base anchor 중심이고 center_offset 은 무시된다.
@@ -402,7 +430,9 @@ def frcnn_cfg(det, size=800):
         "roi_channels": int(ext.out_channels),
         "roi_out": int(ext.roi_layers[0].output_size[0]),
         "roi_strides": [int(s) for s in ext.featmap_strides],
-        "roi_finest_scale": int(ext.finest_scale),
+        # ⚠️ `GenericRoIExtractor` 에는 `finest_scale` 이 없다 — 레벨을 고르지 않으니
+        #    있을 이유가 없다(마스크 경로 314줄에 같은 함정이 이미 적혀 있다).
+        "roi_finest_scale": int(getattr(ext, "finest_scale", 56)),
         "roi_sampling_ratio": int(ext.roi_layers[0].sampling_ratio),
         "roi_aligned": bool(ext.roi_layers[0].aligned),
         # RCNN decode (detect_roi)

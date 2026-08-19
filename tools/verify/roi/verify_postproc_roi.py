@@ -302,7 +302,12 @@ def _one(fam, size, image, workdir, keep, verbose):
     #    batch=1 로 구우면 1000개를 넣을 때 reshape 이 안 맞아 죽는다.
     jobs = [("FRCNN_SubA", "FRCNN_SubA", "out_FRCNN_SubA", f"1,3,{size},{size}")]
     #    캐스케이드는 단계마다 가중치만 다르므로 그래프 이름을 subs[0] 으로 통일해 gguf 만 갈아 낀다.
-    jobs += [(s, subs[0], "out_" + s, f"{MX},{RC},{O},{O}") for s in subs]
+    # ⚠️ **groie 는 배치가 레벨 배다.** GenericRoIExtractor 는 전 레벨에 RoIAlign 을 걸어
+    #    레벨별 결과를 배치로 이어붙여 넘긴다(SubB 안에서 pre→합산→post). N 으로 구우면
+    #    슬라이스가 빈 텐서가 되어 "tensor a (1000) vs b (0)" 로 죽는다.
+    GL = int(J.get("groie_levels") or 0)
+    MB = MX * GL if GL > 0 else MX
+    jobs += [(s, subs[0], "out_" + s, f"{MB},{RC},{O},{O}") for s in subs]
     # Mask Scoring R-CNN 은 점수를 마스크 IoU 로 다시 매긴다 → 그래프가 둘 더 필요하다.
     #   SubC = mask head      (1, 256, 14, 14) → 마스크 로짓 (1, 80, 28, 28)
     #   SubD = mask-IoU head  (1, 257, 14, 14) → 클래스별 IoU (1, 80)

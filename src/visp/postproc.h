@@ -371,6 +371,10 @@ struct roi_align_params {
     float finest_scale = 56.0f;
     bool aligned = true;
     int sampling_ratio = 0;             // 0 → ceil(roi/out) 적응
+    // ⚠️ **레벨을 고르지 않고 강제한다**(-1 이면 평소대로 박스 크기로 고른다).
+    //    GenericRoIExtractor(groie)는 박스마다 레벨 하나를 고르는 게 아니라
+    //    **전 레벨에 다 RoIAlign 을 걸고 더한다** — 러너가 레벨마다 한 번씩 부른다.
+    int force_level = -1;
 };
 // feats[l] = [C, W, H] CWHN flat · rois[M*4] 이미지좌표.
 // 반환 roi_feat [M*C*out*out] = NCHW flat(idx=((m*C+c)*out+ph)*out+pw). (SubB 입력용으로 permute 는 러너가)

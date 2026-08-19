@@ -268,7 +268,24 @@ int main(int argc, char** argv) {
     ap.finest_scale = J.num("roi_finest_scale", 56.0f);
     ap.sampling_ratio = (int)J.num("roi_sampling_ratio", 0);
     ap.aligned = J.num("roi_aligned", 1.0f) != 0.0f;
-    std::vector<float> roi = roi_align(feats, feat_hw, props.data(), M, ap);
+    // ⚠️ **groie 는 레벨을 고르지 않는다.** GenericRoIExtractor 는 전 레벨에 RoIAlign 을
+    //    걸고, 레벨마다 5x5 conv+ReLU 를 태운 뒤 더한다(conv+ReLU 가 비선형이라 합과
+    //    교환이 안 되므로 "합쳐서 한 번" 으로 못 접는다). 그래프 입력이 하나뿐이라
+    //    Double-Head 와 같은 수법으로 **레벨별 결과를 배치로 이어붙여** 넘기고,
+    //    pre→합산→post 는 SubB 가 그래프 안에서 한다.
+    const int groie_lv = (int)J.num("groie_levels", 0.0f);
+    std::vector<float> roi;
+    if (groie_lv > 0) {
+        roi.reserve((size_t)groie_lv * M * ap.channels * ap.output_size * ap.output_size);
+        for (int l = 0; l < groie_lv; ++l) {
+            roi_align_params lp = ap;
+            lp.force_level = l;
+            std::vector<float> one = roi_align(feats, feat_hw, props.data(), M, lp);
+            roi.insert(roi.end(), one.begin(), one.end());
+        }
+    } else {
+        roi = roi_align(feats, feat_hw, props.data(), M, ap);
+    }
 
     // ── HTC: 시맨틱 feature 를 RoIAlign 해서 bbox_feats 에 **더한다** ──────────
     // mmdet `htc_roi_head.py:99-104`. 안 더하면 크래시 없이 박스만 밀린다
@@ -382,7 +399,9 @@ int main(int argc, char** argv) {
             fuse_glbctx(base_st, M);
         }
         std::vector<float> roi_st = with_reg_half(base_st, (st == 0) ? props : rois);
-        const int MB = (RSF > 0.0f) ? 2 * M : M;   // SubB 에 넣는 행 수
+        // SubB 에 넣는 행 수. Double-Head 는 2배(cls+reg), groie 는 레벨 배다 —
+        // 둘 다 "그래프 입력이 하나뿐이라 배치로 이어붙인다" 는 같은 이유다.
+        const int MB = (RSF > 0.0f) ? 2 * M : (groie_lv > 0 ? groie_lv * M : M);
 
         model_file fb = model_load(gbs[st].c_str());
         model_weights wb = model_init(fb.n_tensors());
