@@ -76,6 +76,39 @@ class FRCNN_SubA(nn.Module):
         return out
 
 
+class SPARSE_SubB(nn.Module):
+    """SparseR-CNN / QueryInst 의 한 단계 = `DIIHead`.
+
+    보통 SubB 와 다른 점이 셋이다:
+
+      1. **입력이 둘이다** — RoI feature 와 `object_feats`(학습된 query). 그래프 입력은
+         하나뿐이라 Double-Head 와 **같은 수법**으로 배치에 이어붙여 받는다. 앞 N 행이
+         RoI feature, 뒤 N 행의 (0,0) 자리에 query 가 실려 온다.
+      2. **출력이 셋이다** — cls·bbox 에 더해 `object_feats` 를 돌려준다. 다음 단계가
+         그걸 받아야 하므로 러너가 단계 사이로 실어 나른다.
+      3. **가중치가 단계마다 다르다** — 캐스케이드와 같아서 `FRCNN_SubB{i}` 기존 구조를 탄다.
+
+    ⚠️ `DynamicConv` 은 이름과 달리 conv 가 아니라 **`torch.bmm`** 이다(query 에서 만든
+    행렬을 곱한다). 가중치가 데이터에서 나오지만 연산 자체는 표준 배치 행렬곱이라
+    정적 그래프로 표현된다 — DETR 계열이 쓰는 `render_matmul` 과 같은 경로다.
+    """
+    def __init__(self, det, stage):
+        super().__init__()
+        self.bbox_head = det.roi_head.bbox_head[stage]
+        # 레벨당 proposal 수. **export 시점 상수**로 박는다(n_half 와 같은 이유 —
+        # shape 에서 뽑으면 렌더러가 슬라이스 시작을 몰라 offset 0 으로 폴백한다).
+        self.n_prop = int(det.rpn_head.num_proposals)
+
+    def forward(self, roi_feat):
+        n = self.n_prop
+        feats = roi_feat[:n]                                   # (N, C, 7, 7)
+        # 뒤 N 행의 (0,0) 자리에 query 가 들어 있다 → (1, N, C)
+        obj = roi_feat[n:2 * n][:, :, 0, 0].unsqueeze(0)
+        cls_score, bbox_pred, object_feats = self.bbox_head(feats, obj)[:3]
+        # object_feats 를 (N, C, 1, 1) 로 펴서 돌려준다 — 러너가 다음 단계 입력에 심는다.
+        return cls_score, bbox_pred, object_feats[0].unsqueeze(-1).unsqueeze(-1)
+
+
 class FRCNN_SubB(nn.Module):
     """RoIAlign feat (N,256,7,7) → (cls_score (N,81), bbox_pred (N,320)).
 
