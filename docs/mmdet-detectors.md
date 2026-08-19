@@ -399,6 +399,34 @@ never reaches it. Installing the package was the whole fix — no code changed. 
 guard on a training-only dependency reads exactly like an unsupported architecture in a results
 table, and the two deserve different columns.
 
+Five families produce no boxes at all and are measured differently. `solo` and `solov2` predict
+masks by location, `maskformer` and `mask2former` classify mask embeddings, and
+`mask2former_vis` does the same over video; none of them has a `bbox_head`, so a box comparison
+has nothing to compare. What they do have is a compiled graph, and that is what is checked: the
+harness compiles the backbone and neck as usual, runs `tools/verify/backbone/run_dump.cpp` —
+which emits the graph's `out_*` tensors with no head and no decoding — and compares them against
+torch at the same relative-L1 threshold the box families use.
+
+| Family | Head attribute | Worst rel L1 |
+| :--- | :--- | ---: |
+| `solov2` | `mask_head` | 6.30e-04 |
+| `solo` | `mask_head` | 6.99e-04 |
+| `mask2former_vis` | `track_head` | 1.87e-03 |
+| `maskformer` | `panoptic_head` | 1.94e-03 |
+| `mask2former` | `panoptic_head` | 2.19e-03 |
+
+Read that table for what it is: **the compiled portion agrees with torch**, not "the family runs
+end to end". The mask heads were never ported to C++, and `maskformer`/`mask2former` declare no
+neck at all, so for those two the compiled portion is the backbone alone. Recording this as
+"masks verified" would be the same mistake as recording a harness limitation as a model
+limitation. `mask2former_vis` is measured on a single frame; multi-frame tracking is untested,
+not unsupported.
+
+These families were failing as `HEAD_NONE` before, which read like a defect and was not: their
+heads are simply named `mask_head`, `panoptic_head` or `track_head` rather than `bbox_head`, and
+the export produced a perfectly good `bb.pt` the whole time. A missing classification is not a
+missing capability.
+
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`

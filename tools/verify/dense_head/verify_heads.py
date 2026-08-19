@@ -40,6 +40,12 @@ FAMILIES = [
     ("tood", "tood/tood_r50_fpn_1x_coco.py",
      "tood_r50_fpn_1x_coco_20211210_103425-20e20746.pth"),
 
+    # ⚠️ `reid` 는 **자기 metafile 에 가중치가 없다** — metafile 만 보면 `CKPT_NONE` 으로
+    #    멈춘다. 학습 가중치는 없는 게 아니라 **다른 데 있다**: 트래커 config 가
+    #    `reid.init_cfg.checkpoint` 로 가리킨다(deepsort·sort 가 같은 것을 쓴다).
+    ("reid", "reid/reid_r50_8xb32-6e_mot15train80_test-mot15val20.py",
+     "tracktor_reid_r50_iter25245-a452f51f.pth"),
+
     # 위 8계열의 head 를 **그대로 상속**한 계열들. 손실이나 백본만 다르므로 조립기는
     # 같은 것을 탄다. 새 함수를 쓰기 전에 이런 게 있는지 먼저 본다.
     ("ghm", "ghm/retinanet_r50_fpn_ghm-1x_coco.py",              # RetinaHead
@@ -398,6 +404,115 @@ for _k in range(len(_o) // 2):
 '''
 
 
+def _no_box(fam, cfg_path, cw, d):
+    """**박스를 안 내는 계열**을 그래프 출력으로 검증한다 (`kind: no-box`).
+
+    SOLO·SOLOv2 는 `mask_head`, MaskFormer·Mask2Former 는 `panoptic_head`,
+    Mask2FormerVideo 는 `track_head`, ReID 는 `head` 를 쓴다. 이름이 `bbox_head` 가 아닐 뿐
+    **모델이 못 도는 게 아니다** — 백본+넥은 `bb.pt` 로 이미 잘 나온다.
+
+    이들에게 박스는 판정 기준이 될 수 없으므로(애초에 안 낸다) **컴파일된 그래프의 출력을
+    torch 와 직접 댄다.** 러너는 `run_dump.cpp` — head·decode 없이 `out_*` 만 덤프한다.
+    통과 기준은 박스 계열과 같은 상대 L1/L2 다.
+
+    ⚠️ 여기서 재는 것은 **컴파일 범위(백본+넥)** 이지 마스크 head 가 아니다.
+    마스크 head 는 C++ 로 옮기지 않았다. "이 계열이 끝까지 돈다" 가 아니라
+    "이 계열의 **컴파일된 부분**이 torch 와 같다" 로 읽어야 한다 — 두 문장을 같은 칸에
+    쓰면 다음 사람이 마스크까지 검증된 줄 안다.
+    """
+    import shutil
+
+    # 1) g2c 컴파일 — 박스 계열과 같은 경로다(백본+넥만 굽는다).
+    r = run([PY, "-c", '''
+import _stub, sys
+sys.argv = ["g2c","--model","bb.pt","--name","Fam","--output","out","--input-shape","1,3,%d,%d"]
+from shared.compile.pipeline import main; main()
+''' % (SZ, SZ)], d, {"PYTHONPATH": f"{d}:{P}:{FE}:{GGUF_PY}"}, phase="2_g2c_nb")
+    gen = os.path.join(d, "out")
+    if not os.path.exists(os.path.join(gen, "Fam.gguf")):
+        return fam, "COMPILE_FAIL", _last_error(r.stderr)[:70]
+
+    # 2) run_dump 빌드 — head 를 안 링크한다.
+    inc = os.path.join(gen, "inc", "visp", "arch")
+    os.makedirs(inc, exist_ok=True)
+    shutil.copy(os.path.join(gen, "Fam.h"), inc)
+    b = run(["g++", "-std=c++20", OPT, "-DARCH=Fam",
+             "-DVISP_ARCH_HEADER=\"visp/arch/Fam.h\"",
+             "-I" + os.path.join(gen, "inc"), "-I" + V + "/src", "-I" + V + "/include",
+             "-I" + V + "/depend/llama/ggml/include",
+             V + "/tools/verify/backbone/run_dump.cpp", os.path.join(gen, "Fam.cpp"),
+             "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
+             "-Wl,-rpath," + V + "/build/lib", "-o", os.path.join(gen, "run_dump")],
+            d, phase="3_build_nb")
+    if not os.path.exists(os.path.join(gen, "run_dump")):
+        return fam, "BUILD_FAIL", _last_error(b.stderr)[:70]
+
+    # 3) 기준값 — 같은 `bb.pt` 를 torch 로 돌려 넥 출력을 받는다.
+    open(os.path.join(d, "ref_nb.py"), "w").write(REF_NOBOX % {"FE": FE, "SZ": SZ})
+    q = run([PY, "ref_nb.py"], d, {"PYTHONPATH": f"{d}:{FE}"}, phase="4_ref_nb")
+    if not os.path.exists(os.path.join(d, "ref.out.0.bin")):
+        return fam, "REF_FAIL", _last_error(q.stderr)[:70]
+
+    # 4) 러너 실행 — 기준값과 **같은 입력**(`in.bin`)을 준다.
+    # run_dump: <gguf> <in_cwhn.bin> <out_prefix> [size]
+    x = run([os.path.join(gen, "run_dump"), os.path.join(gen, "Fam.gguf"),
+             os.path.join(d, "in.bin"), os.path.join(d, "cpp"), str(SZ)],
+            d, phase="5_run_nb")
+    outs = sorted(f for f in os.listdir(d) if f.startswith("ref.out.") and f.endswith(".bin"))
+    if not outs:
+        return fam, "RUN_FAIL", _last_error(x.stderr)[:70]
+
+    import numpy as np
+    sp = os.path.join(d, "ref.shapes.txt")
+    shapes = [[int(v) for v in ln.split()]
+              for ln in open(sp).read().splitlines() if ln.strip()] if os.path.exists(sp) else []
+    worst_l1 = worst_l2 = 0.0
+    for i in range(len(outs)):
+        pr, pc = os.path.join(d, f"ref.out.{i}.bin"), os.path.join(d, f"cpp.out.{i}.bin")
+        if not os.path.exists(pc):
+            return fam, "RUN_FAIL", f"러너가 out_{i} 를 안 냈다"
+        a = np.fromfile(pr, dtype="float32")
+        bnp = np.fromfile(pc, dtype="float32")
+        if a.size != bnp.size:
+            return fam, "SHAPE_MISMATCH", f"out_{i}: torch {a.size} vs 러너 {bnp.size}"
+        # ⚠️ **축 순서가 다르다.** torch 는 CHW, 러너(ggml)는 HWC 로 쓴다. 이걸 안 맞추면
+        #    값이 아니라 배치가 어긋나 rel L1 이 1.4~2.0(= 무관한 두 텐서)으로 나온다 —
+        #    "모델이 안 맞는다" 로 읽히지만 대조기 탓이다(tood 에서 같은 걸 겪었다).
+        if i < len(shapes) and len(shapes[i]) == 3:
+            c, h, w = shapes[i]
+            bnp = bnp.reshape(h, w, c).transpose(2, 0, 1).reshape(-1)
+        den = max(float(np.abs(a).sum()), 1e-9)
+        worst_l1 = max(worst_l1, float(np.abs(a - bnp).sum()) / den)
+        worst_l2 = max(worst_l2, float(np.linalg.norm(a - bnp)) / max(float(np.linalg.norm(a)), 1e-9))
+    ok = worst_l1 < L1_TOL and worst_l2 < L2_TOL
+    return (fam, "PASS" if ok else "FAIL",
+            f"L1 {worst_l1:.2e} · L2 {worst_l2:.2e} · kind no-box · 출력 {len(outs)}")
+
+
+# 기준값 스크립트 — `bb.pt`(백본+넥)를 torch 로 돌려 출력을 그대로 덤프한다.
+# ⚠️ **`bb.pt` 를 로드한다.** config 로 다시 init 하면 랜덤이 새로 굴러 GGUF 와 달라진다.
+REF_NOBOX = r'''
+import _stub, os, sys, numpy as np, torch
+sys.path.insert(0, "%(FE)s")
+import mmdet_wrap; mmdet_wrap.trace_friendly_ops()
+SZ = %(SZ)d
+mod = torch.load("bb.pt", weights_only=False).cpu(); mod.eval()
+x = np.random.randn(1, 3, SZ, SZ).astype("float32")
+with torch.no_grad():
+    outs = mod(torch.from_numpy(x))
+if isinstance(outs, torch.Tensor):
+    outs = [outs]
+shapes = []
+for i, t in enumerate(outs):
+    a = t[0].detach().numpy()
+    np.ascontiguousarray(a).tofile("ref.out.%%d.bin" %% i)
+    shapes.append(list(a.shape))
+open("ref.shapes.txt", "w").write("\n".join(" ".join(map(str, s)) for s in shapes))
+np.ascontiguousarray(x[0].transpose(1, 2, 0)).tofile("in.bin")   # 러너 입력(cwhn)
+print("REF_NOBOX_OK", len(outs))
+'''
+
+
 def _two_stage(fam, cfg_path, cw, d):
     """two-stage(Faster/Mask R-CNN 계열)를 **2패스**로 검증한다.
 
@@ -599,8 +714,15 @@ def one(fam, rel, ckpt):
     if kind == "raw":
         # 프론트엔드가 이 head 를 인식하지 못했다 = 조립기가 없다. 여기서 끝낸다 —
         # 계속 가면 러너에서 크래시로 나타나 "버그" 처럼 보인다.
-        # dense head 가 아니면 two-stage 경로를 태워 본다 — 거기서도 아니면 HEAD_NONE.
-        return _two_stage(fam, cfg_path, cw, d)
+        # dense head 가 아니면 two-stage 경로를 태워 본다 — 거기서도 아니면 no-box.
+        r2 = _two_stage(fam, cfg_path, cw, d)
+        if r2[1] != "HEAD_NONE":
+            return r2
+        # **박스를 안 내는 계열**(SOLO·MaskFormer·Mask2Former·ReID)은 실패가 아니다.
+        # head 이름이 `bbox_head`/`rpn_head` 가 아닐 뿐이고(mask_head·panoptic_head·
+        # track_head·head), 백본+넥은 이미 `bb.pt` 로 잘 나왔다. 이들에게는 박스가
+        # 판정 기준이 될 수 없으므로 **그래프 출력 자체**를 torch 와 댄다.
+        return _no_box(fam, cfg_path, cw, d)
 
     # 2) g2c 컴파일 (backbone+neck 만). **g2c 는 main 원본 그대로 쓴다.**
     r = run([PY, "-c", '''
