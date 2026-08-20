@@ -202,6 +202,16 @@ _HEAD_LOCK = __import__("threading").Lock()
 # 계열끼리 공유하는 상태가 없어 병렬로 돌릴 수 있다(전부 독립 프로세스).
 # 실측 계열당 최대 RSS 1.16GB → 4개면 ~4.6GB. 6코어 중 4개만 쓴다(2개는 호스트 몫).
 WORKERS = CFG.workers
+# ⚠️ **러너를 vision.cpp 빌드 산출물에 링크한다**(`-lvisioncpp -lggml …`). 빌드를 안 했거나
+#    아직 도는 중이면 계열마다 `ld returned 1 exit status` 만 나와서 **저장소가 깨진 것처럼
+#    보인다**(신규 클론에서 실제로 그렇게 읽었다). 링커가 원인을 못 말하므로 여기서 말한다.
+_missing_libs = [n for n in ("libvisioncpp.so", "libggml.so")
+                 if not os.path.exists(os.path.join(V, "build", "lib", n))]
+if _missing_libs:
+    sys.exit(f"빌드 산출물이 없다: {', '.join(_missing_libs)} (찾은 곳: {V}/build/lib)\n"
+             f"먼저 빌드해라 —\n"
+             f"    cmake -S {V} -B {V}/build\n"
+             f"    cmake --build {V}/build -j4")
 # ⚠️ **메모리 가드.** 위키 `wsl-계속-터짐` — 병렬 torch 스윕이 WSL 을 통째로 죽인 적이 있다.
 #    가용 메모리가 이 밑으로 내려가면 새 계열을 안 띄우고 기다린다. 느려질지언정 안 죽는다.
 MIN_FREE_MB = CFG.min_free_mb

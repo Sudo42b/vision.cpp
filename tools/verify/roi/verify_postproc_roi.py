@@ -559,6 +559,20 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
 
+    # ⚠️ **러너를 vision.cpp 빌드 산출물에 링크한다**(`-lvisioncpp -lggml …`). 빌드를
+    #    안 했거나 아직 도는 중이면 계열마다 `BUILD_FAIL … ld returned 1 exit status` 만
+    #    나와서 **저장소가 깨진 것처럼 보인다**(신규 클론에서 실제로 그렇게 읽었다).
+    #    링커가 원인을 못 말하므로 여기서 먼저 말한다.
+    missing = [n for n in ("libvisioncpp.so", "libggml.so")
+               if not os.path.exists(os.path.join(BUILD, "lib", n))]
+    if missing:
+        print(f"빌드 산출물이 없다: {', '.join(missing)} (찾은 곳: {BUILD}/lib)\n"
+              f"먼저 빌드해라 —\n"
+              f"    cmake -S {V} -B {BUILD}\n"
+              f"    cmake --build {BUILD} -j4\n"
+              f"다른 빌드 디렉토리를 쓰면 VISP_BUILD 로 준다.")
+        return 2
+
     fams = a.families or (two_stage_families() if a.all else [])
     if not fams:
         print(__doc__)
