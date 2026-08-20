@@ -25,7 +25,7 @@ New here? [**Getting started**](docs/getting-started.md) walks through a first r
 | [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [**YOLOv9t**](#yolov9t)                  | Object detection         | CPU         |
 | [**MMDetection** models](docs/mmdet-detectors.md) | Object detection, segmentation, tracking | CPU |
-| [**Compiled PyTorch models**](docs/mmdet-detectors.md#models-whose-head-survives-tracing) | Any traceable `nn.Module` — ultralytics YOLO, torchvision · full guide in the compiler checkout, `docs/vision-cpp-mmdet-guide-en.md` | CPU |
+| [**Compiled PyTorch models**](docs/mmdet-detectors.md#models-whose-head-survives-tracing) | Any traceable `nn.Module` — ultralytics YOLO, torchvision · needs the compiler, [GTX_Compiler](https://github.com/Sudo42b/GTX_Compiler), which carries this repository as a submodule | CPU |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 **Backbones:** SWIN (v1), DINO (v2), TinyViT
@@ -154,7 +154,7 @@ To convert a model, install [uv](https://docs.astral.sh/uv/) and run:
 ```sh
 uv run scripts/convert.py <arch> MyModel.pth
 ```
-where `<arch>` is one of `sam, birefnet, esrgan, ...`.
+where `<arch>` is one of `sam`, `sam3`, `birefnet`, `depth-anything`, `migan`, `esrgan`.
 
 This will create `models/MyModel.gguf`. See `convert.py --help` for more options.
 

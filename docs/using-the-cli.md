@@ -140,6 +140,10 @@ uv run scripts/convert.py <arch> MyModel.pth
 `<arch>` is one of `sam`, `sam3`, `birefnet`, `depth-anything`, `migan`, `esrgan`.
 The result lands in `models/`.
 
+Two of those names do not carry over to the command line unchanged. `depth-anything` here is
+`depthany` there — same model, two spellings. And `sam3` converts but has no `vision-cli`
+subcommand yet, so the GGUF it writes can only be reached from the library API.
+
 | Option | Description |
 | :--- | :--- |
 | `-o, --output` | Output directory or file. Default `models`. |

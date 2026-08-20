@@ -85,13 +85,36 @@ The one-call functions above are compositions. Each model also exposes the steps
 parameter detection, pre-processing, graph construction, post-processing.
 
 ```c++
-birefnet_params p = birefnet_detect_params(file);   // read shape/variant from the GGUF
-image_data in = birefnet_process_input(image, p);   // resize, normalise
-tensor out = birefnet_predict(m, input_tensor, p);  // build the graph
-image_data mask = birefnet_process_output(data, target_extent, p);
+// once — load the weights onto a device
+model_file file = model_load("BiRefNet-lite-F16.gguf");
+birefnet_params p = birefnet_detect_params(file, {1024, 1024});
+model_weights w = model_init(file.n_tensors());
+model_transfer(file, w, dev, dev.preferred_float_type(), dev.preferred_layout());
+
+// once per graph — build it and allocate
+compute_graph graph = compute_graph_init(6 * 1024);
+model_ref m(w, graph);
+birefnet_buffers bufs = birefnet_precompute(m, p);
+tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, p.image_extent[0], p.image_extent[1], 1});
+tensor output = birefnet_predict(m, input, p);
+compute_graph_allocate(graph, dev);
+for (tensor_data const& buf : bufs) transfer_to_backend(buf);
+
+// per image — the only part that repeats
+image_data prepared = birefnet_process_input(image, p);
+transfer_to_backend(input, prepared);
+compute(graph, dev);
+tensor_data result = transfer_from_backend(output);
+image_data mask = birefnet_process_output(result.as_f32(), image.extent, p);
 ```
 
-Use these when you need to batch work, keep tensors on the device between stages, run
+The three blocks are why the split exists: the graph is built once and reused, so only the
+last block runs per frame. Note where the types change — `birefnet_predict` takes a `tensor`
+that lives on the device, not the `image_data` that came out of `process_input`, and
+`birefnet_process_output` reads back a plain `span<float>`. `transfer_to_backend` and
+`transfer_from_backend` are what cross that line.
+
+Reach for this when you need to batch work, keep tensors on the device between stages, run
 pre-processing somewhere else, or share a compute graph across calls. `visp/ml.h` has the
 pieces underneath — `model_load`, `model_transfer`, `compute_graph_init`, `compute`.
 

@@ -105,9 +105,12 @@ model problem.
 
 ### Step 2 — Compile the backbone
 
-`backbone.pt` is a plain PyTorch module and is compiled to a vision.cpp arch module by a
-PyTorch-to-ggml model compiler. That compiler is outside the scope of this document; what
-matters is the interface the generated code must satisfy.
+`backbone.pt` is a plain PyTorch module and is compiled to a vision.cpp arch module by
+**g2c**, the PyTorch-to-ggml compiler at
+[GTX_Compiler](https://github.com/Sudo42b/GTX_Compiler) — the project that carries this
+repository as a submodule. Its own workings are outside the scope of this document; what
+matters here is the interface the generated code must satisfy. The same compiler handles the
+whole-model route at the end of this document, so it is one tool, not two.
 
 Compile at the resolution `--size` used in step 1. Tracing records the operations for one
 input shape, so the graph runs at that shape and no other. A graph built for a different size
@@ -266,8 +269,9 @@ then none of the steps above apply. A compiler emits the entire graph, `install_
 it into `src/visp/arch/` with a registration unit beside it, and `vision-cli` dispatches on the
 architecture name recorded in the GGUF:
 
-Run these from the **compiler checkout root** — the directory that holds `vision.cpp/` and
-`pyproject.toml`. `g2c` is that project's console script, not one of vision.cpp's, and `uv run`
+Run these from the **compiler checkout root** — your clone of
+[GTX_Compiler](https://github.com/Sudo42b/GTX_Compiler), the directory that holds `vision.cpp/`
+and `pyproject.toml`. `g2c` is that project's console script, not one of vision.cpp's, and `uv run`
 started inside `vision.cpp/` finds no project there: it builds a second virtual environment and
 then fails to spawn.
 
