@@ -311,8 +311,8 @@ Some examples where this helped:
    scaling/changing the distribution to include negative numbers.
 3. **Complexity** - For the most top-level operation it's sometimes not practical
    to come up with dummy input, especially if it includes downsample/upsample steps
-   which require large input tensors. So just skip the test and hope for the
-   best :)
+   which require large input tensors. Skip the test for that one and rely on the
+   end-to-end comparison instead.
 
 ## 4. Pre- and Postprocessing
 
@@ -384,18 +384,16 @@ it works". This is what [tests/test-models.cpp](../tests/test-models.cpp) is for
 With all the previous work, those tests are really simple to implement: load an
 image, call the high level API, compare the result to a reference and store it.
 
-_Note on reference images:_ Those aren't checked into the repository to avoid
-bloat. GitHub's LFS support is kinda bullshit, so it currently involves me
-invoking a script to upload new images. If you're making a PR, just leave them
-out.
+_Note on reference images:_ Those aren't checked into the repository, to keep it
+small. Adding new ones is a manual step on the maintainer's side, so leave them out
+of a pull request.
 
-## Afterword
+## A note on the Python tests
 
-This is my process, it works for me. I don't expect anyone to follow it by
-heart. All contributions are welcome as long as the results are good!
+They are a means, not a deliverable. Their purpose is to make the implementation
+faster and the bugs easier to find; if they ever cost more to maintain than they
+save, they may be dropped. Treat them as scaffolding while you work, not as
+something a contribution has to preserve.
 
-I don't actually value all the Python tests much as an end result, and may
-decide to scrap them if they increase maintenance burden. For now they're
-included in the repository, but their main purpose is to make the implementation
-faster and finding bugs less painful. And increasing the chance that things just
-work!
+The steps above are one way through, not the only one. A contribution is judged on
+the result.
