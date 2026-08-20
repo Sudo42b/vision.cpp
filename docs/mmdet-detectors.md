@@ -291,7 +291,18 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 **Eighty-six families are verified against MMDetection** — forty-one single-stage and
 thirty-eight two-stage agree on boxes; seven more are checked at the compiled-graph level
 because they emit no boxes to compare (five mask-only families and three text-conditioned ones,
-one of which is also single-stage). Assembling a head and decoding its output are
+one of which is also single-stage).
+
+**The tables below will not add up to those figures, and that is deliberate.** A table lists
+only what clears the strict bar — box under 2 px, score under 0.05, no label or count
+mismatch — so the single-stage table holds forty rows and the two-stage table thirty-five.
+The remainder are verified but sit outside the bar for a stated reason, and each is accounted
+for in the sections that follow: `free_anchor` and `yolact` land on a score-cut boundary,
+`dynamic_rcnn`, `pafpn` and `res2net` are several pixels out from fp16 weights alone (0.00 px
+when recompiled in fp32), and `double_heads` agrees at 0.16 px. Counting rows and expecting the
+summary is the mistake; the rows are the strict set, not the verified set.
+
+Assembling a head and decoding its output are
 separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
 against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
 shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode

@@ -129,7 +129,7 @@ vision-cli migan -m MIGAN-512-places2-F16.gguf -i image.png mask.png -o output.p
 [Model download](https://huggingface.co/Acly/Real-ESRGAN-GGUF) | [Paper (arXiv)](https://arxiv.org/abs/2107.10833) | [Repository (GitHub)](https://github.com/xinntao/Real-ESRGAN) | License: BSD-3-Clause
 
 ```sh
-vision-cli esrgan -m ESRGAN-4x-foolhardy_Remacri-F16.gguf -i input.png -o output.png
+vision-cli esrgan -m RealESRGAN-x4plus_anime-6B-F16.gguf -i input.png -o output.png
 ```
 
 #### YOLOv9t

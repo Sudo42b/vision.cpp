@@ -49,10 +49,21 @@ how much control you need.
 | :--- | :--- | :--- |
 | Model APIs | `visp/vision.h` | Ready-made models — load, run, get a result. |
 | Image I/O | `visp/image.h` | Load, save, resize, tile, convert. |
-| Neural network layers | `visp/nn.h` | `conv_2d`, `group_norm`, attention, and other building blocks. |
 | Graph and backends | `visp/ml.h` | GGUF loading, weight transfer, graph construction, execution. |
-| Detection post-processing | `visp/postproc.h` | Anchors, decoding, NMS, RoIAlign, masks. |
-| Tracking | `visp/tracker.h` | ByteTrack association across frames. |
+| Vectors and small utilities | `visp/util.h` | `i32x2`, spans, and the shared scalar types. |
+
+Those four are what installing puts under `include/visp/`, and they are the whole public
+surface. Three more headers are part of the build but **not installed**, so a program compiled
+against an installed SDK cannot include them. They are listed because the rest of this guide
+refers to them:
+
+| Layer | Header (in-tree only) | What it gives you |
+| :--- | :--- | :--- |
+| Neural network layers | `src/visp/nn.h` | `conv_2d`, `group_norm`, attention, and other building blocks. |
+| Detection post-processing | `src/visp/postproc.h` | Anchors, decoding, NMS, RoIAlign, masks. |
+| Tracking | `src/visp/tracker.h` | ByteTrack association across frames. |
+
+Code that needs those is built inside the tree — which is what registering an architecture does.
 
 Two front-ends are built on top:
 

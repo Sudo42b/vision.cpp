@@ -57,7 +57,7 @@ functionality is missing, you can quickly hack it in. Make sure to use that.
 
 _vision.cpp_ adds some infrastructure on top of ggml to reduce boilerplate for
 common tasks. It's designed to amend functionality, not wrap or replace it. The
-[include/visp/ml.hpp](/include/visp/ml.hpp) public header contains all the
+[include/visp/ml.h](/include/visp/ml.h) public header contains all the
 interesting bits.
 
 If you take a look at the existing model implementations in `src/visp/arch`, you
@@ -298,7 +298,7 @@ Some examples where this helped:
 
 It's common for vision models to process images and masks with a wild mix of
 PIL/numpy/OpenCV/torchvision/whatever. The
-[include/visp/image.hpp](/include/visp/image.hpp) header has a collection of
+[include/visp/image.h](/include/visp/image.h) header has a collection of
 common transformations. If that doesn't cover it, it also has some tools to
 implement custom per-pixel operations.
 
@@ -346,7 +346,7 @@ includes some practical post-processing too.
 
 ## 6. API
 
-Models are exported in [include/visp/vision.hpp](/include/visp/vision.hpp). This
+Models are exported in [include/visp/vision.h](/include/visp/vision.h). This
 includes a high-level API which represents the most common use cases. It should
 be simple, and does not need to support configuration options. Typically that
 means a function to load the model, and one to run inference. These are
