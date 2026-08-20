@@ -188,9 +188,10 @@ cmake . -B build -D VISP_VULKAN=ON
 
 ### Tests
 
-Tests are **on by default** when vision.cpp is the top-level project, which is the case for the
-clone above; `-D VISP_TESTS=OFF` turns them off. (They are off when vision.cpp is built as a
-submodule of another project.) Run all C++ tests with the following command:
+Tests are **on by default** whenever vision.cpp is the project CMake was pointed at — the clone
+above, and equally `cmake -S vision.cpp -B vision.cpp/build` from a parent checkout. They are
+off only when a parent `CMakeLists.txt` pulls this one in with `add_subdirectory`.
+`-D VISP_TESTS=OFF` turns them off in every case. Run all C++ tests with the following command:
 ```sh
 cd build
 ctest -C Release
