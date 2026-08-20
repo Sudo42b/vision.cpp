@@ -9,6 +9,16 @@ namespace visp {
 
 tensor linear(model_ref, tensor x);
 tensor layer_norm(model_ref, tensor x, float eps = 1e-5f);
+// GroupNorm = 정규화 + **per-channel affine(γ·x̂+β)**. `ggml_group_norm` 은 정규화만 한다 —
+// affine 을 빼먹으면 shape 이 그대로라 크래시가 없고 값만 틀린다. 그리고 γ=1·β=0 으로 초기화되므로
+// **랜덤 가중치로는 안 드러난다**(학습된 모델에서만 어긋난다).
+// affine=False 인 GroupNorm 은 weight/bias 가 없으므로 그때만 건너뛴다.
+tensor group_norm(model_ref, tensor x, int groups, float eps = 1e-5f);
+
+// 거울(reflect) 패딩. ggml 에는 `ggml_pad_reflect_1d` 밖에 없어 2D 를 못 쓴다.
+// 인자 순서는 `ggml_pad_ext` 와 맞췄다 — ggml 축 0(W)·1(H) 만 지원한다.
+// torch `reflection_pad2d` 와 동일하게 축을 차례로 접으므로 모서리는 이중 반사가 된다.
+tensor pad_reflect_ext(model_ref, tensor x, int l0, int r0, int l1, int r1);
 
 // space-to-depth quadrant: x[..., sh::2, sw::2] (YOLO Focus).
 // `ggml_view` 는 ne0(=W) 축에 step 을 못 줘서 view 로는 표현이 안 된다 — step 이 무시돼
@@ -52,7 +62,11 @@ tensor conv_2d_wt(model_ref m, tensor x, tensor weight, tensor bias,
 tensor conv_2d_depthwise(model_ref m, tensor x, int stride = 1, int pad = 0);
 tensor conv_2d_deform(
     model_ref m, tensor x, tensor weight, tensor offset, tensor mask, int stride, int pad);
-tensor conv_transpose_2d(model_ref m, tensor x, int stride);
+// `pad` 는 torch 의 ConvTranspose2d padding 과 같은 뜻이다(출력 가장자리를 그만큼 버린다).
+// ggml 에는 padding 을 받는 conv_transpose 가 없어 여기서 잘라낸다.
+// `groups` 는 torch 와 같은 뜻이다. ggml 에 grouped conv_transpose 가 없어 그룹마다
+// 커널·입력을 잘라 돌리고 채널로 이어붙인다.
+tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad = 0, int groups = 1);
 tensor batch_norm_2d(model_ref, tensor x);
 
 // 2D image to patch embedding using convolution and optional norm. CWHN input and output.

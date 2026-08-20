@@ -10,6 +10,10 @@ Computer Vision ML inference in C++
 
 Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](https://github.com/ggml-org/llama.cpp) project.
 
+New here? [**Getting started**](docs/getting-started.md) walks through a first run in five minutes.
+
+**Docs:** [Getting started](docs/getting-started.md) · [Overview](docs/overview.md) · [Command line](docs/using-the-cli.md) · [Library API](docs/using-the-library.md) · [Implementing a model](docs/model-implementation-guide.md) · [MMDetection models](docs/mmdet-detectors.md)
+
 ### Features
 
 | Model                                    | Task                     | Backends    |
@@ -20,6 +24,8 @@ Based on [ggml](https://github.com/ggml-org/ggml) similar to the [llama.cpp](htt
 | [**MI-GAN**](#mi-gan)                    | Inpainting               | CPU, Vulkan |
 | [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [**YOLOv9t**](#yolov9t)                  | Object detection         | CPU         |
+| [**MMDetection** models](docs/mmdet-detectors.md) | Object detection, segmentation, tracking | CPU |
+| [**Compiled PyTorch models**](docs/mmdet-detectors.md#models-whose-head-survives-tracing) | Any traceable `nn.Module` — ultralytics YOLO, torchvision · full guide in the compiler checkout, `docs/vision-cpp-mmdet-guide-en.md` | CPU |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 **Backbones:** SWIN (v1), DINO (v2), TinyViT
@@ -123,7 +129,7 @@ vision-cli migan -m MIGAN-512-places2-F16.gguf -i image.png mask.png -o output.p
 [Model download](https://huggingface.co/Acly/Real-ESRGAN-GGUF) | [Paper (arXiv)](https://arxiv.org/abs/2107.10833) | [Repository (GitHub)](https://github.com/xinntao/Real-ESRGAN) | License: BSD-3-Clause
 
 ```sh
-vision-cli esrgan -m ESRGAN-4x-foolhardy_Remacri-F16.gguf -i input.png -o output.png
+vision-cli esrgan -m RealESRGAN-x4plus_anime-6B-F16.gguf -i input.png -o output.png
 ```
 
 #### YOLOv9t

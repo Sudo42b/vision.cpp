@@ -1,14 +1,15 @@
 add_library(visioncpp)
 
+# arch/*.cpp 는 **자동으로 모은다.** 예전엔 손으로 나열했는데, g2c 생성물을 붙일 때마다
+# 한 줄 추가를 빠뜨리면 그 파일이 통째로 빌드에서 빠진 채 아무도 모른다
+# (`src/cli/inference_yolov9t.cpp` 가 실제로 그렇게 죽은 코드가 됐다).
+# ⚠️ CONFIGURE_DEPENDS 가 있어야 파일을 추가했을 때 CMake 가 다시 돈다.
+file(GLOB VISP_ARCH_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/arch/*.cpp")
+
 target_sources(visioncpp PRIVATE
-  arch/birefnet.cpp
-  arch/depth-anything.cpp
-  arch/dino.cpp
-  arch/esrgan.cpp
-  arch/migan.cpp
-  arch/mobile-sam.cpp
-  arch/swin.cpp
-  arch/yolov9t.cpp
+  ${VISP_ARCH_SOURCES}
+  arch_registry.cpp
+  draw.cpp
   c-api.cpp
   image.cpp
   ml.cpp

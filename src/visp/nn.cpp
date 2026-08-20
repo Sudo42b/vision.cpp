@@ -1,3 +1,4 @@
+#include <vector>
 #include "nn.h"
 #include "util/string.h"
 
@@ -183,13 +184,56 @@ tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
     return x;
 }
 
-tensor conv_transpose_2d(model_ref m, tensor x, int stride) {
+tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad, int groups) {
     tensor weight = m.weights("weight");
+    // ⚠️ **커널은 F16 이어야 한다.** `ggml_compute_forward_conv_transpose_2d` 는
+    //    `GGML_ASSERT(src0->type == GGML_TYPE_F16)` 로 시작한다(ggml-cpu/ops.cpp).
+    //    `model_transfer` 에 `preferred_float_type()` 을 주면 CPU 백엔드에서 F32 로 올라와
+    //    **로드는 되고 실행에서 죽는다.** 호출자가 알아야 할 사정이 아니므로 여기서 맞춘다
+    //    (attention 의 k/v 캐스팅과 같은 규약).
+    if (weight->type != GGML_TYPE_F16) {
+        weight = ggml_cast(m, weight, GGML_TYPE_F16);
+    }
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
     }
-    x = ggml_conv_transpose_2d_p0(m, weight, x, stride);
+    if (groups <= 1) {
+        x = ggml_conv_transpose_2d_p0(m, weight, x, stride);
+    } else {
+        // ⚠️ **ggml 에는 grouped conv_transpose 가 없다.** 그냥 통과시키면 groups 가
+        //    조용히 무시되어 채널이 섞인 채 돈다(크래시 없음). 그룹마다 커널과 입력을
+        //    잘라 따로 돌리고 채널 축으로 이어붙인다 — 정의 그대로다.
+        //    커널 ne = [KW, KH, OC/g, IC] 이므로 IC 는 ne3, 입력 채널은 ne2 다.
+        const int64_t icg = weight->ne[3] / groups;   // 그룹당 입력 채널(커널 쪽)
+        const int64_t xcg = x->ne[2] / groups;        // 그룹당 입력 채널(피처 쪽)
+        GGML_ASSERT(icg > 0 && xcg > 0);
+        tensor acc = nullptr;
+        for (int g = 0; g < groups; ++g) {
+            tensor wg = ggml_cont(m, ggml_view_4d(
+                m, weight, weight->ne[0], weight->ne[1], weight->ne[2], icg,
+                weight->nb[1], weight->nb[2], weight->nb[3], (size_t)g * icg * weight->nb[3]));
+            tensor xg = ggml_cont(m, ggml_view_4d(
+                m, x, x->ne[0], x->ne[1], xcg, x->ne[3],
+                x->nb[1], x->nb[2], x->nb[3], (size_t)g * xcg * x->nb[2]));
+            tensor og = ggml_conv_transpose_2d_p0(m, wg, xg, stride);
+            acc = acc ? ggml_concat(m, acc, og, 2) : og;
+        }
+        x = acc;
+    }
 
+    // ⚠️ **`ggml_conv_transpose_2d_p0` 은 이름 그대로 padding 0 전용이다.**
+    //    transposed conv 의 padding p 는 "출력 가장자리를 p 픽셀씩 버린다" 와 같으므로
+    //    p0 로 크게 뽑아 놓고 여기서 잘라낸다. 안 자르면 출력이 2p 만큼 크고, 그 크기는
+    //    **다음 op 에서** 어긋나 죽는다 — 크래시 지점이 원인 지점이 아니다
+    //    (centernet 실측: deconv 가 34x34 를 내고 다음 DCN 의 offset 32 와 안 맞았다).
+    //    mmdet 의 deconv 는 전부 대칭 padding 이라 양쪽을 같은 값으로 자르면 된다.
+    if (pad > 0) {
+        const int64_t w = x->ne[0] - 2 * pad, h = x->ne[1] - 2 * pad;
+        GGML_ASSERT(w > 0 && h > 0);
+        x = ggml_cont(m, ggml_view_4d(m, x, w, h, x->ne[2], x->ne[3],
+                                      x->nb[1], x->nb[2], x->nb[3],
+                                      pad * x->nb[0] + pad * x->nb[1]));
+    }
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
     }
@@ -214,6 +258,57 @@ tensor conv_2d_deform(
         x = permute_whcn_to_cwhn(m, x);
     }
     return x;
+}
+
+namespace {
+
+// ggml 축 `dim` 에서 인덱스 `i` 한 칸만 잘라 **연속** 텐서로 만든다.
+// `ggml_concat` 은 비연속 src 도 받지만, view 를 그대로 넘기면 stride 해석이 축마다
+// 달라져 디버깅이 어렵다 — 한 칸짜리라 복사 비용이 무시할 만하므로 cont 로 고정한다.
+tensor pad_reflect_slice(model_ref m, tensor x, int dim, int64_t i) {
+    int64_t ne[4] = {x->ne[0], x->ne[1], x->ne[2], x->ne[3]};
+    ne[dim] = 1;
+    return ggml_cont(m, ggml_view_4d(m, x, ne[0], ne[1], ne[2], ne[3],
+                                     x->nb[1], x->nb[2], x->nb[3],
+                                     (size_t)i * x->nb[dim]));
+}
+
+// 한 축만 거울 반사. torch 규약: out[k] = x[lo-k] (k<lo), out[n+lo+k] = x[n-2-k].
+// **경계 자신은 복제하지 않는다** — 그래서 인덱스가 1 부터 시작하고 n-2 에서 내려간다.
+tensor pad_reflect_axis(model_ref m, tensor x, int dim, int lo, int hi) {
+    if (lo <= 0 && hi <= 0) {
+        return x;
+    }
+    int64_t n = x->ne[dim];
+    ASSERT(lo < n && hi < n, "reflect 패딩이 축 길이보다 크다");
+    std::vector<tensor> parts;
+    for (int k = lo; k >= 1; --k) {
+        parts.push_back(pad_reflect_slice(m, x, dim, k));
+    }
+    parts.push_back(x);
+    for (int k = 1; k <= hi; ++k) {
+        parts.push_back(pad_reflect_slice(m, x, dim, n - 1 - k));
+    }
+    return ggml_concat_n(m, parts.data(), (int)parts.size(), dim);
+}
+
+}  // namespace
+
+tensor pad_reflect_ext(model_ref m, tensor x, int l0, int r0, int l1, int r1) {
+    x = pad_reflect_axis(m, x, 0, l0, r0);
+    x = pad_reflect_axis(m, x, 1, l1, r1);
+    return x;
+}
+
+tensor group_norm(model_ref m, tensor x, int groups, float eps) {
+    x = ggml_group_norm(m, x, groups, eps);
+    // 채널축 broadcast 규약은 batch_norm_2d 와 같다 — CWHN 은 ne0 이 채널이라 그대로,
+    // WHCN 은 ne2 라 [1,1,C,1] 로 편다.
+    const bool whcn = !(m.flags & model_build_flag::cwhn);
+    auto ch = [&](tensor t) { return whcn ? ggml_reshape_4d(m, t, 1, 1, t->ne[0], 1) : t; };
+    if (tensor weight = m.find("weight")) x = ggml_mul(m, x, ch(weight));
+    if (tensor bias = m.find("bias")) x = ggml_add(m, x, ch(bias));
+    return named(m, x);
 }
 
 tensor batch_norm_2d(model_ref m, tensor x) {
