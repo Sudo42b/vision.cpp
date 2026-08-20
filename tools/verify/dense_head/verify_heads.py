@@ -212,6 +212,48 @@ if _missing_libs:
              f"먼저 빌드해라 —\n"
              f"    cmake -S {V} -B {V}/build\n"
              f"    cmake --build {V}/build -j4")
+
+
+def _abi_name_len():
+    """헤더의 `GGML_MAX_NAME` 과 **라이브러리에 실제로 박힌 값**을 돌려준다.
+
+    ⚠️ **존재 검사만으로는 부족하다.** `tensor_name = fixed_string<GGML_MAX_NAME>` 이 공개 API
+       시그니처에 들어 있어 이 매크로는 사실상 **ABI 버전**이다. 헤더가 64인데 라이브러리가
+       128 로 구워져 있으면 맹글링이 갈려 계열마다
+       `undefined reference … fixed_string<64ul>` 로 죽는다 — 라이브러리 파일은 멀쩡히 **있다.**
+       실측: 서브모듈 포인터를 되돌린 뒤 재빌드를 안 해서 **100계열 × 47초를 태웠다.**
+       위키 `헤더와-라이브러리는-같은-트리여야-한다`.
+    """
+    hdr = None
+    try:
+        with open(os.path.join(V, "depend", "llama", "ggml", "include", "ggml.h"),
+                  encoding="utf-8") as f:
+            m = re.search(r"define\s+GGML_MAX_NAME\s+(\d+)", f.read())
+            hdr = int(m.group(1)) if m else None
+    except OSError:
+        pass
+    lib = None
+    try:
+        out = subprocess.run(["nm", "-DC", os.path.join(V, "build", "lib", "libvisioncpp.so")],
+                             capture_output=True, text=True, timeout=60).stdout
+        # ⚠️ `fixed_string<N>` 을 통째로 세면 **오탐한다** — 예외 메시지 타입이
+        #    `fixed_string<128>` 로 따로 있고(`include/visp/util.h`) GGML_MAX_NAME 과 무관하다.
+        #    ABI 를 실제로 가르는 함수 **하나의 시그니처**로 좁혀 읽는다.
+        m = re.search(r"compute_graph_output\([^)]*fixed_string<(\d+)ul>", out)
+        if m:
+            lib = int(m.group(1))
+    except (OSError, subprocess.SubprocessError):
+        pass                                    # nm 이 없으면 검사를 건너뛴다(막지 않는다)
+    return hdr, lib
+
+
+_hdr_n, _lib_n = _abi_name_len()
+if _hdr_n and _lib_n and _hdr_n != _lib_n:
+    sys.exit(f"헤더와 라이브러리의 GGML_MAX_NAME 이 다르다 — 헤더 {_hdr_n} · 라이브러리 {_lib_n}.\n"
+             f"이 매크로는 `fixed_string<N>` 으로 공개 API 시그니처에 들어가 **ABI 버전**이다.\n"
+             f"그대로 두면 계열마다 `undefined reference … fixed_string<{_hdr_n}ul>` 로 죽는다.\n"
+             f"라이브러리를 지금 헤더로 다시 구워라 —\n"
+             f"    cmake --build {V}/build -j4")
 # ⚠️ **메모리 가드.** 위키 `wsl-계속-터짐` — 병렬 torch 스윕이 WSL 을 통째로 죽인 적이 있다.
 #    가용 메모리가 이 밑으로 내려가면 새 계열을 안 띄우고 기다린다. 느려질지언정 안 죽는다.
 MIN_FREE_MB = CFG.min_free_mb
