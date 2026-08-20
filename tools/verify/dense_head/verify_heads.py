@@ -344,6 +344,16 @@ with torch.no_grad():
 #    `ValueError: too many values to unpack` 로 죽고, 앞 둘만 쓰면 절반이 검증 안 된다.
 _o = list(_o) if isinstance(_o, (list, tuple)) else [_o]
 assert len(_o) >= 2 and len(_o) %% 2 == 0, "SubB 출력이 (cls, box) 쌍이 아니다: %%d" %% len(_o)
+# ⚠️ **개수만 세면 안 된다.** `with_reg=False` 인 head 는 자리는 채우되 값이 `None` 이다
+#    (`grid_rcnn` — 좌표를 별도 `grid_head` 가 낸다). 그대로 두면 다음 줄에서
+#    `'NoneType' object has no attribute 'numpy'` 로 죽어 **원인이 안 보인다.**
+#    여기서 이유를 대고 멈춘다 — 이 하네스가 못 재는 구조지 계열의 결함이 아니다.
+for _k in range(len(_o) // 2):
+    if _o[2 * _k + 1] is None:
+        raise SystemExit(
+            "SubB 의 bbox_pred 가 None 이다 — with_reg=False 인 head 다(좌표를 다른 head 가 낸다). "
+            "이 하네스는 (cls, box) 쌍을 전제하므로 이 계열은 two-stage 하네스로 재라: "
+            "tools/verify/roi/verify_postproc_roi.py")
 for _k in range(len(_o) // 2):
     _c, _b = _o[2 * _k], _o[2 * _k + 1]
     np.ascontiguousarray(_c.numpy()).tofile("ref.cls.%%d.bin" %% _k)
