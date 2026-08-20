@@ -281,7 +281,7 @@ uv run g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m \
 python vision.cpp/tools/install_arch.py out --name Yolo26m --detect-yolo
 cmake --build vision.cpp/build -j4
 ./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf \
-    -i vision.cpp/tests/input/cat-and-hat.jpg -o detected.jpg
+    -i vision.cpp/tests/input/cat-and-hat.jpg -o detected.png
 ```
 
 `--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
