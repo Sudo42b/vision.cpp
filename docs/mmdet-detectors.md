@@ -90,9 +90,18 @@ Outputs:
     they are compiled into the runner rather than read at run time.
     See [Configuration reference](#configuration-reference).
 
-The `.pt` pickles by module name `mmdet_wrap`. The export writes `mmdet_wrap.py` and
-`mmdet_compat.py` beside it, and the compiler's loader puts the `.pt`'s own directory on the
-import path, so the file opens anywhere with nothing set in the environment.
+Those two files are the whole output. What the `.pt` does *not* carry is the class definition:
+saving a module pickles its classes by module name, so whatever opens the file has to be able
+to import `mmdet_wrap`. That module is not copied next to the `.pt` — it stays in
+`tools/frontend/mmdet/`, and the loader has to be told where it is:
+
+```sh
+PYTHONPATH=<vision.cpp>/tools/frontend/mmdet python …
+```
+
+Keeping one copy rather than a snapshot per export is deliberate: a copy drifts from the code
+that produced it, and a `.pt` loaded against a drifted wrapper fails in ways that look like a
+model problem.
 
 ### Step 2 — Compile the backbone
 
@@ -230,7 +239,7 @@ which keeps a font out of the runner.
 | Variable | Effect |
 | :--- | :--- |
 | `VISP_DRAW_THRESHOLD` | Minimum score to draw. Default `0.3` |
-| `VISP_PRINT_DETS` | How many rows to print. `0` turns the table off |
+| `VISP_PRINT_DETS` | How many rows to print. Default `10`; `0` turns the table off |
 
 In the raw form each detection is six `float32` values written back to back:
 
@@ -267,7 +276,8 @@ uv run g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m \
     --output out --input-shape 1,3,640,640
 python vision.cpp/tools/install_arch.py out --name Yolo26m --detect-yolo
 cmake --build vision.cpp/build -j4
-./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf -i photo.jpg -o detected.jpg
+./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf \
+    -i vision.cpp/tests/input/cat-and-hat.jpg -o detected.jpg
 ```
 
 `--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
@@ -292,6 +302,12 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 thirty-eight two-stage agree on boxes; seven more are checked at the compiled-graph level
 because they emit no boxes to compare (five mask-only families and three text-conditioned ones,
 one of which is also single-stage).
+
+That figure is on the **box** measure: coordinates within 2 px of MMDetection's own output,
+scores within 0.05, no label or count mismatch. A second measure exists and answers a
+different question — whether the compiled graph reproduces the head's tensors *before*
+decoding, at relative L1/L2 under 5e-02. That one reads 89 of 100. Neither number is a
+correction of the other, and they should not be put in the same table.
 
 **The tables below will not add up to those figures, and that is deliberate.** A table lists
 only what clears the strict bar — box under 2 px, score under 0.05, no label or count
@@ -443,9 +459,10 @@ missing capability.
 Two-stage families are measured separately, at 800 and against the detector's own `predict`
 rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
 RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Thirty-five of the forty-five families with a `roi_head` agree —
-forty-five rather than forty because the harness now looks one layer inside wrapper detectors
-(see below):
+and the thresholds are the same. Of the forty-five families with a `roi_head`, thirty-seven
+agree — the thirty-five in the table below, plus `cascade_rpn` and `guided_anchoring`, which
+need their proposals supplied from outside and are discussed after it. Forty-five rather than
+forty because the harness now looks one layer inside wrapper detectors (see below):
 
 | Family | Decoder | Worst box | Worst score |
 | :--- | :--- | ---: | ---: |
@@ -548,14 +565,22 @@ whenever it differs from the default, so a zero can be told apart from a wrong p
 below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
-The ten that do not agree split four ways, and the split matters more than the count:
+The rest split three ways, and the split matters more than the count. Only the first group is
+unsolved; the other two are a deliberate precision choice and a boundary case:
 
-- **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
-  `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
-  `queryinst`/`sparse_rcnn` learn proposals outright. `groie` is refused for the neighbouring
-  reason — `GenericRoIExtractor` aggregates every level through per-level convolutions, which
-  host RoIAlign cannot express. All five stop at export with a stated reason rather than a
-  wrong number.
+- **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors.
+  `queryinst` and `sparse_rcnn` learn proposals outright, and `groie` is refused for the
+  neighbouring reason — `GenericRoIExtractor` aggregates every level through per-level
+  convolutions, which host RoIAlign cannot express. All three stop at export with a stated
+  reason rather than a wrong number.
+
+  `cascade_rpn` and `guided_anchoring` were in this group and are no longer. Their RPNs are
+  indeed non-standard — one refines across stages, the other predicts anchor shapes — but
+  **their RoI heads are ordinary**, so taking the proposals from outside leaves the rest of the
+  path measurable. Each is given the proposals its own `rpn_head` produced in torch, which
+  `frcnn.json` selects with `own_rpn`. Measured that way: `guided_anchoring` 0.02 px,
+  `cascade_rpn` 0.03 px. Do not reuse the fixed grid that `fast_rcnn` gets — that family has no
+  RPN to ask, and these two do.
 - **FP16 weights, not a defect.** `dynamic_rcnn` (10.24 px), `pafpn` (8.77 px) and `res2net`
   (6.81 px) return the right count and the right labels with the coordinates several pixels
   out. Recompiling with fp32 weights makes all three exact at **0.00 px**, so the gap is the
