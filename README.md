@@ -65,14 +65,14 @@ Pass `--composite output.png` to composite input and mask. Use `--help` for more
 #include <visp/vision.h>
 using namespace visp;
 
-void main() {
+int main() {
   backend_device cpu = backend_init(backend_type::cpu);
   sam_model sam = sam_load_model("MobileSAM-F16.gguf", cpu);
   
   image_data input_image = image_load("input.jpg");
   sam_encode(sam, input_image);
 
-  image_data object_mask = sam_compute(sam, box_2d{{420, 120}, {650, 320}});
+  image_data object_mask = sam_compute(sam, box_2d{{420, 120}, {650, 430}});
   image_save(object_mask, "mask.png");
 }
 ```
@@ -113,7 +113,7 @@ vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composi
 [Model download](https://huggingface.co/Acly/Depth-Anything-V2-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/abs/2406.09414) | [Repository (GitHub)](https://github.com/DepthAnything/Depth-Anything-V2) | License: Apache-2 / CC-BY-NC-4
 
 ```sh
-vision-cli depth-anything -m Depth-Anything-V2-Small-F16.gguf -i input.png -o depth.png
+vision-cli depthany -m Depth-Anything-V2-Small-F16.gguf -i input.png -o depth.png
 ```
 
 #### MI-GAN
