@@ -594,9 +594,17 @@ The ten that do not agree split four ways, and the split matters more than the c
   the box features **at every stage**, not only the first. `scnet` (29 px → 0.18 px) adds a
   global-context vector to all RoI positions the same way. `detectors` (30 px → 0.03 px) was
   not a fusion at all — its switchable atrous convolution ran at one dilation. `swin`
-  (0.22 px) failed earlier still, at load: `GGML_MAX_NAME` was 64 and its tensor names are
+  (0.22 px) failed earlier still, at load: `GGML_MAX_NAME` is 64 and its tensor names are
   longer, and separately the shifted-window attention mask is built by slice assignment that
-  tracing drops, which silently zeroes the mask instead of crashing.
+  tracing drops, which silently zeroes the mask instead of crashing. The length is resolved
+  by **shortening the names, not by patching ggml** — a patched submodule commit lives on no
+  remote we can push to, so it would break every fresh clone. What made this one hard to see
+  is that the shortener already existed and still let the name through: it folds the module
+  prefix against a budget that assumes a short suffix (`running_mean`, twelve characters),
+  and `relative_position_bias_table` is twenty-eight. The prefix here is short enough to pass
+  untouched, and nothing checked the finished length, so the bake wrote a GGUF that could not
+  be loaded and said so only much later, as one line from the runner. Counting the longest
+  weight name is not the same as checking what the shortener does with it.
 
 Nothing is left unsorted. `tridentnet` used to return no boxes at all, and it took two
 different C4-only faults to explain that. Its RPN puts five scales on **one** level
