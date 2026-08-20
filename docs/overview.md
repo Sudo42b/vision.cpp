@@ -23,7 +23,7 @@ vision.cpp splits the model in two:
 | Weights | GGUF tensors | a `.gguf` file loaded at run time |
 
 Nothing interprets a graph description at run time, because there is no graph description — the
-graph is the code you compiled. That is what makes the deployment small and start-up fast, and
+graph is the code you compiled. That keeps the deployment small and start-up fast, and
 it is the trade-off at the centre of the project: adding a model that isn't supported yet
 means writing or generating code, not exporting a file.
 

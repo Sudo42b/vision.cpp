@@ -377,9 +377,9 @@ no label mismatch and no difference in how many boxes survive.
 | `detr` | `detect_detr` | 1.85 px | 0.044 |
 
 Every row above was re-measured together in one run, so the numbers are comparable with each
-other. That matters more than it sounds: the harness picks a representative config per family
-from a hand-written override list, and comparing against the config `metafile.yml` would have
-chosen instead silently pairs a compiled graph with someone else's checkpoint. Thirteen
+other. The harness picks a representative config per family from a hand-written override
+list, and comparing against the config `metafile.yml` would have chosen instead silently pairs
+a compiled graph with someone else's checkpoint. Thirteen
 families differ between those two choices, and the mismatch reads as a decode failure —
 `retinanet` looked 20 px out and `dino` looked like a regression until the pairing was fixed.
 
@@ -390,8 +390,8 @@ covered. Two variants of one family can disagree completely; naming the variant 
 optional.
 
 Six of those rows were added after the first pass, and every one of them had been recorded as
-out of scope. That is worth saying plainly: **"needs its own decoder" is not the same as
-"cannot be done"** — the six closed in a day. What they needed was reading the family's own
+out of scope. **"Needs its own decoder" is not the same as "cannot be done"** — the six closed
+in a day. What they needed was reading the family's own
 config rather than assuming defaults. `ssd` lays down a different number of anchors per level;
 `yolact` gives base sizes and centres separately from the strides, so the usual
 stride-times-scale reconstruction lands 0.859× small and half a cell off; `paa` and `lad` rank
@@ -435,7 +435,8 @@ table, and the two deserve different columns.
 Five families produce no boxes at all and are measured differently. `solo` and `solov2` predict
 masks by location, `maskformer` and `mask2former` classify mask embeddings, and
 `mask2former_vis` does the same over video; none of them has a `bbox_head`, so a box comparison
-has nothing to compare. What they do have is a compiled graph, and that is what is checked: the
+has nothing to compare. What they do have is a compiled graph, and that is what the harness
+checks: the
 harness compiles the backbone and neck as usual, runs `tools/verify/backbone/run_dump.cpp` —
 which emits the graph's `out_*` tensors with no head and no decoding — and compares them against
 torch at the same relative-L1 threshold the box families use.
@@ -565,8 +566,8 @@ family (`mmdet_families.test_image`); the cat photo the other families use yield
 on either side, which reports as `EMPTY`. The chosen image is printed beside the numbers
 whenever it differs from the default, so a zero can be told apart from a wrong photo later.
 
-`fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
-below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
+`fpg` is measured at 1024 rather than 800 because it builds levels below P5, where 800 stops
+dividing evenly — a 25-wide map meets a 26-wide one and the export
 aborts. That is a property of the resolution, not of the family.
 
 The rest split three ways, and the split matters more than the count. Only the first group is
@@ -600,8 +601,8 @@ unsolved; the other two are a deliberate precision choice and a boundary case:
   0.30–0.35 band beside every count mismatch. `fast_rcnn` is not measured at all — its
   metafile lists no weights, and random initialisation cannot judge a decoder, so it is
   recorded as untried rather than failing.
-- **The family post-processed its own way.** This group is now empty, and each of the three
-  is worth keeping because none of them was visible in the tensors. `ms_rcnn` multiplies every
+- **The family post-processed its own way.** This group is now empty, and none of the three
+  was visible in the tensors. `ms_rcnn` multiplies every
   score by a predicted mask IoU, which needs the whole mask branch — RoIAlign at 14, the mask
   head, then a second head over the features concatenated with the chosen mask channel.
   `seesaw_loss` is two things at once: a `NormedLinear` classifier (the weight normalisation is
@@ -613,7 +614,7 @@ unsolved; the other two are a deliberate precision choice and a boundary case:
   than one because its `loss_cls` omits `use_sigmoid`. Its RPN tensors matched at 3e-04 from
   the start, which is what said the problem was in the host code and not in the graph.
 - **An operator was missing, approximated, or silently reduced along the wrong axis.** This
-  group is now empty, and how each was found is worth keeping. `carafe` rendered
+  group is now empty. `carafe` rendered
   `pixel_shuffle` as a pass-through identity, skipping CARAFE's upsampling outright
   (29 px → 0.06 px). `libra_rcnn` approximated with a fixed kernel the non-integer
   `adaptive_max_pool2d` that BFP uses to scatter back to P6 (12 px → 0.11 px). Both announced
@@ -671,7 +672,7 @@ Three groups do not decode, and they fail for different reasons:
   up" and that `dyhead`'s neck sat at 0.7 relative L1 described a tree that no longer exists.
   Re-running a recorded failure after unrelated fixes is cheaper than reading it.
 
-  `dyhead` closed too, and where it hid is worth keeping. Its neck agreed at 2e-03 relative L1
+  `dyhead` closed too, and it hid well. Its neck agreed at 2e-03 relative L1
   and its head at 1e-04, yet the boxes were 112 px out with the score identical to four digits —
   the right cell won and was placed at the wrong pixel. The cause was in anchor generation:
   `AnchorGenerator` keeps `base_sizes` equal to the strides and puts `octave_base_scale` into
@@ -806,7 +807,7 @@ struct detection {
     thresholding and NMS. Used by RetinaNet, ATSS, PAA and other delta-coded heads.
     `score_factors` is the optional centerness/IoU branch. MMDetection thresholds and takes
     top-k on the class score **alone** and multiplies the factor in afterwards, so passing it
-    here rather than folding it into `cls_scores` is what keeps the surviving set the same.
+    here rather than folding it into `cls_scores` keeps the surviving set the same.
 
 `std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`
 :   Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
