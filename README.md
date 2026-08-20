@@ -174,6 +174,10 @@ cmake . -B build
 cmake --build build --config Release
 ```
 
+The configure step downloads the five built-in models — about 180 MB into `models/` — because
+tests are on by default in a standalone clone and the tests need them. `-D VISP_TESTS=OFF`
+skips both the tests and the download.
+
 ### Vulkan _(Optional)_
 
 Building with Vulkan GPU support requires the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) to be installed.
@@ -182,9 +186,11 @@ Building with Vulkan GPU support requires the [Vulkan SDK](https://www.lunarg.co
 cmake . -B build -D VISP_VULKAN=ON
 ```
 
-### Tests _(Optional)_
+### Tests
 
-Build with `-DVISP_TESTS=ON`. Run all C++ tests with the following command:
+Tests are **on by default** when vision.cpp is the top-level project, which is the case for the
+clone above; `-D VISP_TESTS=OFF` turns them off. (They are off when vision.cpp is built as a
+submodule of another project.) Run all C++ tests with the following command:
 ```sh
 cd build
 ctest -C Release

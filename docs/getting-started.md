@@ -42,6 +42,9 @@ curl -L -O https://huggingface.co/Acly/BiRefNet-GGUF/resolve/main/BiRefNet-lite-
 This is BiRefNet, a model that separates a subject from its background. The file is a
 [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) — the weights and nothing else.
 
+> Built from source instead? You already have it. Configuring the build downloads all five
+> built-in models into `models/`, so use `models/BiRefNet-lite-F16.gguf` and skip the `curl`.
+
 For the input, use any photo with a clear subject. If you cloned the repository, there is one
 at `docs/media/input.jpg`. Put it next to the model file and call it `input.jpg`.
 
