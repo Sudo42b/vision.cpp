@@ -13,15 +13,15 @@ vision.cpp and ggml.
 
 1. Inspect the model architecture and weights
 2. Write a script that converts the weights to GGUF format
-4. Implement the compute graph
+3. Implement the compute graph
    * Copy a module/layer from the reference into a Python test file
    * Implement the `forward` function in C++ and expose it
    * Run the reference and C++ implementation on dummy data from Python and compare
    * Repeat until everything is implemented (and tested)
-5. Implement pre-/post-processing steps in C++
-6. Add the model to the CLI
-7. Add the model to the API
-8. Add the model to `test-models`
+4. Implement pre-/post-processing steps in C++
+5. Add the model to the CLI
+6. Add the model to the API
+7. Add the model to `test-models`
 
 This might sound like a lot, but most of the steps are pretty straight-forward.
 The process has a pretty good chance to result in something that works at the
@@ -120,7 +120,27 @@ for name, tensor in model.state_dict().items():
     writer.add_tensor(name, tensor)
 ```
 
-You might have to shorten weight names to fit the 64-characters limit.
+Weight names have to fit in 64 characters, NUL included, so 63 is the real budget. Deeply
+nested modules go over it — `backbone.stages.0.blocks.0.attn.w_msa.relative_position_bias_table`
+is 66 — and the file is then **refused at load**:
+
+```
+gguf_init_from_file_ptr: tensor name 53 is too long: 66 >= 64
+```
+
+Shorten the module prefix, not the suffix; `.weight` and `.bias` are what tells the loader
+which kind of tensor it is. Two things make this easy to get wrong:
+
+- **Counting the longest weight name is not the same as checking the finished one.** A short
+  prefix with a long suffix still overflows, and a shortener that budgets only for the prefix
+  will pass it straight through.
+- **Check the length you actually wrote.** Nothing between the shortener and the loader looks
+  at it, so a file that cannot be opened is written in silence and the failure surfaces much
+  later, as one line from the runner.
+
+Generated models already handle this: `shared/compile/tensor_names.py` in the compiler folds
+the prefix, and the code generator calls the same function, so both sides arrive at the same
+name without passing a table between them.
 
 ### 3. The Compute Graph
 

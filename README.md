@@ -36,6 +36,10 @@ Get the library and executables:
 * Download a [release package](https://github.com/Acly/vision.cpp/releases) and extract it,
 * or [build from source](#building).
 
+> Those releases come from upstream and carry the built-in models only. A compiled PyTorch
+> model is added by rebuilding this fork — see [MMDetection models](docs/mmdet-detectors.md),
+> so [build from source](#building) if that is what you are here for.
+
 ### Example: Select an object in an image
 
 Let's use MobileSAM to generate a segmentation mask of the plushy on the right
@@ -51,7 +55,7 @@ You can download the model and input image here: [MobileSAM-F16.gguf](https://hu
 Find the `vision-cli` executable in the `bin` folder and run it to generate the mask:
 
 ```sh
-vision-cli -m MobileSAM-F16.gguf -i input.jpg -p 420 120 650 430 -o mask.png
+vision-cli sam -m MobileSAM-F16.gguf -i input.jpg -p 420 120 650 430 -o mask.png
 ```
 Pass `--composite output.png` to composite input and mask. Use `--help` for more options.
 
@@ -160,7 +164,7 @@ Building requires CMake and a compiler with C++20 support.
 
 **Get the sources**
 ```sh
-git clone https://github.com/Acly/vision.cpp.git --recursive
+git clone https://github.com/Sudo42b/vision.cpp.git --recursive
 cd vision.cpp
 ```
 
