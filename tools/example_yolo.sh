@@ -46,7 +46,7 @@ echo "== 3/4  빌드 =="
 cmake --build "$BUILD" -j"$(nproc)" > /dev/null
 
 echo "== 4/4  실행 =="
-OUT="$WORK/detected.jpg"
+OUT="$WORK/detected.png"   # vision-cli 는 확장자와 무관하게 PNG 로 쓴다
 "$BUILD/bin/vision-cli" "$MODEL" -m "$WORK/$CLS.gguf" -i "$IMAGE" -o "$OUT"
 
 echo

@@ -13,15 +13,15 @@ vision.cpp and ggml.
 
 1. Inspect the model architecture and weights
 2. Write a script that converts the weights to GGUF format
-4. Implement the compute graph
+3. Implement the compute graph
    * Copy a module/layer from the reference into a Python test file
    * Implement the `forward` function in C++ and expose it
    * Run the reference and C++ implementation on dummy data from Python and compare
    * Repeat until everything is implemented (and tested)
-5. Implement pre-/post-processing steps in C++
-6. Add the model to the CLI
-7. Add the model to the API
-8. Add the model to `test-models`
+4. Implement pre-/post-processing steps in C++
+5. Add the model to the CLI
+6. Add the model to the API
+7. Add the model to `test-models`
 
 This might sound like a lot, but most of the steps are pretty straight-forward.
 The process has a pretty good chance to result in something that works at the
@@ -57,7 +57,7 @@ functionality is missing, you can quickly hack it in. Make sure to use that.
 
 _vision.cpp_ adds some infrastructure on top of ggml to reduce boilerplate for
 common tasks. It's designed to amend functionality, not wrap or replace it. The
-[include/visp/ml.h](/include/visp/ml.h) public header contains all the
+[include/visp/ml.h](../include/visp/ml.h) public header contains all the
 interesting bits.
 
 If you take a look at the existing model implementations in `src/visp/arch`, you
@@ -120,7 +120,27 @@ for name, tensor in model.state_dict().items():
     writer.add_tensor(name, tensor)
 ```
 
-You might have to shorten weight names to fit the 64-characters limit.
+Weight names have to fit in 64 characters, NUL included, so 63 is the real budget. Deeply
+nested modules go over it — `backbone.stages.0.blocks.0.attn.w_msa.relative_position_bias_table`
+is 66 — and the file is then **refused at load**:
+
+```
+gguf_init_from_file_ptr: tensor name 53 is too long: 66 >= 64
+```
+
+Shorten the module prefix, not the suffix; `.weight` and `.bias` are what tells the loader
+which kind of tensor it is. Two things make this easy to get wrong:
+
+- **Counting the longest weight name is not the same as checking the finished one.** A short
+  prefix with a long suffix still overflows, and a shortener that budgets only for the prefix
+  will pass it straight through.
+- **Check the length you actually wrote.** Nothing between the shortener and the loader looks
+  at it, so a file that cannot be opened is written in silence and the failure surfaces much
+  later, as one line from the runner.
+
+Generated models already handle this: `shared/compile/tensor_names.py` in the compiler folds
+the prefix, and the code generator calls the same function, so both sides arrive at the same
+name without passing a table between them.
 
 ### 3. The Compute Graph
 
@@ -183,7 +203,7 @@ uv run pytest tests/test_piong.py
 ### C++ Implementation
 
 I'd usually put something as basic as layer-norm in
-[src/visp/nn.cpp](/src/visp/nn.cpp). And in fact, it's already there. But for
+[src/visp/nn.cpp](../src/visp/nn.cpp). And in fact, it's already there. But for
 this example, let's pretend it's a more model-specific operation, and put it
 into a new file [src/visp/arch/piong.cpp]().
 
@@ -206,7 +226,7 @@ by printing the state-dict in the test.
 
 To make the test work, we're missing some glue. It's tempting to export and use
 the function directly, but having a separate "invoker" function has proven to be
-more flexible. So I go to [tests/workbench.cpp](/tests/workbench.cpp) and add a
+more flexible. So I go to [tests/workbench.cpp](../tests/workbench.cpp) and add a
 little bit of boilerplate:
 
 ```c++
@@ -291,14 +311,14 @@ Some examples where this helped:
    scaling/changing the distribution to include negative numbers.
 3. **Complexity** - For the most top-level operation it's sometimes not practical
    to come up with dummy input, especially if it includes downsample/upsample steps
-   which require large input tensors. So just skip the test and hope for the
-   best :)
+   which require large input tensors. Skip the test for that one and rely on the
+   end-to-end comparison instead.
 
 ## 4. Pre- and Postprocessing
 
 It's common for vision models to process images and masks with a wild mix of
 PIL/numpy/OpenCV/torchvision/whatever. The
-[include/visp/image.h](/include/visp/image.h) header has a collection of
+[include/visp/image.h](../include/visp/image.h) header has a collection of
 common transformations. If that doesn't cover it, it also has some tools to
 implement custom per-pixel operations.
 
@@ -340,17 +360,17 @@ invoked like this:
 ```sh
 vision-cli <arch> -m <model-file> -i <input1> [<input2>...] -o <output>
 ```
-Adding a new model arch in [src/cli/cli.cpp](/src/cli/cli.cpp) is pretty
+Adding a new model arch in [src/cli/cli.cpp](../src/cli/cli.cpp) is pretty
 straight-forward by following one of the existing implementations. It usually
 includes some practical post-processing too.
 
 ## 6. API
 
-Models are exported in [include/visp/vision.h](/include/visp/vision.h). This
+Models are exported in [include/visp/vision.h](../include/visp/vision.h). This
 includes a high-level API which represents the most common use cases. It should
 be simple, and does not need to support configuration options. Typically that
 means a function to load the model, and one to run inference. These are
-implemented in [src/visp/vision.cpp](/src/visp/vision.cpp).
+implemented in [src/visp/vision.cpp](../src/visp/vision.cpp).
 
 Below there is space for a more modular API, which directly exports the
 functions specific to the model: parameter detection, pre-/post processing, and
@@ -360,22 +380,20 @@ graph building.
 
 Finally, it is good to have a test that actually runs the entire model on some
 sensible input (an image!) and spits out something nice to look at and go "yep,
-it works". This is what [tests/test-models.cpp](/tests/test-models.cpp) is for.
+it works". This is what [tests/test-models.cpp](../tests/test-models.cpp) is for.
 With all the previous work, those tests are really simple to implement: load an
 image, call the high level API, compare the result to a reference and store it.
 
-_Note on reference images:_ Those aren't checked into the repository to avoid
-bloat. GitHub's LFS support is kinda bullshit, so it currently involves me
-invoking a script to upload new images. If you're making a PR, just leave them
-out.
+_Note on reference images:_ Those aren't checked into the repository, to keep it
+small. Adding new ones is a manual step on the maintainer's side, so leave them out
+of a pull request.
 
-## Afterword
+## A note on the Python tests
 
-This is my process, it works for me. I don't expect anyone to follow it by
-heart. All contributions are welcome as long as the results are good!
+They are a means, not a deliverable. Their purpose is to make the implementation
+faster and the bugs easier to find; if they ever cost more to maintain than they
+save, they may be dropped. Treat them as scaffolding while you work, not as
+something a contribution has to preserve.
 
-I don't actually value all the Python tests much as an end result, and may
-decide to scrap them if they increase maintenance burden. For now they're
-included in the repository, but their main purpose is to make the implementation
-faster and finding bugs less painful. And increasing the chance that things just
-work!
+The steps above are one way through, not the only one. A contribution is judged on
+the result.

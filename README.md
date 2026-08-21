@@ -25,7 +25,7 @@ New here? [**Getting started**](docs/getting-started.md) walks through a first r
 | [**ESRGAN**](#real-esrgan)               | Super-resolution         | CPU, Vulkan |
 | [**YOLOv9t**](#yolov9t)                  | Object detection         | CPU         |
 | [**MMDetection** models](docs/mmdet-detectors.md) | Object detection, segmentation, tracking | CPU |
-| [**Compiled PyTorch models**](docs/mmdet-detectors.md#models-whose-head-survives-tracing) | Any traceable `nn.Module` — ultralytics YOLO, torchvision · full guide in the compiler checkout, `docs/vision-cpp-mmdet-guide-en.md` | CPU |
+| [**Compiled PyTorch models**](docs/mmdet-detectors.md#models-whose-head-survives-tracing) | Any traceable `nn.Module` — ultralytics YOLO, torchvision · needs the compiler, [GTX_Compiler](https://github.com/Sudo42b/GTX_Compiler), which carries this repository as a submodule | CPU |
 | [_Implement a model [**Guide**]_](docs/model-implementation-guide.md) | | |
 
 **Backbones:** SWIN (v1), DINO (v2), TinyViT
@@ -35,6 +35,10 @@ New here? [**Getting started**](docs/getting-started.md) walks through a first r
 Get the library and executables:
 * Download a [release package](https://github.com/Acly/vision.cpp/releases) and extract it,
 * or [build from source](#building).
+
+> Those releases come from upstream and carry the built-in models only. A compiled PyTorch
+> model is added by rebuilding this fork — see [MMDetection models](docs/mmdet-detectors.md),
+> so [build from source](#building) if that is what you are here for.
 
 ### Example: Select an object in an image
 
@@ -51,7 +55,7 @@ You can download the model and input image here: [MobileSAM-F16.gguf](https://hu
 Find the `vision-cli` executable in the `bin` folder and run it to generate the mask:
 
 ```sh
-vision-cli -m MobileSAM-F16.gguf -i input.jpg -p 420 120 650 430 -o mask.png
+vision-cli sam -m MobileSAM-F16.gguf -i input.jpg -p 420 120 650 430 -o mask.png
 ```
 Pass `--composite output.png` to composite input and mask. Use `--help` for more options.
 
@@ -61,14 +65,14 @@ Pass `--composite output.png` to composite input and mask. Use `--help` for more
 #include <visp/vision.h>
 using namespace visp;
 
-void main() {
+int main() {
   backend_device cpu = backend_init(backend_type::cpu);
   sam_model sam = sam_load_model("MobileSAM-F16.gguf", cpu);
   
   image_data input_image = image_load("input.jpg");
   sam_encode(sam, input_image);
 
-  image_data object_mask = sam_compute(sam, box_2d{{420, 120}, {650, 320}});
+  image_data object_mask = sam_compute(sam, box_2d{{420, 120}, {650, 430}});
   image_save(object_mask, "mask.png");
 }
 ```
@@ -109,7 +113,7 @@ vision-cli birefnet -m BiRefNet-lite-F16.gguf -i input.png -o mask.png --composi
 [Model download](https://huggingface.co/Acly/Depth-Anything-V2-GGUF/tree/main) | [Paper (arXiv)](https://arxiv.org/abs/2406.09414) | [Repository (GitHub)](https://github.com/DepthAnything/Depth-Anything-V2) | License: Apache-2 / CC-BY-NC-4
 
 ```sh
-vision-cli depth-anything -m Depth-Anything-V2-Small-F16.gguf -i input.png -o depth.png
+vision-cli depthany -m Depth-Anything-V2-Small-F16.gguf -i input.png -o depth.png
 ```
 
 #### MI-GAN
@@ -150,7 +154,7 @@ To convert a model, install [uv](https://docs.astral.sh/uv/) and run:
 ```sh
 uv run scripts/convert.py <arch> MyModel.pth
 ```
-where `<arch>` is one of `sam, birefnet, esrgan, ...`.
+where `<arch>` is one of `sam`, `sam3`, `birefnet`, `depth-anything`, `migan`, `esrgan`.
 
 This will create `models/MyModel.gguf`. See `convert.py --help` for more options.
 
@@ -160,7 +164,7 @@ Building requires CMake and a compiler with C++20 support.
 
 **Get the sources**
 ```sh
-git clone https://github.com/Acly/vision.cpp.git --recursive
+git clone https://github.com/Sudo42b/vision.cpp.git --recursive
 cd vision.cpp
 ```
 
@@ -170,6 +174,10 @@ cmake . -B build
 cmake --build build --config Release
 ```
 
+The configure step downloads the five built-in models — about 180 MB into `models/` — because
+tests are on by default in a standalone clone and the tests need them. `-D VISP_TESTS=OFF`
+skips both the tests and the download.
+
 ### Vulkan _(Optional)_
 
 Building with Vulkan GPU support requires the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) to be installed.
@@ -178,9 +186,12 @@ Building with Vulkan GPU support requires the [Vulkan SDK](https://www.lunarg.co
 cmake . -B build -D VISP_VULKAN=ON
 ```
 
-### Tests _(Optional)_
+### Tests
 
-Build with `-DVISP_TESTS=ON`. Run all C++ tests with the following command:
+Tests are **on by default** whenever vision.cpp is the project CMake was pointed at — the clone
+above, and equally `cmake -S vision.cpp -B vision.cpp/build` from a parent checkout. They are
+off only when a parent `CMakeLists.txt` pulls this one in with `add_subdirectory`.
+`-D VISP_TESTS=OFF` turns them off in every case. Run all C++ tests with the following command:
 ```sh
 cd build
 ctest -C Release

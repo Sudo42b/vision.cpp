@@ -206,7 +206,9 @@ def main():
     print()
     print("next:")
     print(f"  cmake --build {os.path.join(VCPP, 'build')} -j4")
-    print(f"  {os.path.join(VCPP, 'build/bin/vision-cli')} {arch} -m <gguf> -i <img> -o out.jpg")
+    # vision-cli 는 확장자와 무관하게 PNG 를 쓴다(image_save → stbi_write_png).
+    # .jpg 를 권하면 PNG 인데 이름만 .jpg 인 파일이 나와 뷰어가 거부한다.
+    print(f"  {os.path.join(VCPP, 'build/bin/vision-cli')} {arch} -m <gguf> -i <img> -o out.png")
 
 
 if __name__ == "__main__":

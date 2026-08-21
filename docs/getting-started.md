@@ -27,6 +27,10 @@ You should see a list of commands: `sam`, `birefnet`, `depthany`, `migan`, `esrg
 > If you would rather build from source, follow [Building](../README.md#building) first, then
 > come back here. `vision-cli` ends up in `build/bin`.
 
+> The release packages come from upstream and carry the five built-in models. A model compiled
+> from PyTorch is added by rebuilding this fork, so that route starts from source — see
+> [MMDetection detectors](mmdet-detectors.md). This tutorial only needs the release.
+
 ## Step 2 — Get a model and an image
 
 The executable contains the network structure, but not the weights. Download them:
@@ -37,6 +41,9 @@ curl -L -O https://huggingface.co/Acly/BiRefNet-GGUF/resolve/main/BiRefNet-lite-
 
 This is BiRefNet, a model that separates a subject from its background. The file is a
 [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) — the weights and nothing else.
+
+> Built from source instead? You already have it. Configuring the build downloads all five
+> built-in models into `models/`, so use `models/BiRefNet-lite-F16.gguf` and skip the `curl`.
 
 For the input, use any photo with a clear subject. If you cloned the repository, there is one
 at `docs/media/input.jpg`. Put it next to the model file and call it `input.jpg`.

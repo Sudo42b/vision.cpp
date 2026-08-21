@@ -24,13 +24,18 @@ The command selects the model, `-m` says which weights to load, `-i` and `-o` ar
 ## Options
 
 `-m, --model <file>`
-:   The `.gguf` weights. Required.
+:   The `.gguf` weights. Omit it and each command looks for its own default name —
+    `MobileSAM-F16.gguf`, `BiRefNet-lite-F16.gguf`, and so on — under `models/`,
+    `$VISION_MODEL_DIR`, `$XDG_DATA_HOME/visioncpp`, `~/.local/share/visioncpp` and the
+    install directory, in that order.
 
 `-i, --input <image> [<image> ...]`
 :   Input image. `migan` takes two — the image and the mask.
 
 `-o, --output <file>`
-:   Output file. Defaults to `output.png`.
+:   Output file. Defaults to `output.png`. Images are always written as **PNG**, whatever
+    the name says — `-o out.jpg` produces a PNG file called `out.jpg`, which some viewers
+    refuse to open. Give it a `.png` name.
 
 `-p, --prompt <x> [<y> ...]`
 :   Prompt for models that take one. `sam` accepts a point (`x y`) or a box
@@ -139,6 +144,10 @@ uv run scripts/convert.py <arch> MyModel.pth
 
 `<arch>` is one of `sam`, `sam3`, `birefnet`, `depth-anything`, `migan`, `esrgan`.
 The result lands in `models/`.
+
+Two of those names do not carry over to the command line unchanged. `depth-anything` here is
+`depthany` there — same model, two spellings. And `sam3` converts but has no `vision-cli`
+subcommand yet, so the GGUF it writes can only be reached from the library API.
 
 | Option | Description |
 | :--- | :--- |

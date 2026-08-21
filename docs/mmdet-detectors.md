@@ -4,13 +4,15 @@ This guide describes how to run detectors from
 [MMDetection](https://github.com/open-mmlab/mmdetection) with vision.cpp.
 
 MMDetection defines hundreds of detectors as compositions of a backbone, a neck and a head.
+The neck is usually an FPN — a feature pyramid network, which turns one backbone output into
+several feature maps at different resolutions, the *levels* this document keeps referring to.
 The backbone and neck are plain feed-forward networks and translate directly into a ggml graph.
 vision.cpp splits the model there: the feature extractor runs as a compiled ggml graph, and the
 head, decoding and post-processing are C++ built from library primitives. One head assembled
 that way serves every family that shares its structure.
 
 ```
- image ──▶ backbone + neck (compiled ggml graph) ──▶ FPN features
+ image ──▶ backbone + neck (compiled ggml graph) ──▶ FPN levels
                                                           │
                                                     head  │  tools/detect/head.cpp
                                                           ▼
@@ -90,15 +92,23 @@ Outputs:
     they are compiled into the runner rather than read at run time.
     See [Configuration reference](#configuration-reference).
 
-The `.pt` pickles by module name `mmdet_wrap`. The export writes `mmdet_wrap.py` and
-`mmdet_compat.py` beside it, and the compiler's loader puts the `.pt`'s own directory on the
-import path, so the file opens anywhere with nothing set in the environment.
+Those two are what you read. Two more land beside them, and they are not optional: saving a
+module pickles its classes by module name, so whatever opens the `.pt` has to be able to
+import `mmdet_wrap`. The export copies `mmdet_wrap.py` and `mmdet_compat.py` next to the `.pt`
+for exactly that reason. The compiler puts the `.pt`'s own directory on `sys.path`, so the
+file opens with **nothing set in the environment** — no `PYTHONPATH`.
+
+Keep the four together when you move them. A `.pt` separated from its wrapper fails at load in
+a way that reads like a model problem.
 
 ### Step 2 — Compile the backbone
 
-`backbone.pt` is a plain PyTorch module and is compiled to a vision.cpp arch module by a
-PyTorch-to-ggml model compiler. That compiler is outside the scope of this document; what
-matters is the interface the generated code must satisfy.
+`backbone.pt` is a plain PyTorch module and is compiled to a vision.cpp arch module by
+**g2c**, the PyTorch-to-ggml compiler at
+[GTX_Compiler](https://github.com/Sudo42b/GTX_Compiler) — the project that carries this
+repository as a submodule. Its own workings are outside the scope of this document; what
+matters here is the interface the generated code must satisfy. The same compiler handles the
+whole-model route at the end of this document, so it is one tool, not two.
 
 Compile at the resolution `--size` used in step 1. Tracing records the operations for one
 input shape, so the graph runs at that shape and no other. A graph built for a different size
@@ -230,7 +240,7 @@ which keeps a font out of the runner.
 | Variable | Effect |
 | :--- | :--- |
 | `VISP_DRAW_THRESHOLD` | Minimum score to draw. Default `0.3` |
-| `VISP_PRINT_DETS` | How many rows to print. `0` turns the table off |
+| `VISP_PRINT_DETS` | How many rows to print. Default `10`; `0` turns the table off |
 
 In the raw form each detection is six `float32` values written back to back:
 
@@ -257,8 +267,9 @@ then none of the steps above apply. A compiler emits the entire graph, `install_
 it into `src/visp/arch/` with a registration unit beside it, and `vision-cli` dispatches on the
 architecture name recorded in the GGUF:
 
-Run these from the **compiler checkout root** — the directory that holds `vision.cpp/` and
-`pyproject.toml`. `g2c` is that project's console script, not one of vision.cpp's, and `uv run`
+Run these from the **compiler checkout root** — your clone of
+[GTX_Compiler](https://github.com/Sudo42b/GTX_Compiler), the directory that holds `vision.cpp/`
+and `pyproject.toml`. `g2c` is that project's console script, not one of vision.cpp's, and `uv run`
 started inside `vision.cpp/` finds no project there: it builds a second virtual environment and
 then fails to spawn.
 
@@ -267,8 +278,17 @@ uv run g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m \
     --output out --input-shape 1,3,640,640
 python vision.cpp/tools/install_arch.py out --name Yolo26m --detect-yolo
 cmake --build vision.cpp/build -j4
-./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf -i photo.jpg -o detected.jpg
+./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf \
+    -i vision.cpp/tests/input/cat-and-hat.jpg -o detected.png
 ```
+
+> ⚠️ **Read the `→ gguf:` line, not the exit code.** A `g2c` run that prints `done` without a
+> `→ gguf:` line has failed, and it still exits `0`. A script that checks the exit status will
+> carry on with no weights file.
+>
+> ⚠️ **Registration needs a shared library.** The registration object is referenced by nothing,
+> so a static link discards the whole translation unit. The build succeeds and the command
+> silently disappears from `vision-cli --help`.
 
 `--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
 is NMS-free — so the result comes back as boxes: `vision-cli` draws them and prints their
@@ -288,395 +308,18 @@ within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxe
 
 ## What decodes to boxes
 
-**Eighty-six families are verified against MMDetection** — forty-one single-stage and
-thirty-eight two-stage agree on boxes; seven more are checked at the compiled-graph level
-because they emit no boxes to compare (five mask-only families and three text-conditioned ones,
-one of which is also single-stage).
+Every family that has been verified, the decoder each one uses, and the measured error are in
+the verification report in the compiler repository,
+[`docs/verification-report-en.md`](https://github.com/Sudo42b/GTX_Compiler/blob/main/docs/verification-report-en.md).
+It also records what did not verify and why.
 
-**The tables below will not add up to those figures, and that is deliberate.** A table lists
-only what clears the strict bar — box under 2 px, score under 0.05, no label or count
-mismatch — so the single-stage table holds forty rows and the two-stage table thirty-five.
-The remainder are verified but sit outside the bar for a stated reason, and each is accounted
-for in the sections that follow: `free_anchor` and `yolact` land on a score-cut boundary,
-`dynamic_rcnn`, `pafpn` and `res2net` are several pixels out from fp16 weights alone (0.00 px
-when recompiled in fp32), and `double_heads` agrees at 0.16 px. Counting rows and expecting the
-summary is the mistake; the rows are the strict set, not the verified set.
+Two measures appear there and they answer different questions. **Box** — coordinates within
+2 px of MMDetection's own output, scores within 0.05, no label or count mismatch. **Tensor** —
+whether the compiled graph reproduces the head's output *before* decoding, at relative L1/L2
+under 5e-02. Neither is a correction of the other, and they must not be put in the same table.
 
-Assembling a head and decoding its output are
-separate steps, and a family can pass the first and fail the second. The runner picks a decoder from what the box prediction *is* — a delta
-against an anchor, a distance from a grid point, a normalised `cxcywh` query — not from the
-shape of the tower that produced it. YOLOX and RPN build the same tower as RetinaNet and decode
-nothing like it.
-
-Each row below was measured against MMDetection's own `predict_by_feat` on the same pixels at
-512 (`cat-and-hat.jpg`), with the trained checkpoint the harness pairs with that config.
-The harness is `tools/verify/dense_head/verify_postproc.py`; it passes at 2 px, 0.05 score,
-no label mismatch and no difference in how many boxes survive.
-
-| Family | Decoder | Worst box | Worst score |
-| :--- | :--- | ---: | ---: |
-| `cornernet` | `detect_corner` (embedding pairing) | 0.03 px | 0.003 |
-| `bytetrack` | `detect_yolox` (tracker wrapper) | 0.06 px | 0.007 |
-| `ddq` | `detect_detr` (distinct queries) | 0.06 px | 0.018 |
-| `yolof` | `detect_anchor` (ctr_clamp) | 0.12 px | 0.002 |
-| `ocsort` | `detect_yolox` (tracker wrapper) | 0.15 px | 0.041 |
-| `centernet` | `detect_centernet` (heatmap peaks) | 0.13 px | 0.001 |
-| `atss` | `detect_anchor` | 0.14 px | 0.000 |
-| `dyhead` | `detect_anchor` (center_offset 0.5) | 0.21 px | 0.000 |
-| `efficientnet` | `detect_anchor` | 0.15 px | 0.005 |
-| `pisa` | `detect_anchor` | 0.18 px | 0.005 |
-| `nas_fcos` | `detect_fcos` | 0.19 px | 0.001 |
-| `condinst` | `detect_fcos` (mask branch ignored) | 0.19 px | 0.003 |
-| `gfl` | `detect_fcos` | 0.23 px | 0.004 |
-| `yolo` | `detect_yolov3` | 0.23 px | 0.005 |
-| `boxinst` | `detect_fcos` (mask branch ignored) | 0.25 px | 0.001 |
-| `strongsort` | `detect_yolox` (tracker wrapper) | 0.25 px | 0.001 |
-| `reppoints` | `detect_fcos` (xyxy offset) | 0.25 px | 0.006 |
-| `retinanet` | `detect_anchor` | 0.27 px | 0.000 |
-| `conditional_detr` | `detect_detr` | 0.27 px | 0.002 |
-| `dab_detr` | `detect_detr` | 0.28 px | 0.001 |
-| `dino` | `detect_detr` | 0.28 px | 0.004 |
-| `deformable_detr` | `detect_detr` | 0.26 px | 0.002 |
-| `autoassign` | `detect_fcos` | 0.30 px | 0.006 |
-| `ld` | `detect_fcos` | 0.30 px | 0.006 |
-| `fcos` | `detect_fcos` | 0.32 px | 0.004 |
-| `foveabox` | `detect_fcos` (base_edge) | 0.40 px | 0.002 |
-| `ddod` | `detect_anchor` | 0.41 px | 0.001 |
-| `yolox` | `detect_yolox` | 0.41 px | 0.002 |
-| `ssd` | `detect_anchor` (per-level anchors) | 0.42 px | 0.003 |
-| `ghm` | `detect_anchor` | 0.46 px | 0.005 |
-| `vfnet` | `detect_fcos` | 0.46 px | 0.003 |
-| `paa` | `detect_paa` (score voting) | 0.54 px | 0.011 |
-| `pvt` | `detect_anchor` (PVT-Tiny) | 0.55 px | 0.005 |
-| `sabl` | `detect_sabl` (buckets) | 0.55 px | 0.003 |
-| `fsaf` | `detect_anchor` (TBLR coder) | 0.56 px | 0.003 |
-| `tood` | `detect_tood` (decoded in-graph) | 0.63 px | 0.003 |
-| `rtmdet` | `detect_fcos` | 0.68 px | 0.002 |
-| `lad` | `detect_paa` (score voting) | 0.74 px | 0.001 |
-| `nas_fpn` | `detect_anchor` | 1.04 px | 0.004 |
-| `detr` | `detect_detr` | 1.85 px | 0.044 |
-
-Every row above was re-measured together in one run, so the numbers are comparable with each
-other. That matters more than it sounds: the harness picks a representative config per family
-from a hand-written override list, and comparing against the config `metafile.yml` would have
-chosen instead silently pairs a compiled graph with someone else's checkpoint. Thirteen
-families differ between those two choices, and the mismatch reads as a decode failure —
-`retinanet` looked 20 px out and `dino` looked like a regression until the pairing was fixed.
-
-`pvt` is measured on PVT-Tiny, the variant the table has always used. Selecting the family's
-representative config from `metafile.yml` instead picks PVTv2-B5, a different architecture
-(overlapping patch embedding, linear spatial reduction), which lands at 15.74 px and is not
-covered. Two variants of one family can disagree completely; naming the variant is not
-optional.
-
-Six of those rows were added after the first pass, and every one of them had been recorded as
-out of scope. That is worth saying plainly: **"needs its own decoder" is not the same as
-"cannot be done"** — the six closed in a day. What they needed was reading the family's own
-config rather than assuming defaults. `ssd` lays down a different number of anchors per level;
-`yolact` gives base sizes and centres separately from the strides, so the usual
-stride-times-scale reconstruction lands 0.859× small and half a cell off; `paa` and `lad` rank
-by anchor rather than by (anchor, class) and re-average boxes by score voting, which is
-selected by the `with_score_voting` attribute and not by the class name — `lad` subclasses
-`PAAHead`, so matching on the name misses it.
-
-`ld` needs its command run from the MMDetection root. Distillation configs name the teacher as
-`teacher_config='configs/gfl/...'`, relative to the working directory rather than to the config
-file, so running from anywhere else fails to find it and the family looks broken.
-
-`condinst` was added without writing a line of code, and finding it was an accounting exercise
-rather than an engineering one. Every table in this chapter classifies the families the two
-harnesses *run* — thirty-four single-stage plus forty two-stage — but `configs/` holds a
-hundred. Subtracting gives twenty-six that neither harness has ever touched, and a family that
-is never run cannot appear as a failure. Most of the twenty-six are legitimately outside the
-question: seven trackers that wrap a detector rather than being one, five mask-only families
-that emit no boxes at all, the three text-conditioned families, `reid`, and the five already
-discussed above. Two were not: `condinst` and `boxinst` both have an ordinary box branch, and
-both were already listed in `verify_heads.py` with their checkpoints downloaded. Nobody had
-run them.
-
-`condinst` passes because `CondInstBboxHead` extends `FCOSHead` and leaves the box path alone.
-Its `forward_single` adds a fourth branch — a `controller` convolution predicting 169 mask
-parameters — and its `_predict_by_feat_single` carries `param_pred`, `points` and `strides`
-alongside the boxes, but every one of those feeds the mask head. The decode is the FCOS decode:
-`DistancePointBBoxCoder` against grid points, sigmoid centerness as the score factor,
-`filter_scores_and_topk`, the standard `_bbox_post_process`. The harness classified it as
-`kind fcos` on its own and `detect_fcos` was already right.
-
-`boxinst` followed for free, at 0.25 px — `BoxInstBboxHead` subclasses `CondInstBboxHead` and
-overrides neither `forward_single` nor either `predict_by_feat`, so it runs the decoder above
-verbatim; only `num_params` changes, from 169 to 593. What had blocked it was not the family
-but `BoxInstDataPreprocessor.__init__`, which raises unconditionally when `scikit-image` is
-absent. The only use of `skimage` in that class is inside an `if training:` branch, computing
-LAB colour similarity for the pseudo-masks that box-supervised *training* needs; inference
-never reaches it. Installing the package was the whole fix — no code changed. A constructor
-guard on a training-only dependency reads exactly like an unsupported architecture in a results
-table, and the two deserve different columns.
-
-Five families produce no boxes at all and are measured differently. `solo` and `solov2` predict
-masks by location, `maskformer` and `mask2former` classify mask embeddings, and
-`mask2former_vis` does the same over video; none of them has a `bbox_head`, so a box comparison
-has nothing to compare. What they do have is a compiled graph, and that is what is checked: the
-harness compiles the backbone and neck as usual, runs `tools/verify/backbone/run_dump.cpp` —
-which emits the graph's `out_*` tensors with no head and no decoding — and compares them against
-torch at the same relative-L1 threshold the box families use.
-
-| Family | Head attribute | Worst rel L1 |
-| :--- | :--- | ---: |
-| `solov2` | `mask_head` | 6.30e-04 |
-| `solo` | `mask_head` | 6.99e-04 |
-| `mask2former_vis` | `track_head` | 1.87e-03 |
-| `maskformer` | `panoptic_head` | 1.94e-03 |
-| `mask2former` | `panoptic_head` | 2.19e-03 |
-
-Read that table for what it is: **the compiled portion agrees with torch**, not "the family runs
-end to end". The mask heads were never ported to C++, and `maskformer`/`mask2former` declare no
-neck at all, so for those two the compiled portion is the backbone alone. Recording this as
-"masks verified" would be the same mistake as recording a harness limitation as a model
-limitation. `mask2former_vis` is measured on a single frame; multi-frame tracking is untested,
-not unsupported.
-
-These families were failing as `HEAD_NONE` before, which read like a defect and was not: their
-heads are simply named `mask_head`, `panoptic_head` or `track_head` rather than `bbox_head`, and
-the export produced a perfectly good `bb.pt` the whole time. A missing classification is not a
-missing capability.
-
-Two-stage families are measured separately, at 800 and against the detector's own `predict`
-rather than a head's `predict_by_feat`, because the boxes do not exist until RPN proposals,
-RoIAlign and the RoI head have run. The harness is `tools/verify/roi/verify_postproc_roi.py`
-and the thresholds are the same. Thirty-five of the forty-five families with a `roi_head` agree —
-forty-five rather than forty because the harness now looks one layer inside wrapper detectors
-(see below):
-
-| Family | Decoder | Worst box | Worst score |
-| :--- | :--- | ---: | ---: |
-| `detectors` | `detect_roi` (SAC) | 0.03 px | 0.0006 |
-| `panoptic_fpn` | `detect_roi` | 0.04 px | 0.0001 |
-| `qdtrack` | `detect_roi` (tracker wrapper) | 0.03 px | 0.0003 |
-| `deepsort` | `detect_roi` (tracker wrapper) | 0.04 px | 0.0000 |
-| `sort` | `detect_roi` (tracker wrapper) | 0.04 px | 0.0000 |
-| `dcnv2` | `detect_roi` | 0.05 px | 0.0006 |
-| `carafe` | `detect_roi` | 0.06 px | 0.0007 |
-| `hrnet` | `detect_roi` | 0.06 px | 0.0002 |
-| `mask_rcnn` | `detect_roi` | 0.06 px | 0.0009 |
-| `crowddet` | `detect_roi` (set-NMS, 2 instances) | 0.07 px | 0.0001 |
-| `ms_rcnn` | `detect_roi` (+ mask-IoU rescoring) | 0.07 px | 0.0015 |
-| `gn+ws` | `detect_roi` | 0.08 px | 0.0008 |
-| `masktrack_rcnn` | `detect_roi` (tracker wrapper) | 0.09 px | 0.0012 |
-| `tridentnet` | `detect_roi` (C4, no neck) | 0.09 px | 0.0013 |
-| `cascade_rcnn` | `detect_roi` (3 stages) | 0.09 px | 0.0025 |
-| `gn` | `detect_roi` | 0.09 px | 0.0003 |
-| `empirical_attention` | `detect_roi` | 0.09 px | 0.0003 |
-| `seesaw_loss` | `detect_roi` (NormedLinear, custom activation) | 0.09 px | 0.0002 |
-| `faster_rcnn` | `detect_roi` | 0.10 px | 0.0008 |
-| `libra_rcnn` | `detect_roi` | 0.11 px | 0.0007 |
-| `htc` | `detect_roi` (3 stages + semantic) | 0.12 px | 0.0011 |
-| `resnest` | `detect_roi` | 0.12 px | 0.0002 |
-| `gcnet` | `detect_roi` | 0.14 px | 0.0010 |
-| `albu_example` | `detect_roi` | 0.14 px | 0.0008 |
-| `grid_rcnn` | `detect_roi` (grid heatmap, no reg branch) | 0.15 px | 0.0007 |
-| `point_rend` | `detect_roi` | 0.15 px | 0.0012 |
-| `regnet` | `detect_roi` | 0.16 px | 0.0012 |
-| `scnet` | `detect_roi` (+ global context) | 0.18 px | 0.0020 |
-| `simple_copy_paste` | `detect_roi` | 0.19 px | 0.0007 |
-| `swin` | `detect_roi` | 0.22 px | 0.0003 |
-| `resnet_strikes_back` | `detect_roi` | 0.24 px | 0.0023 |
-| `fpg` | `detect_roi` (at 1024) | 0.28 px | 0.0036 |
-| `dcn` | `detect_roi` | 0.37 px | 0.0002 |
-| `instaboost` | `detect_roi` | 0.39 px | 0.0079 |
-| `soft_teacher` | `detect_roi` (semi-supervised wrapper) | 0.42 px | 0.0017 |
-
-`panoptic_fpn` is back in the table, and the round trip it took is the useful part. It was
-recorded at 0.04 px, then removed when the harness started deleting each stage's outputs before
-that stage ran: the old run's export had failed and a stale `frcnn.json` from an earlier run had
-carried it through, so the number could no longer be trusted. It was marked unverified rather
-than wrong. Installing `panopticapi` and re-measuring returns **0.04 px** — the original number
-was right all along. "Unverified" and "wrong" are different claims, and only one of them
-survived contact with the measurement.
-
-What blocked the re-measurement was the interpreter, not the environment, and the distinction
-matters because two virtualenvs on this machine disagreed: the one the harness uses had a
-working `import mmdet.models` but no `panopticapi`, while the other had `panopticapi` and could
-not import `mmdet.models` at all — a stale `mmpretrain` install makes its
-`reid_data_preprocessor` raise `TypeError` at class-definition time. The harness resolves child
-processes through `sys.executable`, so which Python starts it decided the answer. Two sessions
-measuring the same package reached opposite conclusions, each correct about its own interpreter.
-
-Checking this needs the failing call, not an import. `import panopticapi` and even
-`import mmdet.datasets.coco_panoptic` both succeed without the package, because the check is
-deferred to `LoadPanopticAnnotations.__init__` (`mmdet/datasets/transforms/loading.py:572`).
-The discriminating command is
-`python -c "from mmdet.datasets.transforms.loading import LoadPanopticAnnotations as L; L()"`.
-
-All eight **wrapper** families are now measured: seven trackers and one semi-supervised
-detector. Trackers and semi-supervised
-detectors are not detectors themselves: they put one inside `model.detector` and keep only their
-own machinery at the top level, so reading `model.backbone` raises
-`'ConfigDict' object has no attribute 'backbone'` and the export stops. Unwrapping the config
-fixes the export, and the harness now also looks one layer inside when it decides which families
-are two-stage — otherwise a family that passes is never swept again.
-
-Unwrapping the config is only half of it, and the other half fails silently. The checkpoint is
-keyed by the **attribute name the wrapper class created**, which is not the config key: both
-write `model.detector`, but `SoftTeacher` builds `self.student` and `self.teacher`, so its
-weights are stored under `teacher.` / `student.` and the config decides which one inference uses
-(`semi_test_cfg.predict_on`). Stripping `detector.` from such a checkpoint matches nothing,
-`load_state_dict` reports it and carries on, and the graph is built on random weights — which
-reads as a decode bug, not a loading bug: boxes 562 px out, 91 labels wrong, 100 detections
-against MMDetection's 5. Check the count of unloaded tensors, not whether loading raised.
-Trackers mostly use `detector.`, but not all of them: MMDetection ships some tracker weights as
-the **detector alone**, already flat (`deepsort`, `sort` and `strongsort` are keyed
-`backbone.` / `neck.` / `bbox_head.`). So a prefix that matches nothing means one of two things,
-and they need opposite handling — already-flat, which should be used as-is, or a wrong guess,
-which must stop. Every detector has a `backbone`, and that is the signature that separates them.
-
-The other half of a wrapper is its `data_preprocessor`, and it is easy to drop. Six of the seven
-trackers declare it on the **wrapper** and give the inner detector none (`soft_teacher` is the
-exception, which is why it worked first). Unwrap without carrying it down and normalisation
-disappears — mean 0, std 1 — and the detector returns nothing at all. The reference side reads
-the same unwrapped config, so both sides return nothing; the harness reports `EMPTY` rather than
-a pass, so the failure is visible, but the family cannot be measured until the preprocessor comes
-down with it. The wrapper's preprocessor is a `TrackDataPreprocessor`, which expects video-shaped
-batches, so it is rewritten to `DetDataPreprocessor` on the way down — same numbers, no trap for
-whoever opens the dumped config with `inference_detector`.
-
-Trackers are trained on pedestrians with `num_classes=1`, so the harness picks a test image per
-family (`mmdet_families.test_image`); the cat photo the other families use yields no detections
-on either side, which reports as `EMPTY`. The chosen image is printed beside the numbers
-whenever it differs from the default, so a zero can be told apart from a wrong photo later.
-
-`fpg` is measured at 1024 rather than 800, and the reason is worth stating: it builds levels
-below P5, where 800 stops dividing evenly — a 25-wide map meets a 26-wide one and the export
-aborts. That is a property of the resolution, not of the family.
-
-The ten that do not agree split four ways, and the split matters more than the count:
-
-- **The RPN is not a standard anchor RPN**, so host `rpn_proposals` cannot lay down the priors:
-  `cascade_rpn` refines across stages, `guided_anchoring` predicts anchor shapes, and
-  `queryinst`/`sparse_rcnn` learn proposals outright. `groie` is refused for the neighbouring
-  reason — `GenericRoIExtractor` aggregates every level through per-level convolutions, which
-  host RoIAlign cannot express. All five stop at export with a stated reason rather than a
-  wrong number.
-- **FP16 weights, not a defect.** `dynamic_rcnn` (10.24 px), `pafpn` (8.77 px) and `res2net`
-  (6.81 px) return the right count and the right labels with the coordinates several pixels
-  out. Recompiling with fp32 weights makes all three exact at **0.00 px**, so the gap is the
-  half-precision the compiler deliberately stores — the NPU this targets is FP16-native.
-  Isolating it took swapping one tensor at a time: substituting the C++ RPN *class* scores
-  into torch changed nothing, while substituting the *box deltas* reproduced the full 10.25 px
-  from a maximum delta error of 0.0023. Do not replace these numbers with their fp32 twins;
-  they are what the deployment precision produces.
-- **Neither the graph nor the decoder is at fault.** `double_heads` agrees at 0.16 px and
-  differs by exactly one box: mmdet scores it 0.2954 and the compiled graph 0.3010, on either
-  side of the 0.30 cut the harness itself applies. That is the fp16 score error landing on a
-  threshold, not a decode difference, so the harness now prints how many boxes sit in the
-  0.30–0.35 band beside every count mismatch. `fast_rcnn` is not measured at all — its
-  metafile lists no weights, and random initialisation cannot judge a decoder, so it is
-  recorded as untried rather than failing.
-- **The family post-processed its own way.** This group is now empty, and each of the three
-  is worth keeping because none of them was visible in the tensors. `ms_rcnn` multiplies every
-  score by a predicted mask IoU, which needs the whole mask branch — RoIAlign at 14, the mask
-  head, then a second head over the features concatenated with the chosen mask channel.
-  `seesaw_loss` is two things at once: a `NormedLinear` classifier (the weight normalisation is
-  constant at inference and folds away; the input normalisation stays) and a custom activation
-  over `num_classes + 2` channels, so reading the class count as "output size minus one" shifts
-  every label by one. `crowddet` needed set-NMS — boxes from the same proposal do not suppress
-  each other — but three of its four differences were RPN settings that are not the defaults:
-  fixed anchor `centers`, `clip_border=False`, and an objectness head with two channels rather
-  than one because its `loss_cls` omits `use_sigmoid`. Its RPN tensors matched at 3e-04 from
-  the start, which is what said the problem was in the host code and not in the graph.
-- **An operator was missing, approximated, or silently reduced along the wrong axis.** This
-  group is now empty, and how each was found is worth keeping. `carafe` rendered
-  `pixel_shuffle` as a pass-through identity, skipping CARAFE's upsampling outright
-  (29 px → 0.06 px). `libra_rcnn` approximated with a fixed kernel the non-integer
-  `adaptive_max_pool2d` that BFP uses to scatter back to P6 (12 px → 0.11 px). Both announced
-  themselves as `TODO` comments in the generated `.cpp`, so grep for those before reading
-  anything else.
-
-  `gcnet` (37 px → 0.14 px) had no such marker. `ContextBlock` uses
-  `nn.LayerNorm([planes, 1, 1])` — three normalised axes — but the renderer always emitted
-  `ggml_norm`, which reduces `ne0` alone. At that point the tensor is `ne [1, 1, C, N]`, so
-  `ne0` is 1: normalising a single element gives `x - mean(x) = 0`, and the whole channel
-  branch collapses to a constant bias. A renderer that cannot express an operation still emits
-  shape-correct code, which passes compilation and every shape assertion while returning wrong
-  values.
-
-  The three cascade families joined them later, and each was a different missing piece rather
-  than a shared cascade bug. `htc` (94 px → 0.12 px) feeds a semantic segmentation branch back
-  into every RoI: RoIAlign at stride 8 onto a 14×14 grid, average-pooled to 7×7 and added to
-  the box features **at every stage**, not only the first. `scnet` (29 px → 0.18 px) adds a
-  global-context vector to all RoI positions the same way. `detectors` (30 px → 0.03 px) was
-  not a fusion at all — its switchable atrous convolution ran at one dilation. `swin`
-  (0.22 px) failed earlier still, at load: `GGML_MAX_NAME` is 64 and its tensor names are
-  longer, and separately the shifted-window attention mask is built by slice assignment that
-  tracing drops, which silently zeroes the mask instead of crashing. The length is resolved
-  by **shortening the names, not by patching ggml** — a patched submodule commit lives on no
-  remote we can push to, so it would break every fresh clone. What made this one hard to see
-  is that the shortener already existed and still let the name through: it folds the module
-  prefix against a budget that assumes a short suffix (`running_mean`, twelve characters),
-  and `relative_position_bias_table` is twenty-eight. The prefix here is short enough to pass
-  untouched, and nothing checked the finished length, so the bake wrote a GGUF that could not
-  be loaded and said so only much later, as one line from the runner. Counting the longest
-  weight name is not the same as checking what the shortener does with it.
-
-Nothing is left unsorted. `tridentnet` used to return no boxes at all, and it took two
-different C4-only faults to explain that. Its RPN puts five scales on **one** level
-(`scales=[2,4,8,16,32]`, stride 16) where an FPN RPN puts one scale on each of five, so
-reading only `scales[0]` built three anchors instead of fifteen and then read a
-fifteen-channel objectness map as if it had three — every proposal landed somewhere else.
-Fixing that moved the crash rather than removing it: with one level, NMS left 107 proposals
-where the RoI graph had been compiled for 1000, and the `flatten` inside it bakes the row
-count into a reshape. Proposals are now padded up to the cap and only the real rows are
-decoded. A first fix that does not make the symptom go away usually means a second cause,
-not a wrong first fix.
-
-`rpn` decodes proposals rather than detections, so a worst case over the whole set says little:
-of 185 proposals the median is 0.09 px and 182 are within 1 px, with one proposal of 186
-falling on the other side of the score cut. `free_anchor` agrees to 0.35 px and 0.025 with one
-box likewise on the boundary.
-
-Three groups do not decode, and they fail for different reasons:
-
-- **Something before the decoder already disagrees with torch.** This group is now empty, and
-  emptying it took no new code — the three families recorded here (`tood`, `deformable_detr`,
-  `dyhead`) were re-measured after the compiler fixes landed, and two of them simply passed:
-  `tood` at 0.63 px and `deformable_detr` at 0.26 px. The note that `tood`'s "box branch blows
-  up" and that `dyhead`'s neck sat at 0.7 relative L1 described a tree that no longer exists.
-  Re-running a recorded failure after unrelated fixes is cheaper than reading it.
-
-  `dyhead` closed too, and where it hid is worth keeping. Its neck agreed at 2e-03 relative L1
-  and its head at 1e-04, yet the boxes were 112 px out with the score identical to four digits —
-  the right cell won and was placed at the wrong pixel. The cause was in anchor generation:
-  `AnchorGenerator` keeps `base_sizes` equal to the strides and puts `octave_base_scale` into
-  `scales`, but the host folded the two together into `base_size = stride * octave_base_scale`.
-  Anchor *sizes* come out the same either way, which is why no shape check ever complained; the
-  *centre* does not, because it is `center_offset * base_size`. At stride 32 with
-  `octave_base_scale` 8 that is 128 against MMDetection's 16 — exactly the 112 px observed.
-  Families with `center_offset` 0 (retinanet, atss, gfl, …) are immune, since both readings give
-  zero, so a single family carried the defect for the whole anchor decoder. Only `dyhead` and
-  `glip` set it non-zero. Now 0.21 px, with the anchor families re-measured unchanged.
-
-  `MMDET_DUMP_HEAD` writes the neck output beside the head output for exactly this split — a
-  family whose `feat` dumps match and whose `cls`/`box` dumps do not is a head problem, and the
-  reverse is a compiler problem. When both match, as here, what is left is the decoder.
-
-- **Beware the pairing when you re-measure by hand.** `tood` first re-measured at 13.89 px with
-  a count mismatch, which looked like a live defect and was not: `verify_heads.py` exports from
-  its hand-written override list (`tood_r50_fpn_1x_coco.py`, the anchor-free variant) while the
-  config that `mmdet_families.resolve()` returns is the anchor-based one. Compiling from one and
-  judging against the other compares a graph with someone else's weights. Take the pair from the
-  harness, never from the config directory.
-- **The family post-processes its own way.** This group is down to `yolact`, and it is a
-  boundary case rather than a decode failure: fast NMS is implemented and the boxes agree to
-  0.74 px, but one box sits either side of the harness's own 0.30 cut (mmdet 0.3013, compiled
-  0.2951). It is counted with `free_anchor` and `double_heads`, not with the failures.
-- **The priors or the coder are outside `det_params`.** This group is now empty. `ssd`,
-  `fsaf`, `paa`, `lad`, `cornernet` and `centernet` all decode, and `yolov3` did earlier.
-  `centripetalnet` decodes too but lands at 3.80 px on one of two boxes, where a single
-  top-k rank flips between two nearly-equal heatmap peaks; running mmdet's own
-  `_decode_heatmap` on our tensors returns the same answer (0.4387 against 0.4393), so the
-  formula is equivalent and what remains is half-precision, not the decoder.
-
-A family in the first group is not silently wrong: without anchor parameters `detect_anchor`
-generates no candidates and the runner reports zero boxes.
+If you only need to know whether your family is covered, the list in the report is the answer.
+If you need to know how far to trust the number, read the method section above it.
 
 ## Detection heads
 
@@ -686,7 +329,8 @@ expect. They are declared in `tools/detect/head.h`.
 ### `anchor_head_forward`
 
 Shared convolution tower followed by classification and regression convolutions — the layout
-used by RetinaNet, ATSS, GFL and other anchor-based dense heads. All levels share one set of
+used by RetinaNet, ATSS, GFL and other anchor-based **dense** heads — dense because they
+predict at every cell of every level, with no proposal step to narrow the field first. All levels share one set of
 weights.
 
 ```c++
@@ -777,12 +421,14 @@ struct detection {
     thresholding and NMS. Used by RetinaNet, ATSS, PAA and other delta-coded heads.
     `score_factors` is the optional centerness/IoU branch. MMDetection thresholds and takes
     top-k on the class score **alone** and multiplies the factor in afterwards, so passing it
-    here rather than folding it into `cls_scores` is what keeps the surviving set the same.
+    here rather than folding it into `cls_scores` keeps the surviving set the same.
 
 `std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`
 :   Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
     the class score and have no such branch. `bbox_preds` are already pixel distances: the head
-    component applies the DFL integral, the stride multiply and the exponent, so this function
+    component applies the DFL integral — DFL is Distribution Focal Loss, which predicts each
+    box edge as a distribution over bins and recovers the distance by integrating it — plus the
+    stride multiply and the exponent, so this function
     must not apply a stride again. `point_offset` is 0.5 for FCOS and 0 for the heads built on
     an `AnchorGenerator`.
 
