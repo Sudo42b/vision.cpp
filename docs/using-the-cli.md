@@ -24,7 +24,10 @@ The command selects the model, `-m` says which weights to load, `-i` and `-o` ar
 ## Options
 
 `-m, --model <file>`
-:   The `.gguf` weights. Required.
+:   The `.gguf` weights. Omit it and each command looks for its own default name —
+    `MobileSAM-F16.gguf`, `BiRefNet-lite-F16.gguf`, and so on — under `models/`,
+    `$VISION_MODEL_DIR`, `$XDG_DATA_HOME/visioncpp`, `~/.local/share/visioncpp` and the
+    install directory, in that order.
 
 `-i, --input <image> [<image> ...]`
 :   Input image. `migan` takes two — the image and the mask.

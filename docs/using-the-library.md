@@ -121,7 +121,9 @@ pieces underneath — `model_load`, `model_transfer`, `compute_graph_init`, `com
 ## Detection post-processing
 
 If you are building a detector rather than using a built-in model, `visp/postproc.h` has the
-parts that are not neural networks: anchor generation, box decoding, NMS, RoIAlign, mask
+parts that are not neural networks: anchor generation, box decoding, NMS (non-maximum
+suppression — drop the lower-scoring of two overlapping boxes), RoIAlign (crop a fixed-size
+feature patch for one region of interest), mask
 pasting. `visp/tracker.h` has ByteTrack for keeping identities across frames. Both are plain
 CPU code and take structs, not framework config.
 

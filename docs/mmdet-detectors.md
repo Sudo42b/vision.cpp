@@ -4,13 +4,15 @@ This guide describes how to run detectors from
 [MMDetection](https://github.com/open-mmlab/mmdetection) with vision.cpp.
 
 MMDetection defines hundreds of detectors as compositions of a backbone, a neck and a head.
+The neck is usually an FPN — a feature pyramid network, which turns one backbone output into
+several feature maps at different resolutions, the *levels* this document keeps referring to.
 The backbone and neck are plain feed-forward networks and translate directly into a ggml graph.
 vision.cpp splits the model there: the feature extractor runs as a compiled ggml graph, and the
 head, decoding and post-processing are C++ built from library primitives. One head assembled
 that way serves every family that shares its structure.
 
 ```
- image ──▶ backbone + neck (compiled ggml graph) ──▶ FPN features
+ image ──▶ backbone + neck (compiled ggml graph) ──▶ FPN levels
                                                           │
                                                     head  │  tools/detect/head.cpp
                                                           ▼
@@ -90,18 +92,14 @@ Outputs:
     they are compiled into the runner rather than read at run time.
     See [Configuration reference](#configuration-reference).
 
-Those two files are the whole output. What the `.pt` does *not* carry is the class definition:
-saving a module pickles its classes by module name, so whatever opens the file has to be able
-to import `mmdet_wrap`. That module is not copied next to the `.pt` — it stays in
-`tools/frontend/mmdet/`, and the loader has to be told where it is:
+Those two are what you read. Two more land beside them, and they are not optional: saving a
+module pickles its classes by module name, so whatever opens the `.pt` has to be able to
+import `mmdet_wrap`. The export copies `mmdet_wrap.py` and `mmdet_compat.py` next to the `.pt`
+for exactly that reason. The compiler puts the `.pt`'s own directory on `sys.path`, so the
+file opens with **nothing set in the environment** — no `PYTHONPATH`.
 
-```sh
-PYTHONPATH=<vision.cpp>/tools/frontend/mmdet python …
-```
-
-Keeping one copy rather than a snapshot per export is deliberate: a copy drifts from the code
-that produced it, and a `.pt` loaded against a drifted wrapper fails in ways that look like a
-model problem.
+Keep the four together when you move them. A `.pt` separated from its wrapper fails at load in
+a way that reads like a model problem.
 
 ### Step 2 — Compile the backbone
 
@@ -284,6 +282,14 @@ cmake --build vision.cpp/build -j4
     -i vision.cpp/tests/input/cat-and-hat.jpg -o detected.png
 ```
 
+> ⚠️ **Read the `→ gguf:` line, not the exit code.** A `g2c` run that prints `done` without a
+> `→ gguf:` line has failed, and it still exits `0`. A script that checks the exit status will
+> carry on with no weights file.
+>
+> ⚠️ **Registration needs a shared library.** The registration object is referenced by nothing,
+> so a static link discards the whole translation unit. The build succeeds and the command
+> silently disappears from `vision-cli --help`.
+
 `--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
 is NMS-free — so the result comes back as boxes: `vision-cli` draws them and prints their
 coordinates and scores. Registered without the flag, the same command writes the graph
@@ -323,7 +329,8 @@ expect. They are declared in `tools/detect/head.h`.
 ### `anchor_head_forward`
 
 Shared convolution tower followed by classification and regression convolutions — the layout
-used by RetinaNet, ATSS, GFL and other anchor-based dense heads. All levels share one set of
+used by RetinaNet, ATSS, GFL and other anchor-based **dense** heads — dense because they
+predict at every cell of every level, with no proposal step to narrow the field first. All levels share one set of
 weights.
 
 ```c++
@@ -419,7 +426,9 @@ struct detection {
 `std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`
 :   Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
     the class score and have no such branch. `bbox_preds` are already pixel distances: the head
-    component applies the DFL integral, the stride multiply and the exponent, so this function
+    component applies the DFL integral — DFL is Distribution Focal Loss, which predicts each
+    box edge as a distribution over bins and recovers the distance by integrating it — plus the
+    stride multiply and the exponent, so this function
     must not apply a stride again. `point_offset` is 0.5 for FCOS and 0 for the heads built on
     an `AnchorGenerator`.
 
