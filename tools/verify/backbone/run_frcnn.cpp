@@ -723,6 +723,46 @@ int main(int argc, char** argv) {
     //    박스는 마지막 단계가 이미 정제해 `rois` 에 들어 있다(단계마다 갱신된다).
     //    NMS 경로로 흘리면 임계값이 0 이라 전부 걸러져 **0건**이 나온다(실측).
     if (SPARSE > 0) {
+        // ⚠️ **마지막 단계의 박스 정제가 빠져 있었다.** 위 정제 루프는 `st + 1 < NS` 라
+        //    마지막 단계를 건너뛴다 — 캐스케이드는 그 단계의 delta 를 `detect_roi` 가
+        //    디코드하므로 맞지만, SparseR-CNN 은 NMS 경로를 안 타서 **아무도 디코드하지
+        //    않는다.** 그래서 박스만 한 단계 뒤처졌다. 점수는 마지막 단계 cls 라 정확해서
+        //    "라벨·개수·점수는 맞는데 박스만 몇 px 밀린" 모습으로 나온다 — 실측 4.02px,
+        //    C++ 박스가 마지막 단계 **입력** 박스와 0.000px 로 같았다.
+        {
+            const bool agn2 = J.num("class_agnostic", 0.0f) != 0.0f;
+            if (!agn2) {
+                fprintf(stderr, "[sparse] class_agnostic 이 아니다 — 마지막 정제를 건너뛴다\n");
+            } else {
+                const int lb = NS - 1;
+                const bool hs = st_stds.size() >= (size_t)(lb + 1) * 4;
+                const bool hm = st_means.size() >= (size_t)(lb + 1) * 4;
+                const float MAXR = 4.13516655f;              // |log(16/1000)| — 루프와 같다
+                std::vector<float> nb((size_t)M * 4);
+                for (int i = 0; i < M_real; ++i) {
+                    float d[4];
+                    for (int k = 0; k < 4; ++k) {
+                        d[k] = box_st[lb][(size_t)i * 4 + k];
+                        if (hs) d[k] *= st_stds[(size_t)lb * 4 + k];
+                        if (hm) d[k] += st_means[(size_t)lb * 4 + k];
+                    }
+                    d[2] = std::min(std::max(d[2], -MAXR), MAXR);
+                    d[3] = std::min(std::max(d[3], -MAXR), MAXR);
+                    const float x1 = rois[(size_t)i * 4 + 0], y1 = rois[(size_t)i * 4 + 1];
+                    const float x2 = rois[(size_t)i * 4 + 2], y2 = rois[(size_t)i * 4 + 3];
+                    const float pw = x2 - x1, ph = y2 - y1;
+                    const float cx = x1 + pw * 0.5f + d[0] * pw, cy = y1 + ph * 0.5f + d[1] * ph;
+                    const float w = pw * std::exp(d[2]), h = ph * std::exp(d[3]);
+                    const float bx1 = cx - w * 0.5f, by1 = cy - h * 0.5f;
+                    const float bx2 = cx + w * 0.5f, by2 = cy + h * 0.5f;
+                    nb[(size_t)i * 4 + 0] = RCLIP ? std::max(0.0f, bx1) : bx1;
+                    nb[(size_t)i * 4 + 1] = RCLIP ? std::max(0.0f, by1) : by1;
+                    nb[(size_t)i * 4 + 2] = RCLIP ? std::min((float)SZ, bx2) : bx2;
+                    nb[(size_t)i * 4 + 3] = RCLIP ? std::min((float)SZ, by2) : by2;
+                }
+                rois.swap(nb);
+            }
+        }
         const int NCLS2 = (int)(cls_st[NS - 1].size() / M) ;   // sigmoid head — 배경 없음
         const int KMAX = (int)J.num("rcnn_max", 100.0f);
         struct cand { float sc; int q, c; };
