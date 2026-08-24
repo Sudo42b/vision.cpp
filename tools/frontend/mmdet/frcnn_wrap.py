@@ -344,12 +344,6 @@ def frcnn_cfg(det, size=800):
     #    이 분기를 지운다. 이름 목록은 실제 한계보다 항상 넓거나 좁다 — 이전 조건은
     #    `GeneralizedAttention` 전체를 막았지만 `empirical_attention`(`0010`)은 진작
     #    통과하고 있었다. 막힌 건 `attention_type[1]/[3]`(기하 갈래)뿐이다.
-    if type(ext).__name__ == "GenericRoIExtractor" and getattr(ext, "with_post", False):
-        if type(getattr(ext, "post_module", None)).__name__ == "GeneralizedAttention":
-            raise NotImplementedError(
-                "GenericRoIExtractor + GeneralizedAttention: 5D 접기와 div_ 는 됐으나 "
-                "①비균일 상수가 GGUF 에 안 실리고(미초기화) ②div 가 양방향 broadcast 를 "
-                "못 한다 — 러너가 ggml_can_repeat 로 죽는다. 둘 다 g2c 작업이다")
     bh = det.roi_head.bbox_head
     # 캐스케이드는 bbox_head 도 ModuleList 다. 클래스 수·coder 종류는 단계 공통이라
     # **마지막 단계**를 쓴다(최종 박스를 내는 단계라 디코드 규약이 거기 맞춰져 있다).
