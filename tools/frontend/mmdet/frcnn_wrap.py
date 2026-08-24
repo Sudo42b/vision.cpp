@@ -328,16 +328,25 @@ def frcnn_cfg(det, size=800):
     #    RoIAlign 은 그걸 표현 못 한다 — 조용히 레벨 선택으로 떨어뜨리면 값만 틀린다.
     # GenericRoIExtractor(groie): **집계 경로는 지원한다** — 러너가 레벨별로 RoIAlign 을
     # 걸어 배치로 이어붙이고, SubB 가 pre→합산→post 를 그래프 안에서 한다.
-    # ⚠️ 다만 `post_cfg` 가 `GeneralizedAttention` 이면 아직 못 굽는다. 위치 임베딩
-    #    broadcast 가 **5차원**인데 ggml 은 4D 까지라, 렌더러가 `ggml_cont` 로 떨어뜨리고
-    #    (생성 코드에 `repeat [N,6,7,4,42]` 주석이 남는다) 뒤의 add 가
-    #    `GGML_ASSERT(ggml_can_repeat)` 로 죽는다. 러너 크래시로 흘려보내지 말고
-    #    **여기서 이유를 말한다** — 렌더러 작업이지 하네스 작업이 아니다.
+    # `post_cfg` 가 `GeneralizedAttention` 인 경우(2026-08-24 진행 중):
+    #   ✔ 5D 위치 임베딩 repeat — 렌더러가 4D 로 접는다(`shape/render.reduce_to_4d`)
+    #   ✔ `aten::div_` — 렌더러 등록(없을 땐 나눗셈이 통째로 사라졌다)
+    #   ✗ **비균일 상수가 안 실린다** — `render_const` 는 균일 스칼라만 채우고 나머지는
+    #     `ggml_new_tensor`(no_alloc → **미초기화**)로 낸다. 여기서는 `dim_mat`(64원소)이
+    #     그 자리다. `--const-fold` 로만 구워지는데 그건 기본이 꺼져 있다.
+    #   ✗ **`div` 가 양방향 broadcast 를 못 한다** — `(1,7,4,1) / (64,1,1)` 은 좌변을 넓혀야
+    #     하는데 ggml 은 우변만 반복한다 → `GGML_ASSERT(ggml_can_repeat)` 로 죽는다.
+    #     `sub` 가 같은 문제를 이미 겪었고 거기서만 고쳤다(swin).
+    # ⚠️ **op 이름으로 거절하는 게 아니다.** 위 둘은 실제로 남은 한계이고, 둘 다 고쳐지면
+    #    이 분기를 지운다. 이름 목록은 실제 한계보다 항상 넓거나 좁다 — 이전 조건은
+    #    `GeneralizedAttention` 전체를 막았지만 `empirical_attention`(`0010`)은 진작
+    #    통과하고 있었다. 막힌 건 `attention_type[1]/[3]`(기하 갈래)뿐이다.
     if type(ext).__name__ == "GenericRoIExtractor" and getattr(ext, "with_post", False):
         if type(getattr(ext, "post_module", None)).__name__ == "GeneralizedAttention":
             raise NotImplementedError(
-                "GenericRoIExtractor + GeneralizedAttention: 집계는 되지만 post 의 위치 임베딩 "
-                "broadcast 가 5차원이라 ggml(4D)로 못 편다 — g2c 렌더러 작업이다")
+                "GenericRoIExtractor + GeneralizedAttention: 5D 접기와 div_ 는 됐으나 "
+                "①비균일 상수가 GGUF 에 안 실리고(미초기화) ②div 가 양방향 broadcast 를 "
+                "못 한다 — 러너가 ggml_can_repeat 로 죽는다. 둘 다 g2c 작업이다")
     bh = det.roi_head.bbox_head
     # 캐스케이드는 bbox_head 도 ModuleList 다. 클래스 수·coder 종류는 단계 공통이라
     # **마지막 단계**를 쓴다(최종 박스를 내는 단계라 디코드 규약이 거기 맞춰져 있다).
