@@ -331,12 +331,15 @@ def frcnn_cfg(det, size=800):
     # `post_cfg` 가 `GeneralizedAttention` 인 경우(2026-08-24 진행 중):
     #   ✔ 5D 위치 임베딩 repeat — 렌더러가 4D 로 접는다(`shape/render.reduce_to_4d`)
     #   ✔ `aten::div_` — 렌더러 등록(없을 땐 나눗셈이 통째로 사라졌다)
-    #   ✗ **비균일 상수가 안 실린다** — `render_const` 는 균일 스칼라만 채우고 나머지는
-    #     `ggml_new_tensor`(no_alloc → **미초기화**)로 낸다. 여기서는 `dim_mat`(64원소)이
-    #     그 자리다. `--const-fold` 로만 구워지는데 그건 기본이 꺼져 있다.
-    #   ✗ **`div` 가 양방향 broadcast 를 못 한다** — `(1,7,4,1) / (64,1,1)` 은 좌변을 넓혀야
-    #     하는데 ggml 은 우변만 반복한다 → `GGML_ASSERT(ggml_can_repeat)` 로 죽는다.
-    #     `sub` 가 같은 문제를 이미 겪었고 거기서만 고쳤다(swin).
+    #   ✔ 비균일 상수(`dim_mat` 64원소) — 리터럴 상수를 항상 GGUF 로 굽는다
+    #   ✔ `div` 양방향 broadcast — `sub` 와 같은 처방(좌변 실체화)
+    #   ✔ >4D `zeros` 가 1원소로 뭉개지던 것 — 같은 축소 규칙으로 접는다
+    #   ✗ **6D `energy` 를 4D 로 못 맞춘다.** `energy(n,heads,h,w,h_kv,w_kv)` 는 6D 이고
+    #     위치항은 5D 인데, 바깥 축 병합은 **각자 다른 개수의 축을 접는다** —
+    #     energy 는 (42000,7,4,4), 위치항은 (6000,7,7,4) 가 돼 broadcast 가 안 맞는다.
+    #     일반 규칙(인접 축 병합)으로는 여기까지다. **축을 피연산자끼리 맞추려면
+    #     이 op 전용 로우어링**(예: (h,w)→hw, (h_kv,w_kv)→kv 로 접어 (n*heads, hw, kv))
+    #     이 필요하다 — 그래프 전역 레이아웃 패스는 pvt 를 회귀시킨 전례가 있다.
     # ⚠️ **op 이름으로 거절하는 게 아니다.** 위 둘은 실제로 남은 한계이고, 둘 다 고쳐지면
     #    이 분기를 지운다. 이름 목록은 실제 한계보다 항상 넓거나 좁다 — 이전 조건은
     #    `GeneralizedAttention` 전체를 막았지만 `empirical_attention`(`0010`)은 진작
