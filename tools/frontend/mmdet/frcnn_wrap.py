@@ -522,7 +522,11 @@ def frcnn_cfg(det, size=800):
         # SparseR-CNN/QueryInst: 단계마다 query(object_feats)를 함께 나른다.
         # 0 이면 평범한 캐스케이드다.
         "sparse_stages": ns if type(det.roi_head).__name__ == "SparseRoIHead" else 0,
-        "num_proposals": int(getattr(det.rpn_head, "num_proposals", 0) or 0),
+        # ⚠️ **`det.rpn_head` 를 직접 읽지 마라.** `FastRCNN` 은 proposal 을 밖에서 받는
+        #    것이 정의라 그 속성이 **아예 없다**(`AttributeError: 'FastRCNN' object has no
+        #    attribute 'rpn_head'`). 위에서 `rh` 로 안전하게 받아 뒀는데 여기 한 줄만
+        #    직접 읽고 있어서, 외부 proposal 경로를 다 갖춰 놓고도 이 줄에서 죽었다.
+        "num_proposals": int(getattr(rh, "num_proposals", 0) or 0),
         # groie: 러너가 레벨마다 RoIAlign 을 걸어 배치로 이어붙여야 한다(0 이면 평소대로).
         "groie_levels": len(getattr(ext, "featmap_strides", []) or [])
                         if type(ext).__name__ == "GenericRoIExtractor" else 0,
