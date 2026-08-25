@@ -232,12 +232,41 @@ def num_bbox_stages(det):
 
 
 class MaskRCNN_SubC(nn.Module):
-    """mask RoIAlign feat (M,256,14,14) → mask_logits (M, num_classes, 28, 28). (Mask R-CNN)."""
+    """mask RoIAlign feat (M,256,14,14) → mask_logits (M, num_classes, 28, 28). (Mask R-CNN).
+
+    ⚠️ **마스크 추출기도 `GenericRoIExtractor` 일 수 있다**(`groie`). 그때는 bbox 쪽과
+    똑같이 레벨을 고르지 않고 전 레벨에 RoIAlign 을 걸어 pre→합산→post 를 태운다.
+    러너가 레벨별 결과를 **배치로 이어붙여** 넣고 여기서 가른다 — `FRCNN_SubB` 와 같은 수법.
+    다른 점 하나: 러너는 마스크 head 를 **검출 하나씩(배치 1)** 돌리므로 레벨당 RoI 수가
+    항상 **1** 이다(bbox 쪽은 `rpn.max_per_img`). 그래서 여기 `mgroie_n` 은 상수 1 이다.
+    """
     def __init__(self, det):
         super().__init__()
         self.mask_head = det.roi_head.mask_head
+        mext = getattr(det.roi_head, "mask_roi_extractor", None)
+        if isinstance(mext, nn.ModuleList):
+            mext = mext[0]
+        gen = mext is not None and type(mext).__name__ == "GenericRoIExtractor"
+        self.mgroie_pre = (getattr(mext, "pre_module", None)
+                           if gen and getattr(mext, "with_pre", False) else None)
+        self.mgroie_post = (getattr(mext, "post_module", None)
+                            if gen and getattr(mext, "with_post", False) else None)
+        self.mgroie_lvls = len(getattr(mext, "featmap_strides", []) or []) if gen else 0
 
     def forward(self, mask_feat):
+        # groie: (L, C, 14, 14) 로 들어온다 → pre 한 번 → 레벨별로 갈라 합산 → post
+        # ⚠️ `getattr(..., 기본값)` 으로 읽는다 — 이 클래스는 절여져서 **다른 프로세스**가
+        #    푼다. 새 속성을 그냥 읽으면 옛 코드가 절인 객체에서 AttributeError 가 난다.
+        L = getattr(self, "mgroie_lvls", 0)
+        if L:
+            if getattr(self, "mgroie_pre", None) is not None:
+                mask_feat = self.mgroie_pre(mask_feat)
+            acc = mask_feat[:1]                    # 러너가 검출 하나씩 넣는다 → 레벨당 1
+            for i in range(1, L):
+                acc = acc + mask_feat[i:i + 1]
+            mask_feat = acc
+            if getattr(self, "mgroie_post", None) is not None:
+                mask_feat = self.mgroie_post(mask_feat)
         return self.mask_head(mask_feat)
 
 
@@ -387,6 +416,17 @@ def frcnn_cfg(det, size=800):
             "mask_finest_scale": int(getattr(mext, "finest_scale", 56)),
             "mask_thr_binary": float(rcnn_c.mask_thr_binary),
         }
+        # 마스크 로짓을 재려면 `MaskRCNN_SubC` 를 구울 수 있어야 한다. head 가 **하나일
+        # 때만** 굽는다 — HTC·SCNet 은 `mask_head` 가 `ModuleList`(단계마다 하나)라
+        # 통째로 태우면 `forward` 가 없어 export 에서 죽는다.
+        # ⚠️ 이 값이 **박스 판정을 바꾸면 안 된다.** 마스크는 더 재는 축이지 문턱이 아니다
+        #    (게이트는 `groie` 하나뿐 — `verify_postproc_roi.MASK_GATE`).
+        mask["mask_head_single"] = int(
+            not isinstance(det.roi_head.mask_head, nn.ModuleList))
+        # 마스크 추출기도 레벨을 고르지 않을 수 있다 — 러너가 레벨마다 RoIAlign 을 걸어
+        # 배치로 이어붙여야 한다(0 이면 평소대로 레벨 하나를 고른다).
+        mask["mask_groie_levels"] = (len(mext.featmap_strides)
+                                     if type(mext).__name__ == "GenericRoIExtractor" else 0)
     # Mask Scoring R-CNN: 마스크 IoU 로 점수를 다시 매긴다. 없으면 안 싣는다.
     if getattr(det.roi_head, "mask_iou_head", None) is not None:
         mih = det.roi_head.mask_iou_head

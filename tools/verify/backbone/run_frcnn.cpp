@@ -783,11 +783,18 @@ int main(int argc, char** argv) {
         }
     }
 
-#if defined(ARCH_C) && defined(ARCH_D)
-    // ── 패스 2: 마스크 IoU 로 점수를 다시 매긴다 (Mask Scoring R-CNN) ───────
+#ifdef ARCH_C
+    // ── 패스 2: 마스크 head 를 돌린다 ───────────────────────────────────────
+    // 두 가지를 겸한다.
+    //   ⓐ **마스크 로짓을 낸다**(`.mlogit.bin`) — 마스크 축 대조용. 모든 마스크 계열.
+    //   ⓑ Mask Scoring R-CNN 이면 그 로짓으로 **점수를 다시 매긴다**(SubD 가 있을 때만).
     // mmdet 은 `score * mask_iou[label]` 로 점수를 낮춘다(maskiou_head.predict_by_feat).
-    // 이걸 빼면 **박스는 맞는데 점수만 틀린다** — 실측 박스 0.07px / 점수 0.163.
+    // ⓑ 를 빼면 **박스는 맞는데 점수만 틀린다** — 실측 박스 0.07px / 점수 0.163.
     // 게다가 점수가 임계값을 넘나들어 개수까지 달라진다(mmdet 4건 vs C++ 6건).
+    //
+    // ⚠️ **ⓐ 가 실패해도 박스 판정이 바뀌면 안 된다.** 마스크는 더 재는 축이지 문턱이
+    //    아니다 — 여기서 죽으면 이미 맞은 박스까지 못 쓰게 된다. 그래서 SubC 가 없으면
+    //    (`gc` 가 비었으면) 통째로 건너뛴다.
     //
     // ⚠️⚠️ **두 그래프를 검출 하나씩(배치 1) 돌린다. 묶어 넣으면 안 된다.**
     //    `ggml_compute_forward_conv_transpose_2d` 는 **배치 축을 안 돈다** — src1 을
@@ -796,7 +803,8 @@ int main(int argc, char** argv) {
     //    계산되고 나머지 19행은 bias 만 남는다.** 크래시도 경고도 없다 —
     //    실측: 행0 rel_L1 6.0e-04, 행1..4 는 전부 1.01 이고 |x| 평균이 서로 똑같았다
     //    (0.0870 = bias 뿐). mask head 의 `upsample`(14→28 deconv)이 그 경로다.
-    if (J.num("has_mask_iou", 0.0f) != 0.0f && gc && gd && !dets.empty()) {
+    const bool want_miou = J.num("has_mask_iou", 0.0f) != 0.0f && gd && *gd;
+    if (J.num("has_mask", 0.0f) != 0.0f && gc && *gc && !dets.empty()) {
         const int MD = (int)dets.size();
         // ⚠️ **박스를 원본 해상도로 되돌리지 않는다.** mmdet 은 마스크 분기가 있으면
         //    bbox 쪽 rescale 을 끈다(`base_roi_head.py`:
@@ -819,15 +827,36 @@ int main(int argc, char** argv) {
         std::vector<std::vector<float>> mfeats(feats.begin(), feats.begin() + ML);
         std::vector<std::pair<int, int>> mhw(feat_hw.begin(), feat_hw.begin() + ML);
         const int MO = mp.output_size;
-        std::vector<float> mfeat = roi_align(mfeats, mhw, mbox.data(), MD, mp);
+        // ⚠️ **마스크 추출기도 레벨을 고를 수도, 안 고를 수도 있다.** `GenericRoIExtractor`
+        //    (`groie`)면 전 레벨에 RoIAlign 을 걸어 pre→합산→post 를 SubC 안에서 태운다 —
+        //    bbox 쪽과 같은 수법이다(위 `groie_levels` 참고). 이걸 빼고 레벨 하나만 넣으면
+        //    **크래시 없이 로짓 크기가 통째로 작아진다**(실측 |x| 0.45 vs 2.00, rel L1 1.00).
+        const int mgroie_lv = (int)J.num("mask_groie_levels", 0.0f);
+        const int MLV = mgroie_lv > 0 ? mgroie_lv : 1;   // SubC 한 번에 넣는 배치 크기
+        std::vector<float> mfeat;
+        if (mgroie_lv > 0) {
+            // 레벨별 (MD,C,MO,MO) 를 이어붙인다 — 러너가 행 하나씩 꺼내 쓴다.
+            for (int l = 0; l < mgroie_lv; ++l) {
+                roi_align_params lp = mp;
+                lp.force_level = l;
+                std::vector<float> one = roi_align(mfeats, mhw, mbox.data(), MD, lp);
+                mfeat.insert(mfeat.end(), one.begin(), one.end());
+            }
+        } else {
+            mfeat = roi_align(mfeats, mhw, mbox.data(), MD, mp);
+        }
 
         // 모델은 한 번만 올린다. 행마다 바뀌는 것은 그래프뿐이다.
         model_file fc = model_load(gc);
         model_weights wc = model_init(fc.n_tensors());
         model_transfer(fc, wc, backend, backend.preferred_float_type(), fc.tensor_layout());
+#ifdef ARCH_D
+        // SubD 는 Mask Scoring R-CNN 에만 컴파일된다 — 하네스가 SubD 를 넘길 때만
+        // `ARCH_D` 를 세우므로 여기 오면 파일이 있다.
         model_file fd = model_load(gd);
         model_weights wd = model_init(fd.n_tensors());
         model_transfer(fd, wd, backend, backend.preferred_float_type(), fd.tensor_layout());
+#endif
 
         std::vector<float> logit_all, din_all, miou(MD, 1.0f);
         int MH = 0, MW = 0, NCLS_M = 0;
@@ -838,17 +867,23 @@ int main(int argc, char** argv) {
             {
                 compute_graph g2 = compute_graph_init(65536);
                 model_ref mc(wc, g2);
-                tensor min_ = compute_graph_input(mc, GGML_TYPE_F32, {C, MO, MO, 1}, "mroi");
+                tensor min_ = compute_graph_input(mc, GGML_TYPE_F32, {C, MO, MO, MLV}, "mroi");
                 ggml_build_forward_expand(g2, min_);
                 ggml_build_forward_expand(g2, FWD_C(mc, min_, PRM_C(fc)));
                 compute_graph_allocate(g2, backend);
                 // roi_align 은 NCHW flat 을 낸다. 생성 코드는 cwhn 규약이다.
-                std::vector<float> cw((size_t)C * MO * MO);
-                for (int c = 0; c < C; ++c)
-                    for (int y = 0; y < MO; ++y)
-                        for (int x = 0; x < MO; ++x)
-                            cw[((size_t)y * MO + x) * C + c] =
-                                mfeat[(((size_t)n * C + c) * MO + y) * MO + x];
+                // groie 면 레벨 L 개를 **배치로** 쌓아 넣는다 — 레벨 l 의 행 n 은
+                // `mfeat` 안에서 `(l * MD + n)` 번째다(레벨별로 통째로 이어붙였다).
+                std::vector<float> cw((size_t)MLV * C * MO * MO);
+                for (int l = 0; l < MLV; ++l) {
+                    const size_t row = (size_t)l * MD + n;
+                    float* dstl = cw.data() + (size_t)l * C * MO * MO;
+                    for (int c = 0; c < C; ++c)
+                        for (int y = 0; y < MO; ++y)
+                            for (int x = 0; x < MO; ++x)
+                                dstl[((size_t)y * MO + x) * C + c] =
+                                    mfeat[((row * C + c) * MO + y) * MO + x];
+                }
                 transfer_to_backend(min_, std::span<const float>(cw.data(), cw.size()));
                 compute(g2, backend);
                 std::vector<std::pair<int, int>> hw;
@@ -861,6 +896,11 @@ int main(int argc, char** argv) {
                 MH = hw[0].first; MW = hw[0].second;
                 NCLS_M = (int)(mo0.size() / ((size_t)MH * MW));
             }
+            logit_all.insert(logit_all.end(), mo0.begin(), mo0.end());
+#ifdef ARCH_D
+            if (!want_miou) continue;
+            // ⚠️ 아래 「28 → 14」 전제는 **SubD 를 먹이는 쪽만** 필요하다. 로짓만 낼 때는
+            //    아무 크기나 상관없으므로 여기서 막으면 마스크 축을 통째로 못 잰다.
             const int PH = MH / 2, PW = MW / 2;      // 28 → 14
             if (PH != MO || PW != MO) {
                 fprintf(stderr, "mask pool %dx%d != roi %dx%d — 이어붙이기 불가\n",
@@ -906,20 +946,27 @@ int main(int argc, char** argv) {
                 const int NIOU = (int)od[0].size();
                 miou[n] = od[0][std::min(std::max(mlab[n], 0), NIOU - 1)];
             }
-            logit_all.insert(logit_all.end(), mo0.begin(), mo0.end());
             din_all.insert(din_all.end(), din.begin(), din.end());
+#endif   // ARCH_D
         }
-        for (int i = 0; i < MD; ++i) {
-            dets[i].score *= miou[i];
-        }
+        if (want_miou)
+            for (int i = 0; i < MD; ++i) dets[i].score *= miou[i];
         // ⚠️ **재정렬하지 않는다.** mmdet 도 보정 뒤 정렬하지 않는다
         //    (`predict_by_feat` 는 `results.scores` 를 제자리에서 곱할 뿐이다).
         //    여기서 정렬하면 양쪽 순서가 갈려 인덱스로 짝짓는 대조가 어긋난다.
         // 중간 텐서도 낸다 — 값이 틀렸을 때 **어느 단계**인지 torch 와 대조한다.
         dump_bin(pref + ".mfeat.bin", mfeat);       // 마스크 RoIAlign (NCHW)
-        dump_bin(pref + ".mlogit.bin", logit_all);  // SubC 출력 (행별 cwhn)
-        dump_bin(pref + ".miouin.bin", din_all);    // SubD 입력 (행별 cwhn, 257ch)
-        dump_bin(pref + ".maskiou.bin", miou);      // 라벨 채널의 IoU 예측
+        dump_bin(pref + ".mlogit.bin", logit_all);  // SubC 출력 (행별 cwhn: ((y*MW+x)*NCLS+k))
+        // ⚠️ 축을 파일 이름으로 못 적으니 **따로 적는다.** 행수·클래스수·H·W 를 모르면
+        //    파이썬 쪽이 크기로 짐작하게 되고, 짐작은 계열이 바뀌면 조용히 틀린다.
+        {
+            const std::vector<float> dims = {(float)MD, (float)NCLS_M, (float)MH, (float)MW};
+            dump_bin(pref + ".mlogit.dims.bin", dims);
+        }
+        if (want_miou) {
+            dump_bin(pref + ".miouin.bin", din_all);   // SubD 입력 (행별 cwhn, 257ch)
+            dump_bin(pref + ".maskiou.bin", miou);     // 라벨 채널의 IoU 예측
+        }
     }
 #endif
 
