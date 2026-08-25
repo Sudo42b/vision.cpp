@@ -653,6 +653,47 @@ def _mask_axis(fam, d, fr, pref, cfg, ckpt, size, npy, got_all, prop_env):
     return f"마스크 rel L1 {rel:.2e} (IoU {iou:.3f}, {MD}건) {tag}", rel < MASK_TOL
 
 
+# 계열 하나의 피크 RSS 는 **3.26GB** 다(실측 2026-08-25, 60초 샘플링 — 최대 기여는
+# `ref.py` 의 `init_detector` + 800px 추론). WSL 은 `.wslconfig` 로 13GB 상한이다.
+# 그래서 워커 2가 안전선이고 3이 상한이다 — 그 이상은 swap 으로 밀려 **더 느려진다.**
+# ⚠️ **OOM 을 내면 WSL 이 통째로 죽는다.** 이 저장소는 이미 겪었다(2026-08-10:
+#    OOM 0건인데 크래시 덤프 626회로 C: 가 찼다). `.wslconfig` 의 `maxCrashDumpCount=0`
+#    이 그 대응이니 되돌리지 마라.
+WORKER_CAP = 3
+PER_FAM_MB = 3400          # 계열당 피크 RSS(실측 3.26GB)에 여유를 붙인 값
+
+
+def _avail_mb():
+    """가용 메모리(MB). 못 읽으면 가드를 끈다 — 측정 실패로 막지 않는다."""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 1 << 30
+
+
+def _safe_workers(want):
+    """요청한 워커 수를 **가용 메모리로 다시 깎는다.** 플래그를 그대로 믿지 않는다.
+
+    ⚠️ 왜 플래그를 안 믿나 — 이 기계는 세션이 여럿 떠 있고 그때그때 여유가 다르다.
+       `--workers 3` 이 어제 됐다고 오늘 되는 게 아니다. **재서 정한다.**
+    """
+    want = max(1, int(want))
+    if want > WORKER_CAP:
+        print(f"  ⚠️ --workers {want} 는 상한 {WORKER_CAP} 을 넘는다 — {WORKER_CAP} 로 낮춘다."
+              f" 계열당 피크 RSS 가 {PER_FAM_MB}MB 다(실측).", flush=True)
+        want = WORKER_CAP
+    avail = _avail_mb()
+    fit = max(1, avail // PER_FAM_MB)
+    if fit < want:
+        print(f"  ⚠️ 가용 메모리 {avail}MB → 워커 {want} → **{fit}** 로 낮춘다"
+              f" (계열당 {PER_FAM_MB}MB).", flush=True)
+        return fit
+    return want
+
+
 def two_stage_families():
     """config 로 판정한다 — 이름으로 짐작하지 않는다. roi_head 가 있으면 two-stage.
 
@@ -698,6 +739,9 @@ def main():
     #    수정이 특정 조건에서만 도는 코드면(예: `NS>1`·`RSF>0`) 영향 계열만 골라 재라.
     ap.add_argument("--skip-pass", metavar="results.json",
                     help="이전 결과에서 PASS 였던 계열은 건너뛴다")
+    ap.add_argument("--workers", type=int, default=1,
+                    help=f"동시 실행 계열 수(기본 1, 상한 {WORKER_CAP}). "
+                         "가용 메모리를 읽어 더 낮출 수 있다")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
 
@@ -733,17 +777,47 @@ def main():
           f" · 판정: 박스<{BOX_TOL}px 점수<{SCORE_TOL} 라벨0 개수차0")
     print(f"{len(fams)}계열: {' '.join(fams)}\n")
 
-    res = []
-    for i, fam in enumerate(fams, 1):
-        print(f"[{i}/{len(fams)}] {fam} …", flush=True)
+    nw = _safe_workers(a.workers)
+    if nw > 1:
+        print(f"워커 {nw}개로 돈다 (가용 {_avail_mb()}MB · 계열당 {PER_FAM_MB}MB 가정)\n",
+              flush=True)
+
+    def _one_guarded(fam):
+        """한 계열. **판정 로직은 순차와 완전히 같다** — 감싸기만 한다."""
         try:
-            row = one(fam, a.size, a.image, a.workdir, a.keep, a.verbose)
+            return one(fam, a.size, a.image, a.workdir, a.keep, a.verbose)
         except subprocess.TimeoutExpired:
-            row = (fam, "TIMEOUT", "-", None)
+            return (fam, "TIMEOUT", "-", None)
         except Exception as e:                     # 한 계열이 죽어도 스윕은 계속한다
-            row = (fam, "HARNESS_FAIL", f"{type(e).__name__}: {e}"[:110], None)
-        res.append(row)
-        print(f"    {row[1]:14s} {row[2]}" + (f"   ({row[3]:.0f}s)" if row[3] else ""), flush=True)
+            return (fam, "HARNESS_FAIL", f"{type(e).__name__}: {e}"[:110], None)
+
+    res = []
+    # ⚠️ **계열마다 작업 폴더가 따로다**(`workdir/<fam>`) — 겹치는 파일이 없어야
+    #    병렬이 안전하다. `one()` 이 이미 그렇게 짜여 있다(정리도 그 폴더 단위).
+    #    여기서 `workdir` 하나를 공유하는 파일은 `results.json` 뿐이고, 그건 부모만 쓴다.
+    if nw <= 1:
+        for i, fam in enumerate(fams, 1):
+            print(f"[{i}/{len(fams)}] {fam} …", flush=True)
+            row = _one_guarded(fam)
+            res.append(row)
+            print(f"    {row[1]:14s} {row[2]}" + (f"   ({row[3]:.0f}s)" if row[3] else ""),
+                  flush=True)
+            with open(os.path.join(a.workdir, "results.json"), "w") as f:
+                json.dump(res, f, indent=1, ensure_ascii=False)
+    else:
+        import concurrent.futures as _fut
+        with _fut.ThreadPoolExecutor(max_workers=nw) as ex:
+            futs = {ex.submit(_one_guarded, f): f for f in fams}
+            for i, fu in enumerate(_fut.as_completed(futs), 1):
+                row = fu.result()
+                res.append(row)
+                print(f"[{i}/{len(fams)}] {row[0]:22s} {row[1]:14s} {row[2]}"
+                      + (f"   ({row[3]:.0f}s)" if row[3] else ""), flush=True)
+                with open(os.path.join(a.workdir, "results.json"), "w") as f:
+                    json.dump(res, f, indent=1, ensure_ascii=False)
+        # ⚠️ **완료 순서로 오므로 다시 정렬한다.** 안 하면 실행마다 줄 순서가 달라져
+        #    두 실행을 `diff` 로 못 댄다 — 회귀를 눈으로 보는 길이 막힌다.
+        res.sort(key=lambda r: fams.index(r[0]))
         with open(os.path.join(a.workdir, "results.json"), "w") as f:
             json.dump(res, f, indent=1, ensure_ascii=False)
 
