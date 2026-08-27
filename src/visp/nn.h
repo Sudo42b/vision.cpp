@@ -59,7 +59,7 @@ tensor conv_2d_grouped(model_ref m, tensor x, int stride = 1, int pad = 0,
 tensor conv_2d_wt(model_ref m, tensor x, tensor weight, tensor bias,
                   int stride = 1, int pad = 0, int dilation = 1);
 
-tensor conv_2d_depthwise(model_ref m, tensor x, int stride = 1, int pad = 0);
+tensor conv_2d_depthwise(model_ref m, tensor x, int stride = 1, int pad = 0, int dilation = 1);
 tensor conv_2d_deform(
     model_ref m, tensor x, tensor weight, tensor offset, tensor mask, int stride, int pad);
 // `pad` 는 torch 의 ConvTranspose2d padding 과 같은 뜻이다(출력 가장자리를 그만큼 버린다).
