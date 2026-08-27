@@ -49,8 +49,28 @@ class MMSegWrap(nn.Module):
         return out if isinstance(out, torch.Tensor) else tuple(out)
 
 
+def crop_size(config):
+    """config 의 `data_preprocessor.size` → (H, W). 없으면 (512, 512).
+
+    ⚠️ **계열마다 다르다** — cityscapes 는 512x1024, ade20k 는 512x512, beit 는 640x640,
+    cgnet 은 680x680, bisenetv2 는 1024x1024. 하나로 고정하면 **잰 것이 그 모델이 아니다.**
+    ViT 계열은 조용히 넘어가지도 않는다: `pos_embed` 토큰 수가 입력에 묶여 있어
+    `The size of tensor a (1025) must match ...` 로 죽는다(512/16 → 1024+1 vs 640/16 → 1600+1).
+    `data_preprocessor.size` 는 학습·평가 crop 이라 그 모델이 실제로 보는 크기다.
+    """
+    from mmengine.config import Config
+    cfg = Config.fromfile(config)
+    sz = (cfg.get("model") or {}).get("data_preprocessor", {}).get("size")
+    if sz and len(sz) == 2:
+        return int(sz[0]), int(sz[1])
+    return 512, 512
+
+
 def build(config, checkpoint=None, size=512):
-    """mmseg config(.py) → (MMSegWrap(eval), 출력 shape 목록)."""
+    """mmseg config(.py) → (MMSegWrap(eval), 출력 shape 목록).
+
+    `size` 는 int(정방) 또는 (H, W) 다.
+    """
     from mmseg.apis import init_model                  # mmseg 만 import (g2c 무관)
     trace_friendly_ops()
     # PyTorch 2.6 부터 `torch.load` 의 `weights_only` 기본값이 True 라 mmengine 이 넣은
@@ -60,8 +80,9 @@ def build(config, checkpoint=None, size=512):
     seg.eval()
     m = MMSegWrap(seg)
     m.eval()
+    h, w = (size, size) if isinstance(size, int) else size
     with torch.no_grad():
-        outs = m(torch.randn(1, 3, size, size))
+        outs = m(torch.randn(1, 3, h, w))
     if isinstance(outs, torch.Tensor):
         outs = (outs,)
     return m, [tuple(o.shape) for o in outs]

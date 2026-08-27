@@ -64,14 +64,59 @@ def families():
     return out
 
 
+# ⚠️ **메모리 가드.** 위키 `wsl-계속-터짐` 5번째 원인 — 폭주한 프로세스가 없어도 **합**이
+#    넘치면 WSL 이 통째로 죽는다(2026-08-27 실측: 내 스윕 3.6GB + 다른 python 2.25GB +
+#    VS Code 3.4GB + claude 세션 5개 1.5GB = 13GB 상한 초과 → OOM 8건).
+#    가용 메모리가 이 밑이면 **새 계열을 안 띄우고 기다린다.** 느려질지언정 안 죽는다.
+MIN_FREE_MB = int(os.environ.get("VISP_MIN_FREE_MB", "2500"))
+# 한 서브프로세스가 이 이상 잡으면 **그놈만** 죽는다(VM 이 아니라). 위키의 인덱서 대책과 같다.
+MAX_SUBPROC_GB = int(os.environ.get("VISP_MAX_SUBPROC_GB", "8"))
+
+
+def _avail_mb():
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 1 << 30      # 못 읽으면 가드를 끈다(측정 실패로 막지 않는다)
+
+
+def _wait_for_memory(fam):
+    import time
+    waited = 0
+    while _avail_mb() < MIN_FREE_MB:
+        if waited == 0:
+            print(f"  … 메모리 대기 ({fam}): 가용 {_avail_mb()}MB < {MIN_FREE_MB}MB", flush=True)
+        time.sleep(5)
+        waited += 5
+        if waited > 600:      # 10분을 기다려도 안 풀리면 그냥 간다(교착 방지)
+            print(f"  … 10분 대기 후에도 부족 — 그대로 진행한다 ({fam})", flush=True)
+            break
+
+
 def run(cmd, cwd=None, env=None, timeout=1800):
     e = dict(os.environ)
     e.setdefault("OMP_NUM_THREADS", "1")
+    # glibc 이 스레드마다 arena 를 잡아 RSS 가 부푼다. torch 서브프로세스에서 크게 온다.
+    e.setdefault("MALLOC_ARENA_MAX", "2")
     if env:
         e.update(env)
+
+    def _limit():
+        # ⚠️ **주소공간 상한.** 폭주하면 이 프로세스만 MemoryError 로 죽고 VM 은 산다.
+        #    위키 `wsl-계속-터짐` 의 인덱서 대책(`ulimit -v`)과 같은 수법이다.
+        import resource
+        n = MAX_SUBPROC_GB * (1 << 30)
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (n, n))
+        except (ValueError, OSError):
+            pass
+
     try:
         return subprocess.run(cmd, cwd=cwd, env=e, capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, timeout=timeout, preexec_fn=_limit)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(cmd, 124, "", "timeout")
 
@@ -120,6 +165,7 @@ def verify(fam, cfg, weights):
     if not os.path.exists(cfg):
         return fam, "CONFIG_NONE", os.path.basename(cfg)
 
+    _wait_for_memory(fam)
     for stale in ("pose.pt", "ref.shapes.txt", "size.txt"):
         try:
             os.remove(os.path.join(d, stale))
@@ -220,14 +266,14 @@ def main():
 
     all_fams = families()
     sel = [f for f in all_fams if not a.families or f[0] in a.families]
+    if a.fetch:
+        fetch(sel)
     if a.list:
         for fam, cfg, w in all_fams:
             has = os.path.exists(os.path.join(CKPT, os.path.basename(w))) if w else False
             print(f"{'O' if has else '-'} {fam:24s} {os.path.basename(cfg)}")
         print(f"\n계열 {len(all_fams)}")
         return
-    if a.fetch:
-        fetch(sel)
 
     print(f"mmpose={MM}  g2c={P}  workdir={WORKDIR}  tol=L1{L1_TOL}/L2{L2_TOL}")
     print(f"{'계열':<26}{'판정':<14}비고")
