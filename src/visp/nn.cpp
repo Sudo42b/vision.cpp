@@ -85,6 +85,23 @@ tensor add_bias_2d(model_ref m, tensor x) {
     return x;
 }
 
+// PReLU — **채널마다 다른 기울기**를 갖는다(`nn.PReLU(num_parameters=C)`).
+//   y = max(0,x) + w * min(0,x) = relu(x) + w * (x - relu(x))
+// ⚠️ **`leaky_relu(0.25)` 로 근사하지 마라.** 0.25 는 torch 의 **기본 초기값**이라
+//    랜덤 초기화 모델에서는 근사가 정확히 맞아떨어져 **PASS 가 나온다** — 학습된
+//    가중치에서만 틀린다(cgnet 실측: 랜덤 1.91e-04 PASS → 학습 5.09e+00 FAIL).
+//    `num_parameters=1` 이면 w 가 스칼라라 같은 식이 그대로 성립한다.
+tensor prelu(model_ref m, tensor x) {
+    tensor w = m.weights("weight");
+    if (!(m.flags & model_build_flag::cwhn)) {
+        // WHCN 은 채널이 ne[2] 다 — [1,1,C,1] 로 펴야 broadcast 된다(add_bias_2d 와 같은 규칙).
+        w = ggml_reshape_4d(m, w, 1, 1, w->ne[0], 1);
+    }
+    tensor pos = ggml_relu(m, x);
+    tensor neg = ggml_sub(m, x, pos);              // min(x, 0)
+    return ggml_add(m, pos, ggml_mul(m, neg, w));
+}
+
 // conv_2d 의 본체 — weight 를 인자로 받고 bias 는 붙이지 않는다.
 // conv_2d / conv_2d_wt 가 공유한다. dilation 기본값 1 은 기존 동작과 동일하다.
 static tensor conv_2d_impl(model_ref m, tensor x, tensor weight, int sw, int sh, int pw,

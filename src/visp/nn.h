@@ -77,6 +77,11 @@ tensor conv_transpose_2d(
     model_ref m, tensor x, int stride, int pad = 0, int groups = 1, int output_padding = 0);
 tensor batch_norm_2d(model_ref, tensor x);
 
+// PReLU. 기울기 `weight` 는 채널당 하나(또는 전체 하나)다.
+// ⚠️ `ggml_leaky_relu(0.25)` 로 근사하지 마라 — 0.25 는 torch 기본 초기값이라
+//    **랜덤 가중치에서만 맞는다.** 학습된 모델에서 조용히 틀린다.
+tensor prelu(model_ref m, tensor x);
+
 // 2D image to patch embedding using convolution and optional norm. CWHN input and output.
 tensor patch_embed(model_ref, tensor x, int patch_size);
 

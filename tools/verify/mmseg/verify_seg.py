@@ -33,7 +33,7 @@ PY = sys.executable
 MM = os.path.expanduser("~/mmbuild/mmsegmentation")
 CKPT = MM + "/checkpoints"
 WORKDIR = "/tmp/visp-seg-verify"
-SZ = 512
+SZ = 0                     # 0 = config 의 crop 을 쓴다. `--size` 로만 덮어쓴다
 OPT = "-O1"
 # 판정 기준: 출력 텐서의 상대 L1/L2. 저장소 관례(mmdet 하네스)와 같은 값을 쓴다.
 L1_TOL = L2_TOL = 0.05
@@ -135,7 +135,11 @@ import mmseg_wrap
 # ⚠️ **입력 크기를 하나로 고정하지 않는다.** config 의 crop 이 곧 그 모델이 보는 크기다
 #    (512x1024 · 640x640 · 680x680 · 1024x1024 …). 고정하면 잰 것이 그 모델이 아니고,
 #    ViT 계열은 `pos_embed` 토큰 수가 안 맞아 아예 죽는다.
-H, W = mmseg_wrap.crop_size("%(CFG)s")
+# ⚠️ 기본은 **config 의 crop** 이다. `--size` 는 진단용 덮어쓰기다(크기 탓인지 가를 때).
+#    2026-08-27 까지 `--size` 는 설정만 되고 **아무 데도 안 쓰였다** — 헤더에는 512 라
+#    찍히는데 실제로는 crop 으로 쟀다. 거짓말하는 플래그였다.
+_ov = "%(SIZE)s"
+H, W = ([int(_ov), int(_ov)] if _ov else mmseg_wrap.crop_size("%(CFG)s"))
 m, shapes = mmseg_wrap.build("%(CFG)s", "%(CK)s", (H, W))
 torch.save(m, "seg.pt")
 open("size.txt", "w").write(f"{W} {H}")
@@ -178,7 +182,7 @@ def verify(fam, cfg, weights):
             pass
 
     open(os.path.join(d, "ref.py"), "w").write(
-        REF % {"FE": FE, "FE_DET": FE_DET, "CFG": cfg, "CK": ck})
+        REF % {"SIZE": (str(SZ) if SZ else ""), "FE": FE, "FE_DET": FE_DET, "CFG": cfg, "CK": ck})
     r = run([PY, "ref.py"], d, {"PYTHONPATH": f"{FE}:{FE_DET}"})
     if not os.path.exists(os.path.join(d, "ref.shapes.txt")):
         return fam, "REF_FAIL", _last_error(r.stderr)[:70]
@@ -272,8 +276,7 @@ def main():
     a = ap.parse_args()
 
     global SZ, WORKDIR
-    if a.size:
-        SZ = a.size
+    SZ = a.size or 0                    # 0 = 계열별 crop (기본)
     if a.workdir:
         WORKDIR = a.workdir
 
@@ -289,7 +292,9 @@ def main():
               f"{sum(1 for _f, _c, w in all_fams if w and os.path.exists(os.path.join(CKPT, os.path.basename(w))))}")
         return
 
-    print(f"mmseg={MM}  g2c={P}  size={SZ}  workdir={WORKDIR}  tol=L1{L1_TOL}/L2{L2_TOL}")
+    print(f"mmseg={MM}  g2c={P}  "
+          f"size={'계열별 crop' if not SZ else f'{SZ}² (--size 덮어쓰기)'}  "
+          f"workdir={WORKDIR}  tol=L1{L1_TOL}/L2{L2_TOL}")
     print(f"{'계열':<24}{'판정':<14}비고")
     print("-" * 86)
     rows = []
