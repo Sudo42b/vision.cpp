@@ -49,7 +49,7 @@ import mmdet_families as MF                                      # noqa: E402
 import vconfig                                                   # noqa: E402
 
 CFG, ARGS = vconfig.load()
-V = os.path.normpath(os.path.join(HERE, "..", ".."))             # vision.cpp/tools
+V = os.path.normpath(os.path.join(HERE, "..", "..", ".."))             # vision.cpp/tools
 VISP = os.path.normpath(os.path.join(V, ".."))                   # vision.cpp
 POSTPROC = os.path.join(HERE, "verify_postproc.py")
 DEFAULT_IMAGE = os.path.join(VISP, "tests", "input", "cat-and-hat.jpg")

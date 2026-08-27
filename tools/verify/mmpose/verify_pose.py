@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """mmpose 계열을 g2c 로 컴파일해 C++(ggml) 출력이 PyTorch 와 같은지 계열별로 잰다.
 
-`tools/verify/seg/verify_seg.py` 와 같은 자로 잰다 — 앵커도 NMS 도 없으니
+`tools/verify/mmseg/verify_seg.py` 와 같은 자로 잰다 — 앵커도 NMS 도 없으니
 `backbone → (neck) → head.forward` 를 한 그래프로 굽고 **출력 텐서를 그대로 대조**한다.
 디코드(히트맵 argmax·소수점 보정, SimCC 의 1D argmax)는 후처리라 그래프 밖이다.
 
@@ -196,7 +196,7 @@ from shared.compile.pipeline import main; main()
              '-DVISP_ARCH_HEADER="visp/arch/Pose.h"',
              "-I" + os.path.join(gen, "inc"), "-I" + V + "/src", "-I" + V + "/include",
              "-I" + V + "/depend/llama/ggml/include",
-             V + "/tools/verify/backbone/run_dump.cpp", os.path.join(gen, "Pose.cpp"),
+             V + "/tools/verify/common/run_dump.cpp", os.path.join(gen, "Pose.cpp"),
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", os.path.join(gen, "run_dump")], d)
     if not os.path.exists(os.path.join(gen, "run_dump")):

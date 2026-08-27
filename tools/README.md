@@ -43,7 +43,7 @@ Nothing here holds a table of layer names. The final classification and regressi
 are found by output channel count, and convolution padding comes from the kernel size stored in
 the weights, so a new family needs no edit to a lookup table.
 
-`verify/dense_head/verify_heads.py` measures each family against `bbox_head` in PyTorch, one
+`verify/mmdet/dense_head/verify_heads.py` measures each family against `bbox_head` in PyTorch, one
 tensor at a time, before decoding. It needs trained checkpoints: an untrained model leaves
 gamma at 1, beta at 0 and scale at 1, and an assembly that skips those terms still scores a
 perfect cosine.
@@ -144,7 +144,7 @@ encoded as colour, which keeps a font out of the runner.
 | `VISP_DRAW_THRESHOLD` | Minimum score to draw. Default `0.3` |
 | `VISP_PRINT_DETS` | How many rows to print. `0` turns the table off |
 
-`tools/verify/draw_boxes.py` draws a `.bin` that was written earlier, which is the way to look
+`tools/verify/common/draw_boxes.py` draws a `.bin` that was written earlier, which is the way to look
 at a file kept for comparison. It adds class names and scores as text, which the C++ path does
 not.
 

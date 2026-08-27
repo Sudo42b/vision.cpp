@@ -33,7 +33,7 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-V = os.path.abspath(os.path.join(HERE, "..", "..", ".."))    # vision.cpp (tools/verify/roi 에서 3단계 위)
+V = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))    # vision.cpp (tools/verify/mmdet/roi 에서 4단계 위)
 FE = os.path.join(V, "tools", "frontend", "mmdet")
 DH = os.path.join(V, "tools", "verify", "dense_head")
 GGUF_PY = os.path.join(V, "depend", "llama", "gguf-py")
@@ -517,7 +517,7 @@ from shared.compile.pipeline import main; main()
              f'-DVISP_ARCH_HEADER_B="visp/arch/{subs[0]}.h"'] + extra + [
              "-IincA", "-IincB", "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/backbone/run_frcnn.cpp",
+             V + "/tools/verify/mmdet/backbone/run_frcnn.cpp",
              "out_FRCNN_SubA/FRCNN_SubA.cpp", f"out_{subs[0]}/{subs[0]}.cpp"] + (
              ["out_MaskRCNN_SubC/MaskRCNN_SubC.cpp"] if want_mask else []) + (
              ["out_MSRCNN_SubD/MSRCNN_SubD.cpp"] if has_miou else []) + (

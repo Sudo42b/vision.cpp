@@ -72,8 +72,8 @@ OPT = CFG.opt
 # 저장소 관례(verify_pt.py)의 REL_L2_TOL=0.05 를 따른다.
 L1_TOL = CFG.l1
 L2_TOL = CFG.l2
-# g2c(컴파일러)와 vision.cpp 경로. 이 파일은 vision.cpp/tools/verify/dense_head/ 에 있다.
-V = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# g2c(컴파일러)와 vision.cpp 경로. 이 파일은 vision.cpp/tools/verify/mmdet/dense_head/ 에 있다.
+V = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 P = CFG.g2c
 PY = sys.executable
 FE = V + "/tools/frontend/mmdet"
@@ -353,7 +353,7 @@ for _k in range(len(_o) // 2):
         raise SystemExit(
             "SubB 의 bbox_pred 가 None 이다 — with_reg=False 인 head 다(좌표를 다른 head 가 낸다). "
             "이 하네스는 (cls, box) 쌍을 전제하므로 이 계열은 two-stage 하네스로 재라: "
-            "tools/verify/roi/verify_postproc_roi.py")
+            "tools/verify/mmdet/roi/verify_postproc_roi.py")
 for _k in range(len(_o) // 2):
     _c, _b = _o[2 * _k], _o[2 * _k + 1]
     np.ascontiguousarray(_c.numpy()).tofile("ref.cls.%%d.bin" %% _k)
@@ -399,7 +399,7 @@ from shared.compile.pipeline import main; main()
              "-DVISP_ARCH_HEADER=\"visp/arch/Fam.h\"",
              "-I" + os.path.join(gen, "inc"), "-I" + V + "/src", "-I" + V + "/include",
              "-I" + V + "/depend/llama/ggml/include",
-             V + "/tools/verify/backbone/run_dump.cpp", os.path.join(gen, "Fam.cpp"),
+             V + "/tools/verify/common/run_dump.cpp", os.path.join(gen, "Fam.cpp"),
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", os.path.join(gen, "run_dump")],
             d, phase="3_build_nb")
@@ -534,7 +534,7 @@ from shared.compile.pipeline import main; main()
              "-IincA", "-IincB",
              "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/backbone/run_frcnn.cpp",
+             V + "/tools/verify/mmdet/backbone/run_frcnn.cpp",
              "out_FRCNN_SubA/FRCNN_SubA.cpp", "out_" + subs[0] + "/" + subs[0] + ".cpp",
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", "run_frcnn"], fr, phase="3_build2")
@@ -760,7 +760,7 @@ from shared.compile.pipeline import main; main()
              "-I" + gen + "/inc", "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/tools/detect",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/backbone/run_mmdet.cpp", HEAD_OBJ,
+             V + "/tools/verify/mmdet/backbone/run_mmdet.cpp", HEAD_OBJ,
              gen + "/Fam.cpp",
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", gen + "/run_mmdet"], d, phase="3b_build")

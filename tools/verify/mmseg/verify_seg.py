@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """mmseg 계열을 g2c 로 컴파일해 C++(ggml) 출력이 PyTorch 와 같은지 계열별로 잰다.
 
-mmdet 하네스(`tools/verify/dense_head/verify_heads.py`)와 **재는 방식이 같고 훨씬 짧다** —
+mmdet 하네스(`tools/verify/mmdet/dense_head/verify_heads.py`)와 **재는 방식이 같고 훨씬 짧다** —
 세그멘테이션은 앵커도 NMS 도 박스 디코드도 없어서 `backbone → (neck) → decode_head` 를
 한 그래프로 컴파일하고 **출력 텐서를 그대로 대조**하면 끝난다.
 
@@ -202,7 +202,7 @@ from shared.compile.pipeline import main; main()
              '-DVISP_ARCH_HEADER="visp/arch/Seg.h"',
              "-I" + os.path.join(gen, "inc"), "-I" + V + "/src", "-I" + V + "/include",
              "-I" + V + "/depend/llama/ggml/include",
-             V + "/tools/verify/backbone/run_dump.cpp", os.path.join(gen, "Seg.cpp"),
+             V + "/tools/verify/common/run_dump.cpp", os.path.join(gen, "Seg.cpp"),
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", os.path.join(gen, "run_dump")], d)
     if not os.path.exists(os.path.join(gen, "run_dump")):

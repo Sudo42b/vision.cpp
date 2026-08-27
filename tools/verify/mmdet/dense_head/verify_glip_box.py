@@ -22,7 +22,7 @@ import sys
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-V = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+V = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 P = os.path.abspath(os.path.join(V, ".."))
 FE = V + "/tools/frontend/mmdet"
 sys.path.insert(0, HERE)

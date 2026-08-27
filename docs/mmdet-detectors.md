@@ -162,7 +162,7 @@ bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 The script compiles three translation units together, with the generated parameters
 included as a header, and links them against `libvisioncpp`:
 
-- `tools/verify/backbone/run_mmdet.cpp` — the runner,
+- `tools/verify/mmdet/backbone/run_mmdet.cpp` — the runner,
 - `tools/detect/head.cpp` — the head component,
 - `output/MMDetBackbone/MMDetBackbone.cpp` — the generated graph,
 - `backbone.postproc.h` — the generated parameters.
@@ -263,7 +263,7 @@ import numpy as np
 d = np.fromfile("boxes.bin", dtype="float32").reshape(-1, 6)
 ```
 
-`tools/verify/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
+`tools/verify/common/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
 
 
 ## Models whose head survives tracing

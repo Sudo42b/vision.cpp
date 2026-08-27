@@ -32,7 +32,7 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vconfig                                              # noqa: E402
 
-V = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+V = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 FE = V + "/tools/frontend/mmdet"
 CFG, ARGS = vconfig.load()
 MM, PY = CFG.configs, sys.executable

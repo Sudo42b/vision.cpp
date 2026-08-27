@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build_mmdet_cpp.sh — g2c 가 생성한 mmdet 백본(output/<ARCH>.cpp)을 러너(verify/backbone/run_mmdet)·
+# build_mmdet_cpp.sh — g2c 가 생성한 mmdet 백본(output/<ARCH>.cpp)을 러너(verify/mmdet/backbone/run_mmdet)·
 # head 부품(detect/head.cpp)과 함께 컴파일해 libvisioncpp 에 링크한다.
 # head.cpp 는 라이브러리가 아니라 여기서 러너와 함께 컴파일된다 → g2c output/.cpp 를 직접
 # 컴파일(arch/ 복사·cli REG 없음).
