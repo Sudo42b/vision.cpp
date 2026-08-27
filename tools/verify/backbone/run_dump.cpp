@@ -28,13 +28,18 @@ static std::vector<float> load_bin(const char* path, size_t n) {
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <gguf> <in_cwhn.bin> <out_prefix> [size=512]\n", argv[0]);
+        fprintf(stderr,
+                "usage: %s <gguf> <in_cwhn.bin> <out_prefix> [W=512] [H=W]\n", argv[0]);
         return 1;
     }
     const char* gguf = argv[1];
     const char* inb = argv[2];
     std::string pref = argv[3];
-    const int SZ = argc > 4 ? atoi(argv[4]) : 512;
+    // ⚠️ **정방이 아닌 입력이 있다.** mmpose topdown 은 사람 박스를 256x192(HxW)로 잘라
+    //    넣는다. 크기를 하나만 받으면 정방으로 굳어 히트맵 크기가 config 와 어긋난다.
+    //    `H` 를 안 주면 예전처럼 정방이다 — 기존 호출자는 그대로다.
+    const int W = argc > 4 ? atoi(argv[4]) : 512;
+    const int H = argc > 5 ? atoi(argv[5]) : W;
 
     backend_device backend = backend_init();
     model_file file = model_load(gguf);
@@ -45,13 +50,13 @@ int main(int argc, char** argv) {
     model_ref m(weights, graph);
     auto p = DETECT_PARAMS(file);
 
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, SZ, SZ, 1}, "x");
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, W, H, 1}, "x");   // cwhn
     ggml_build_forward_expand(graph, input);
     tensor last = FWD(m, input, p);   // 내부에서 compute_graph_output 이 out_i 를 그래프에 등록
     ggml_build_forward_expand(graph, last);
 
     compute_graph_allocate(graph, backend);
-    auto in = load_bin(inb, (size_t)3 * SZ * SZ);
+    auto in = load_bin(inb, (size_t)3 * W * H);
     transfer_to_backend(input, std::span<const float>(in.data(), in.size()));
     compute(graph, backend);
 
