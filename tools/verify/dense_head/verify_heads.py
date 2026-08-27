@@ -672,9 +672,15 @@ def one(fam, rel, ckpt):
     kind = next((l.split(":")[-1].strip() for l in open(ph) if l.startswith("// head_type")), "?")
     # ⚠️ **텍스트 조건부 계열은 `bbox_head(feats)` 로 못 부른다.** GLIP·GroundingDINO 는
     #    이미지 feature 말고 **텍스트 임베딩**을 같이 받는다(`ATSSVLFusionHead.forward()
-    #    missing 1 required positional argument`). 박스를 판정 기준으로 삼을 수가 없으므로
-    #    박스 없는 계열과 같은 자로 잰다 — **컴파일된 그래프**를 torch 와 댄다.
-    #    ⚠️ 그래서 이 숫자는 "이 계열이 검증됐다" 가 아니라 "컴파일 범위가 맞다" 는 뜻이다.
+    #    missing 1 required positional argument`). 박스 하네스로는 못 재므로 **컴파일된
+    #    그래프의 출력**을 torch 와 대는 `_no_box` 로 보낸다.
+    #
+    #    ⚠️ **컴파일 범위가 계열마다 다르다 — 숫자를 같은 뜻으로 읽지 마라.**
+    #    · `glip`: 2026-08-27 부터 **융합헤드까지** 한 그래프다(`MMDetTextCond` 가 텍스트
+    #      임베딩을 상수로 굽는다) → 출력 15텐서. 이 숫자는 **헤드까지 검증**한 값이다.
+    #      아직 없는 것은 **디코드**(박스 delta·토큰→문구 점수 집계)뿐이다.
+    #    · `grounding_dino`·`mm_grounding_dino`: head 가 DETR 꼴이라 아직 백본+넥뿐이다.
+    #      그 숫자는 "이 계열이 검증됐다" 가 아니라 "컴파일 범위가 맞다" 는 뜻이다.
     try:
         from mmengine.config import Config as _C
         if (_C.fromfile(cfg_path).get("model") or {}).get("language_model"):

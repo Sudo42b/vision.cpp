@@ -183,6 +183,69 @@ class MMDetBackbone(nn.Module):
         return tuple(f)   # FPN features (레벨별 텐서)
 
 
+# 검증용 기본 캡션. **아무 문장이나 되는 건 아니다** — 토큰 수가 임베딩 shape 을 정하고
+# 그게 GGUF 에 구워지므로, 실제로 쓸 문구와 비슷한 길이여야 의미 있는 측정이 된다.
+DEFAULT_CAPTION = "person. bicycle. car. dog."
+
+
+def text_embedding(det, caption):
+    """텍스트 가지를 한 번 돌려 임베딩을 얻는다. `(1, max_tokens, 768)`.
+
+    ⚠️ transformers 5.x 에서 `batch_encode_plus` 가 **삭제**됐다. mmdet 3.3.0 은 4.x API 를
+    기대한다(`language_models/bert.py`) — 같은 뜻인 `__call__` 로 이어 준다.
+    """
+    tok = det.language_model.tokenizer
+    if not hasattr(tok, "batch_encode_plus"):
+        tok.batch_encode_plus = tok.__call__
+    with torch.no_grad():
+        d = det.language_model([caption])
+    return d["embedded"].contiguous()
+
+
+class MMDetTextCond(nn.Module):
+    """텍스트 조건부 검출기(GLIP)를 **이미지 하나만 받는** 모듈로 감싼다.
+
+    캡션이 고정이면 텍스트 임베딩은 입력과 무관한 **상수**다 → 버퍼로 구우면 그래프 입력이
+    이미지 하나가 되어 단일입력 codegen·러너를 그대로 쓴다. DETR 의 `pos_embed`·`enc_ref`,
+    Deformable 의 `enc_proposals` 를 굽는 것과 같은 수법이다.
+    (그렇게 안 하면 융합헤드는 입력이 6개인데 codegen 이 **모든 input 노드를 같은 `x` 에
+    묶어** 크래시 없이 전부 이미지가 들어간다. 자세한 사유는 g2c `DECISIONS.md`.)
+
+    ⚠️ 이 래퍼로 재는 것은 **이미지 가지 + 융합헤드**다. BERT 자체가 아니다 —
+    구운 임베딩은 torch 가 계산한 값이다(BERT 는 2026-08-26 에 따로 쟀다).
+
+    출력은 15텐서: 레벨 5 × {정렬점수 (1,HW,256) · 박스 (1,4,H,W) · centerness (1,1,H,W)}.
+    """
+
+    def __init__(self, det, caption=DEFAULT_CAPTION):
+        super().__init__()
+        self.backbone = det.backbone
+        self.neck = det.neck
+        self.bbox_head = det.bbox_head
+        self.register_buffer("text_embedded", text_embedding(det, caption))
+        self.caption = caption
+        # `_no_box` 경로는 g2c 가 그래프에서 모은 가중치만 쓴다 — 헤드가 트레이스에 들어오므로
+        # `append_head_weights` 가 필요 없다. 선언은 남겨 둔다(다른 경로가 읽는다).
+        self.head_weight_prefixes = ("text_embedded",)
+
+    def forward(self, x):
+        f = tuple(self.neck(self.backbone(x)))
+        cls_logits, bbox_preds, centerness = self.bbox_head(
+            f, {"embedded": self.text_embedded})
+        return tuple(cls_logits) + tuple(bbox_preds) + tuple(centerness)
+
+
+def is_text_conditional(det):
+    """이 검출기가 `MMDetTextCond` 로 감쌀 수 있는가.
+
+    GLIP 만이다. GroundingDINO 계열은 head 가 DETR 꼴이라 `forward` 규약이 다르다 —
+    같은 래퍼로 감싸면 인자 개수에서 죽는다. 여기서 **명시적으로** 갈라 둔다.
+    """
+    if getattr(det, "language_model", None) is None:
+        return False
+    return type(getattr(det, "bbox_head", None)).__name__ == "ATSSVLFusionHead"
+
+
 def _tolist(v):
     try:
         return list(v)
@@ -640,7 +703,7 @@ def postproc_cfg(det):
     }
 
 
-def build(config, checkpoint=None, size=512):
+def build(config, checkpoint=None, size=512, caption=None):
     """mmdet config(.py) → (MMDetBackbone(eval), feature shapes, postproc cfg)."""
     from mmdet.apis import init_detector       # mmdet 만 import (g2c 무관)
     trace_friendly_ops()                       # trace 가 삼키는 커스텀 op 을 등가 수식으로
@@ -652,6 +715,17 @@ def build(config, checkpoint=None, size=512):
     det = init_detector(config, checkpoint, device="cpu")
     det.eval()
     _unwrap_checkpoint_forward(det)
+    # 텍스트 조건부(GLIP)는 **융합헤드까지** 한 그래프에 넣는다 — 캡션이 고정이면 텍스트
+    # 임베딩이 상수라 입력이 이미지 하나로 줄어든다(`MMDetTextCond` 주석 참고).
+    # 그러면 `_no_box` 경로의 "그래프 출력 대조" 가 곧 **헤드 검증**이 된다.
+    if is_text_conditional(det):
+        m = MMDetTextCond(det, caption or DEFAULT_CAPTION)
+        m.eval()
+        cfg = postproc_cfg(det)
+        cfg["img_size"] = int(size)
+        with torch.no_grad():
+            outs = m(torch.randn(1, 3, size, size))
+        return m, [tuple(o.shape) for o in outs], cfg
     m = MMDetBackbone(det)
     m.eval()
     cfg = postproc_cfg(det)
