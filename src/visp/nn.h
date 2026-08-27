@@ -49,6 +49,11 @@ std::array<int64_t, 4> nelements_whcn(model_ref const&, tensor t);
 // Input and weight are expected to be in "contiguous 2D" layout as configured in `m`.
 tensor conv_2d(model_ref m, tensor x, int stride = 1, int pad = 0, int dilation = 1);
 
+// 축별 conv — H 와 W 의 padding/stride/dilation 이 다른 경우(ERFNet 의 3x1 · 1x3 분리 conv).
+// ⚠️ 인자는 ggml 과 같은 **W 먼저**다. torch 의 (H, W) 순서와 반대이므로 렌더러에서 뒤집는다.
+tensor conv_2d_ex(model_ref m, tensor x, int stride_w, int stride_h, int pad_w, int pad_h,
+                  int dilation_w = 1, int dilation_h = 1);
+
 // grouped conv (nn.Conv2d(groups=g)). groups<=1 이면 conv_2d 와 동일.
 // ggml 에 grouped conv 커널이 없어 그룹별 view → conv → 채널축 concat 으로 분해한다.
 tensor conv_2d_grouped(model_ref m, tensor x, int stride = 1, int pad = 0,
@@ -66,7 +71,10 @@ tensor conv_2d_deform(
 // ggml 에는 padding 을 받는 conv_transpose 가 없어 여기서 잘라낸다.
 // `groups` 는 torch 와 같은 뜻이다. ggml 에 grouped conv_transpose 가 없어 그룹마다
 // 커널·입력을 잘라 돌리고 채널로 이어붙인다.
-tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad = 0, int groups = 1);
+// `output_padding` 도 torch 와 같은 뜻이다(출력 오른쪽·아래에 그만큼 더 붙인다).
+// ⚠️ 렌더러와 **같이** 고쳐야 한다 — 한쪽만 고치면 크기가 1 어긋난 채 조용히 돈다.
+tensor conv_transpose_2d(
+    model_ref m, tensor x, int stride, int pad = 0, int groups = 1, int output_padding = 0);
 tensor batch_norm_2d(model_ref, tensor x);
 
 // 2D image to patch embedding using convolution and optional norm. CWHN input and output.
