@@ -38,14 +38,26 @@ class MMSegWrap(nn.Module):
         self.backbone = seg.backbone
         self.neck = seg.neck if getattr(seg, "with_neck", False) else None
         self.decode_head = seg.decode_head
+        self.cascade = isinstance(seg.decode_head, nn.ModuleList)
 
     def forward(self, x):
         f = self.backbone(x)
         if self.neck is not None:
             f = self.neck(f)
-        out = self.decode_head(f)
-        # 대부분 단일 텐서다. cascade head 처럼 여럿을 내는 것도 있어 튜플이면 그대로
-        # 흘린다 — 러너가 `out_i` 로 순서대로 덤프한다.
+        if self.cascade:
+            # ⚠️ **`CascadeEncoderDecoder` 의 head 는 `nn.ModuleList` 다.** 그냥 부르면
+            #    `Module [ModuleList] is missing the required forward` 로 죽는다 —
+            #    「범위 밖」처럼 보이지만 **하네스가 못 부른 것**이다(ocrnet·point_rend).
+            #    단계 규약은 mmseg `cascade_encoder_decoder.py:78` 과 같다: 0단계는
+            #    `forward(x)`, 이후는 `forward(x, prev)`. 마지막 단계의 `predict` 는
+            #    `forward(x, prev)` 뒤 **resize** 만 하는데 그건 그래프 밖이라 뺀다.
+            out = self.decode_head[0](f)
+            for i in range(1, len(self.decode_head)):
+                out = self.decode_head[i](f, out)
+        else:
+            out = self.decode_head(f)
+        # 대부분 단일 텐서다. 여럿을 내는 것도 있어 튜플이면 그대로 흘린다 —
+        # 러너가 `out_i` 로 순서대로 덤프한다.
         return out if isinstance(out, torch.Tensor) else tuple(out)
 
 
