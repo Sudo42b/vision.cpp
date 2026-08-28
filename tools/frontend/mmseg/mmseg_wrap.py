@@ -7,6 +7,7 @@
 **mmdet 보다 훨씬 단순하다** — 앵커도 NMS 도 박스 디코드도 없다. head 를 C++ 로 조립할
 이유가 없어 `decode_head` 까지 통째로 g2c 로 컴파일한다(GLIP 융합헤드에서 통한 경로).
 """
+import inspect
 import os
 import sys
 
@@ -39,6 +40,17 @@ class MMSegWrap(nn.Module):
         self.neck = seg.neck if getattr(seg, "with_neck", False) else None
         self.decode_head = seg.decode_head
         self.cascade = isinstance(seg.decode_head, nn.ModuleList)
+        # ⚠️ **MaskFormer 계열의 head 는 `forward(x)` 가 아니다** —
+        #    `forward(x, batch_data_samples)` 라 그냥 부르면
+        #    `forward() missing 1 required positional argument` 로 죽는다.
+        #    두 번째 인자는 이름과 달리 **입력 크기를 넘기는 통로**일 뿐이고
+        #    (mmseg `maskformer_head.py:151` 주석이 그렇게 말한다), 실제 추론 경로는
+        #    `predict(x, batch_img_metas, test_cfg)` 다. 그쪽으로 부른다.
+        self.needs_metas = (
+            not self.cascade
+            and "batch_data_samples" in inspect.signature(
+                seg.decode_head.forward).parameters
+        )
 
     def forward(self, x):
         f = self.backbone(x)
@@ -54,6 +66,41 @@ class MMSegWrap(nn.Module):
             out = self.decode_head[0](f)
             for i in range(1, len(self.decode_head)):
                 out = self.decode_head[i](f, out)
+        elif self.needs_metas:
+            # `predict` 는 마스크를 **입력 크기로** 올린 뒤 클래스 점수와 곱해
+            # seg_logits 를 만든다(`einsum('bqc,bqhw->bchw')`). 다른 계열의
+            # 「resize 는 그래프 밖」 규약과 달리 이건 head 안의 계산이라 그래프에 둔다 —
+            # 여기서 빼면 남는 게 마스크 로짓이라 비교 대상이 달라진다.
+            h, w = int(x.shape[-2]), int(x.shape[-1])
+            metas = [{"img_shape": (h, w), "batch_input_shape": (h, w)}]
+            probe = os.environ.get("VISP_SEG_PROBE")
+            if probe == "cs":
+                # cumsum 그 자체만. 여기서 틀리면 렌더러, 맞으면 PE 의 뒷단
+                # (stride-2 슬라이스·stack·view)이 범인이다.
+                feat = f[-1]
+                mask = feat.new_zeros(
+                    (int(feat.shape[0]), int(feat.shape[2]), int(feat.shape[3])))
+                not_mask = 1 - mask
+                # ⚠️ 배치축(dim=0)에 붙이면 안 된다 — 하네스가 `t[0]` 로 배치를
+                #    벗기므로 절반만 비교된다. 채널축으로 붙인다.
+                out = (torch.stack([not_mask.cumsum(1), not_mask.cumsum(2)], dim=1)
+                       + feat[:, 0:1, :, :] * 0)
+            elif probe == "pe":
+                # 위치인코딩만. `cumsum` 이 여기 있고 MHA(baddbmm)는 없다 —
+                # 둘 중 누구인지 가르는 자리.
+                feat = f[-1]
+                mask = feat.new_zeros(
+                    (int(feat.shape[0]), int(feat.shape[2]), int(feat.shape[3])))
+                out = self.decode_head.decoder_pe(mask) + feat[:, :1] * 0
+            elif probe == "mask":
+                # 값이 어디서 벌어지는지 가르는 자리 — 디코더까지만 내고
+                # `predict` 의 interpolate·softmax·einsum 은 뺀다.
+                from mmseg.structures import SegDataSample
+                _, all_mask_preds = self.decode_head(
+                    f, [SegDataSample(metainfo=metas[0])])
+                out = all_mask_preds[-1]
+            else:
+                out = self.decode_head.predict(f, metas, None)
         else:
             out = self.decode_head(f)
         # 대부분 단일 텐서다. 여럿을 내는 것도 있어 튜플이면 그대로 흘린다 —
