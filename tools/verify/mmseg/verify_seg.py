@@ -82,17 +82,28 @@ def _avail_mb():
     return 1 << 30      # 못 읽으면 가드를 끈다(측정 실패로 막지 않는다)
 
 
+_MEM_GATE = __import__("threading").Lock()
+
+
 def _wait_for_memory(fam):
+    """가용 메모리가 회복될 때까지 기다린다.
+
+    ⚠️ **락으로 감싼다.** 워커가 여럿이면 둘이 동시에 검사를 통과한 뒤 **둘 다** 할당해
+       가드가 무의미해진다. 한 번에 하나만 문을 지나게 하고, 지난 뒤엔 바로 놓는다
+       (할당은 서브프로세스가 하므로 그때까지 붙들 필요가 없다).
+    """
     import time
     waited = 0
-    while _avail_mb() < MIN_FREE_MB:
-        if waited == 0:
-            print(f"  … 메모리 대기 ({fam}): 가용 {_avail_mb()}MB < {MIN_FREE_MB}MB", flush=True)
-        time.sleep(5)
-        waited += 5
-        if waited > 600:      # 10분을 기다려도 안 풀리면 그냥 간다(교착 방지)
-            print(f"  … 10분 대기 후에도 부족 — 그대로 진행한다 ({fam})", flush=True)
-            break
+    with _MEM_GATE:
+        while _avail_mb() < MIN_FREE_MB:
+            if waited == 0:
+                print(f"  … 메모리 대기 ({fam}): 가용 {_avail_mb()}MB < {MIN_FREE_MB}MB",
+                      flush=True)
+            time.sleep(5)
+            waited += 5
+            if waited > 600:  # 10분을 기다려도 안 풀리면 그냥 간다(교착 방지)
+                print(f"  … 10분 대기 후에도 부족 — 그대로 진행한다 ({fam})", flush=True)
+                break
 
 
 def run(cmd, cwd=None, env=None, timeout=1800):
@@ -273,6 +284,11 @@ def main():
     ap.add_argument("--fetch", action="store_true", help="없는 체크포인트를 받는다")
     ap.add_argument("--size", type=int, default=None)
     ap.add_argument("--workdir", default=None)
+    ap.add_argument("--workers", type=int, default=2,
+                    help="동시에 돌릴 계열 수(기본 2). ⚠️ 계열마다 torch 를 띄운다 — "
+                         "12GB 에서 3을 넘기면 위험하다. 각 서브프로세스는 "
+                         f"`ulimit -v {MAX_SUBPROC_GB}GB` 로 묶여 있어 폭주해도 "
+                         "그 계열만 죽는다.")
     a = ap.parse_args()
 
     global SZ, WORKDIR
@@ -298,11 +314,31 @@ def main():
     print(f"{'계열':<24}{'판정':<14}비고")
     print("-" * 86)
     rows = []
-    for i, (fam, cfg, w) in enumerate(sel, 1):
-        fam, verdict, note = verify(fam, cfg, w)
-        mark = "O" if verdict == "PASS" else ("X" if verdict == "FAIL" else "-")
-        print(f"[{i:3d}/{len(sel)}] {fam:<20} {mark} {verdict:<14} {note}")
-        rows.append((fam, verdict))
+    nw = max(1, int(a.workers))
+    if nw == 1 or len(sel) == 1:
+        for i, (fam, cfg, w) in enumerate(sel, 1):
+            fam, verdict, note = verify(fam, cfg, w)
+            mark = "O" if verdict == "PASS" else ("X" if verdict == "FAIL" else "-")
+            print(f"[{i:3d}/{len(sel)}] {fam:<20} {mark} {verdict:<14} {note}")
+            rows.append((fam, verdict))
+    else:
+        # 계열끼리 독립이라 병렬로 돌린다. 일은 전부 **서브프로세스**가 하므로 스레드로
+        # 충분하다(GIL 은 subprocess 대기 중 풀린다). 계열당 52초 중 추론은 6초뿐이고
+        # 나머지는 torch import·컴파일이라, 병렬화가 유일하게 큰 레버다.
+        # ⚠️ 완료 순서대로 찍는다 — 줄마다 계열 이름이 있어 순서가 섞여도 읽힌다.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        idx = {f[0]: i for i, f in enumerate(sel, 1)}
+        done = 0
+        with ThreadPoolExecutor(max_workers=nw) as ex:
+            futs = [ex.submit(verify, f, c, w) for f, c, w in sel]
+            for fu in as_completed(futs):
+                fam, verdict, note = fu.result()
+                mark = "O" if verdict == "PASS" else ("X" if verdict == "FAIL" else "-")
+                done += 1
+                print(f"[{done:3d}/{len(sel)}] {fam:<20} {mark} {verdict:<14} {note}",
+                      flush=True)
+                rows.append((fam, verdict))
+        rows.sort(key=lambda r: idx.get(r[0], 0))
     n_pass = sum(1 for _f, v in rows if v == "PASS")
     print(f"\nPASS {n_pass}/{len(rows)}")
 
