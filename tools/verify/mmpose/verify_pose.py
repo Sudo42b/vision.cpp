@@ -83,17 +83,33 @@ def _avail_mb():
     return 1 << 30      # 못 읽으면 가드를 끈다(측정 실패로 막지 않는다)
 
 
+_MEM_GATE = __import__("threading").Lock()
+
+
 def _wait_for_memory(fam):
+    """가용 메모리가 회복될 때까지 기다린다.
+
+    ⚠️ **락으로 감싼다.** 워커가 여럿이면 둘이 동시에 검사를 통과한 뒤 **둘 다** 할당해
+       가드가 무의미해진다(`verify_seg.py` 와 같은 이유·같은 수법). 한 번에 하나만
+       문을 지나게 하고, 지난 뒤엔 바로 놓는다 — 할당은 서브프로세스가 하므로
+       그때까지 붙들 필요가 없다.
+
+    ⚠️ 이 게이트는 `/proc/meminfo` 의 **시스템 전역** 값을 본다. 그래서 mmseg 스윕과
+       mmpose 스윕을 **동시에 돌려도 서로를 자동으로 throttle 한다** — 두 프로세스가
+       서로를 몰라도 된다. 동시 운용할 때는 `VISP_MIN_FREE_MB` 를 올려 잡는다.
+    """
     import time
     waited = 0
-    while _avail_mb() < MIN_FREE_MB:
-        if waited == 0:
-            print(f"  … 메모리 대기 ({fam}): 가용 {_avail_mb()}MB < {MIN_FREE_MB}MB", flush=True)
-        time.sleep(5)
-        waited += 5
-        if waited > 600:      # 10분을 기다려도 안 풀리면 그냥 간다(교착 방지)
-            print(f"  … 10분 대기 후에도 부족 — 그대로 진행한다 ({fam})", flush=True)
-            break
+    with _MEM_GATE:
+        while _avail_mb() < MIN_FREE_MB:
+            if waited == 0:
+                print(f"  … 메모리 대기 ({fam}): 가용 {_avail_mb()}MB < {MIN_FREE_MB}MB",
+                      flush=True)
+            time.sleep(5)
+            waited += 5
+            if waited > 600:      # 10분을 기다려도 안 풀리면 그냥 간다(교착 방지)
+                print(f"  … 10분 대기 후에도 부족 — 그대로 진행한다 ({fam})", flush=True)
+                break
 
 
 def run(cmd, cwd=None, env=None, timeout=1800):

@@ -53,9 +53,17 @@ class MMSegWrap(nn.Module):
         )
 
     def forward(self, x):
+        # **계열 무관 프로브.** 값이 틀릴 때 백본/넥/헤드 중 어디서 벌어지는지 먼저 가른다 —
+        # 계열마다 프로브를 새로 짜지 않으려고 여기 둔다. 튜플을 그대로 돌려주면
+        # 하네스가 `out_i` 로 각각 덤프하고 `ref.shapes.txt` 도 여러 줄이 된다.
+        _probe = os.environ.get("VISP_SEG_PROBE")
         f = self.backbone(x)
+        if _probe == "bb":
+            return f if isinstance(f, torch.Tensor) else tuple(f)
         if self.neck is not None:
             f = self.neck(f)
+        if _probe == "neck":
+            return f if isinstance(f, torch.Tensor) else tuple(f)
         if self.cascade:
             # ⚠️ **`CascadeEncoderDecoder` 의 head 는 `nn.ModuleList` 다.** 그냥 부르면
             #    `Module [ModuleList] is missing the required forward` 로 죽는다 —
@@ -85,13 +93,21 @@ class MMSegWrap(nn.Module):
                 #    벗기므로 절반만 비교된다. 채널축으로 붙인다.
                 out = (torch.stack([not_mask.cumsum(1), not_mask.cumsum(2)], dim=1)
                        + feat[:, 0:1, :, :] * 0)
-            elif probe == "pe":
+            elif probe in ("pe", "pe_n", "pe_d"):
                 # 위치인코딩만. `cumsum` 이 여기 있고 MHA(baddbmm)는 없다 —
                 # 둘 중 누구인지 가르는 자리.
+                # `pe_n`·`pe_d` 는 그 안을 다시 셋으로 가른다. `pe` 는 전체다.
+                #   pe_n → cumsum + normalize(⚠️ **음수 인덱스 슬라이스** `[:, -1:, :]`)
+                #   pe_d → 거기에 dim_t 브로드캐스트 나눗셈까지
+                #   pe   → 거기에 stride-2 슬라이스 + stack(dim=4) + view 까지
                 feat = f[-1]
                 mask = feat.new_zeros(
                     (int(feat.shape[0]), int(feat.shape[2]), int(feat.shape[3])))
-                out = self.decode_head.decoder_pe(mask) + feat[:, :1] * 0
+                zero = feat[:, :1] * 0
+                if probe == "pe":
+                    out = self.decode_head.decoder_pe(mask) + zero
+                else:
+                    out = _pe_stage(self.decode_head.decoder_pe, mask, probe) + zero
             elif probe == "mask":
                 # 값이 어디서 벌어지는지 가르는 자리 — 디코더까지만 내고
                 # `predict` 의 interpolate·softmax·einsum 은 뺀다.
@@ -107,6 +123,34 @@ class MMSegWrap(nn.Module):
         # 러너가 `out_i` 로 순서대로 덤프한다.
         return out if isinstance(out, torch.Tensor) else tuple(out)
 
+
+
+def _pe_stage(pe, mask, stage):
+    """`SinePositionalEncoding.forward` 를 단계별로 끊어 낸다(프로브 전용).
+
+    본체(mmdet `positional_encoding.py`)와 **같은 식**을 그대로 옮긴 것이다 —
+    다르게 쓰면 재는 대상이 달라진다. 출력은 항상 `[B, C, H, W]` 로 맞춘다:
+    하네스가 `t[0]` 로 배치를 벗기므로 채널축에 실어야 전부 비교된다.
+    """
+    B, H, W = mask.size()
+    mask = mask.to(torch.int)
+    not_mask = 1 - mask
+    y_embed = not_mask.cumsum(1, dtype=torch.float32)
+    x_embed = not_mask.cumsum(2, dtype=torch.float32)
+    if pe.normalize:
+        # ⚠️ 음수 인덱스 슬라이스다. 마지막 행/열을 집는 이 두 줄이 g2c 에서
+        #    어떻게 나가는지가 미확인이었다.
+        y_embed = (y_embed + pe.offset) / (y_embed[:, -1:, :] + pe.eps) * pe.scale
+        x_embed = (x_embed + pe.offset) / (x_embed[:, :, -1:] + pe.eps) * pe.scale
+    if stage == "pe_n":
+        return torch.stack([y_embed, x_embed], dim=1)
+    dim_t = torch.arange(pe.num_feats, dtype=torch.float32)
+    dim_t = pe.temperature ** (2 * (dim_t // 2) / pe.num_feats)
+    pos_x = x_embed[:, :, :, None] / dim_t
+    pos_y = y_embed[:, :, :, None] / dim_t
+    if stage == "pe_d":
+        return torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+    raise ValueError(stage)
 
 def crop_size(config):
     """config 의 `data_preprocessor.size` → (H, W). 없으면 (512, 512).
