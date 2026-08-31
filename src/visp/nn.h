@@ -89,6 +89,12 @@ tensor conv_2d_wt_dw(model_ref m, tensor x, tensor weight, tensor bias,
                      int stride = 1, int pad = 0, int dilation = 1);
 
 tensor conv_2d_depthwise(model_ref m, tensor x, int stride = 1, int pad = 0, int dilation = 1);
+
+// 축별 depthwise conv — 커널·padding 이 H 와 W 에서 다른 strip conv 용
+// (SegNeXt MSCAN 의 1x7/7x1 · 1x11/11x1 · 1x21/21x1). 인자 순서는 ggml 과 같은 **W 먼저**다.
+// ⚠️ 단일 int 헬퍼로 내면 한쪽 padding 이 통째로 버려지거나 없던 쪽에 붙는다.
+tensor conv_2d_depthwise_ex(model_ref m, tensor x, int stride_w, int stride_h, int pad_w,
+                            int pad_h, int dilation_w, int dilation_h);
 tensor conv_2d_deform(
     model_ref m, tensor x, tensor weight, tensor offset, tensor mask, int stride, int pad);
 // `pad` 는 torch 의 ConvTranspose2d padding 과 같은 뜻이다(출력 가장자리를 그만큼 버린다).

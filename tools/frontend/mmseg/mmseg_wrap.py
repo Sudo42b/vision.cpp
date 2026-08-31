@@ -183,12 +183,78 @@ class MMSegWrap(nn.Module):
                                    mode="bilinear")
         feats = self.image_encoder(clip_x)
         if probe == "bb":
-            return feats if isinstance(feats, torch.Tensor) else tuple(feats)
+            # ⚠️ **san 의 image_encoder 는 리스트 안에 리스트를 낸다.** 그냥 `tuple(feats)`
+            #    로 내면 하네스가 `.shape` 을 찾다 죽는다(REF_FAIL 로 보여 「프로브가
+            #    안 되는 계열」처럼 읽힌다 — 실제로는 평탄화만 하면 된다).
+            return _flatten_tensors(feats)
         cls_embeds = self.text_encoder()
         h, w = int(x.shape[-2]), int(x.shape[-1])
         metas = [{"img_shape": (h, w), "batch_input_shape": (h, w)}]
+        if probe in ("san_pe", "san_fuse"):
+            # `encode_feature` 의 **앞머리만** 재현한다(mmseg san_head.py:114-137 과 같은 식).
+            #   san_pe   : patch_embed + pos_embed(필요하면 bicubic resize) + query 결합까지
+            #   san_fuse : 거기에 첫 CLIP 융합(fuse_clip)까지
+            # 블록을 돌기 전에 이미 틀렸는지부터 가른다.
+            from mmseg.models.utils import resize as _resize
+            san = self.decode_head.side_adapter_network
+            xx, hwshape = san.patch_embed(x)
+            ori_h, ori_w = san.patch_embed.init_out_size
+            pos_embed = san.pos_embed
+            if san.pos_embed.shape[1] != xx.shape[1]:
+                pos_embed = _resize(
+                    san.pos_embed.reshape(1, ori_h, ori_w, -1).permute(0, 3, 1, 2),
+                    size=hwshape, mode="bicubic", align_corners=False,
+                ).flatten(2).permute(0, 2, 1)
+            pos_embed = torch.cat(
+                [san.query_pos_embed.expand(pos_embed.shape[0], -1, -1), pos_embed], dim=1)
+            xx = torch.cat([san.query_embed.expand(xx.shape[0], -1, -1), xx], dim=1)
+            xx = xx + pos_embed
+            if probe == "san_pe":
+                return xx
+            L = hwshape[0] * hwshape[1]
+            if san.fusion_index[0] == 0:
+                xx = san.fuse_clip(0, xx, feats[0][0], hwshape, L)
+            return xx
+        if probe == "san_enc":
+            # SAN 안을 다시 가른다 — `encode_feature`(경량 ViT + CLIP 융합)까지만 잰다.
+            # 여기서 맞으면 범인은 `decode_feature`(MLPMaskDecoder)다.
+            san = self.decode_head.side_adapter_network
+            return _flatten_tensors(san.encode_feature(x, feats, []))
+        if probe in ("san_mask", "san_cls", "san_head"):
+            # `predict` 는 `forward` → `predict_by_feat`(업샘플·softmax·einsum) 이다.
+            # 그 둘을 갈라야 어느 쪽이 틀렸는지 짚인다 — `predict` 전체만 재면
+            # 마스크 오류와 클래스 오류가 한 숫자로 섞인다.
+            mask_props, mask_logits = self.decode_head.forward([x, feats, cls_embeds], [])
+            if probe == "san_mask":
+                return _flatten_tensors(mask_props[-1])
+            if probe == "san_cls":
+                return _flatten_tensors(mask_logits[-1])
+            return _flatten_tensors((mask_props[-1], mask_logits[-1]))
         out = self.decode_head.predict([x, feats, cls_embeds], metas, self.test_cfg)
         return out if isinstance(out, torch.Tensor) else tuple(out)
+
+
+
+def _flatten_tensors(obj):
+    """중첩 list/tuple 을 텐서 튜플로 편다(프로브 전용). 텐서 하나면 그대로 돌려준다."""
+    if isinstance(obj, torch.Tensor):
+        return obj
+    out = []
+
+    def _walk(o):
+        if isinstance(o, torch.Tensor):
+            out.append(o)
+        elif isinstance(o, (list, tuple)):
+            for e in o:
+                _walk(e)
+        elif isinstance(o, dict):
+            # san 의 `encode_feature` 는 `{'query':…, 'x':…}` 리스트를 낸다.
+            # 안 걸으면 빈 리스트가 돼 `out[0]` 이 IndexError 로 죽는다.
+            for k in sorted(o):
+                _walk(o[k])
+
+    _walk(obj)
+    return out[0] if len(out) == 1 else tuple(out)
 
 
 def _pe_stage(pe, mask, stage):
@@ -235,6 +301,61 @@ def crop_size(config):
     return 512, 512
 
 
+
+def _pin_nmf_random_bases():
+    """SegNeXt(`LightHamHead`)의 NMF2D 를 **결정적**으로 만든다.
+
+    `NMF2D._build_bases` 는 추론마다 `torch.rand` 로 기저를 새로 뽑는다(`rand_init=True` 가
+    config 의 실제 값이다). 그래서 **torch 두 번이 서로 어긋난다** — 실측 rel L1 1.09e-02
+    (2026-08-28) · 1.275e-02 (2026-08-31). 기준값 자체가 흔들리면 컴파일러를 못 잰다.
+
+    게다가 `aten::rand` 는 ggml 로 낼 수 없다 — 렌더러가 없어 passthrough 로 떨어지고
+    「낼 수 없는 op 1개」로 컴파일이 멈춘다.
+
+    고정 시드로 한 번 뽑아 **모듈 버퍼로 등록**한다. 그러면
+      · 기준값(ref.py)과 컴파일(trace)이 **같은 값**을 쓴다 — 같은 프로세스에서 만든
+        `seg.pt` 한 벌을 양쪽이 읽기 때문이다
+      · 그래프에서 난수가 사라지고 GGUF 가중치가 된다
+    `build()` 의 워밍업 forward 가 `torch.save` 보다 앞서므로 저장 시점에 버퍼가 잡혀 있다.
+
+    ⚠️ **이건 원 모델과 다른 구성이다.** 원 모델은 매 추론 기저를 다시 뽑는다. 여기서
+       재는 것은 「고정 기저에서 컴파일러가 맞게 번역하는가」이지 「난수 초기화까지 같은가」가
+       아니다. 수치를 적을 때 이 조건을 같이 적어라.
+    """
+    try:
+        from mmseg.models.decode_heads.ham_head import NMF2D
+        import torch.nn.functional as _F
+    except Exception:
+        return
+    if getattr(NMF2D, "_visp_pinned", False):
+        return
+
+    def _build_bases(self, B, S, D, R, device=None):
+        # ⚠️ **버퍼 이름을 shape 으로 만들지 마라.** trace 중에는 `D = C // S` 가 정수가
+        #    아니라 그래프 텐서로 와서 이름이 매번 달라지고, 버퍼가 새로 등록돼
+        #    `torch.jit.trace` 가 「state_dict changed after running the tracer」로 죽는다.
+        #    한 모델 안에서 shape 은 고정이므로 이름 하나면 된다.
+        buf = getattr(self, "visp_bases", None)
+        if buf is None:
+            n = int(B) * int(S)
+            g = torch.Generator().manual_seed(0)
+            bases = _F.normalize(torch.rand((n, int(D), int(R)), generator=g), dim=1)
+            # persistent=True — state_dict 에 남아야 GGUF 로 나간다.
+            self.register_buffer("visp_bases", bases, persistent=True)
+            buf = getattr(self, "visp_bases")
+        return buf
+
+    NMF2D._build_bases = _build_bases
+    NMF2D._visp_pinned = True
+
+
+# ⚠️ **모듈 import 시점에 건다.** `build()` 안에서만 걸면 기준값 프로세스에만 먹고
+#    **컴파일 프로세스에는 안 먹는다** — 거기서는 `seg.pt` 를 언피클할 뿐 `build()` 를
+#    부르지 않기 때문이다(언피클이 이 모듈을 import 하므로 여기 두면 양쪽 다 걸린다).
+#    실측: build() 안에만 뒀을 때 생성물에 `aten::rand` 가 그대로 남았다.
+_pin_nmf_random_bases()
+
+
 def build(config, checkpoint=None, size=512):
     """mmseg config(.py) → (MMSegWrap(eval), 출력 shape 목록).
 
@@ -242,6 +363,7 @@ def build(config, checkpoint=None, size=512):
     """
     from mmseg.apis import init_model                  # mmseg 만 import (g2c 무관)
     trace_friendly_ops()
+    _pin_nmf_random_bases()
     # PyTorch 2.6 부터 `torch.load` 의 `weights_only` 기본값이 True 라 mmengine 이 넣은
     # 학습 메타에 걸린다. mmdet 쪽과 같은 사정이므로 그 구현을 재사용한다.
     mmdet_wrap.allow_mmengine_checkpoint_globals()

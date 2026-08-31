@@ -226,19 +226,24 @@ tensor conv_2d_grouped(model_ref m, tensor x, int stride, int pad, int dilation,
 // 넘기고 dilation 을 못 넘기면 출력이 `in + 2p - (k-1)` 이 되어 입력보다 크게 나오고,
 // 그 크기는 **다음 op(concat)에서** 어긋나 죽는다(mmseg DeepLabV3+ 의 depthwise ASPP:
 // dilation 12/24/36 인데 64x64 가 86/110/134 로 커졌다).
-tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad, int dilation) {
+tensor conv_2d_depthwise_ex(model_ref m, tensor x, int sw, int sh, int pw, int ph, int dw,
+                            int dh) {
     tensor weight = m.weights("weight");
 
     if (m.flags & model_build_flag::cwhn) {
         weight = ggml_permute(m, weight, 3, 2, 0, 1);
         x = permute_cwhn_to_whcn(m, x);
-        x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
+        x = ggml_conv_2d_dw_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
         x = permute_whcn_to_cwhn(m, x);
     } else {
-        x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
+        x = ggml_conv_2d_dw_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
     }
     x = add_bias_2d(m, x);
     return x;
+}
+
+tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad, int dilation) {
+    return conv_2d_depthwise_ex(m, x, stride, stride, pad, pad, dilation, dilation);
 }
 
 tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad, int groups,
