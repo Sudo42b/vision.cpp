@@ -163,6 +163,29 @@ tensor conv_2d_wt(model_ref m, tensor x, tensor weight, tensor bias, int stride,
     return x;
 }
 
+tensor conv_2d_wt_dw(model_ref m, tensor x, tensor weight, tensor bias, int stride, int pad,
+                     int dilation) {
+    // ⚠️ **입력을 whcn 연속으로 만들어 넘긴다.** `ggml_compute_forward_conv_2d_dw` 는
+    //    src 가 contiguous 면 whcn 커널을, contiguous_channels 면 cwhn 커널을 타는데
+    //    cwhn 쪽은 **kernel 에도** `nb[0] >= nb[2]` 를 요구한다. 동적 커널은 그래프에서
+    //    torch 순서(`[kw,kh,1,C]` 연속)로 오므로 그 단언에 걸린다 — cwhn 모델이어도
+    //    입력을 whcn 으로 돌려 whcn 커널을 타게 하는 편이 레이아웃 가정을 안 만든다.
+    bool cwhn = bool(m.flags & model_build_flag::cwhn);
+    x = cwhn ? ggml_cont(m, permute_cwhn_to_whcn(m, x)) : ggml_cont(m, x);
+    weight = ggml_cont(m, weight);
+    x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
+    if (cwhn) {
+        x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
+    }
+    if (bias) {
+        if (!cwhn) {
+            bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
+        }
+        x = ggml_add_inplace(m, x, bias);
+    }
+    return x;
+}
+
 tensor conv_2d_grouped(model_ref m, tensor x, int stride, int pad, int dilation, int groups) {
     if (groups <= 1) {
         return conv_2d(m, x, stride, pad, dilation);

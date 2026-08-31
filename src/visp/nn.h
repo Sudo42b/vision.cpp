@@ -81,6 +81,13 @@ tensor conv_2d_grouped(model_ref m, tensor x, int stride = 1, int pad = 0,
 tensor conv_2d_wt(model_ref m, tensor x, tensor weight, tensor bias,
                   int stride = 1, int pad = 0, int dilation = 1);
 
+// 동적 weight 의 **depthwise** conv (groups == 채널수). DMNet 의 DCM 이 이 자리다 —
+// 필터를 입력에서 만들어 채널마다 다른 커널로 돈다.
+// weight 는 torch `[C,1,kh,kw]` → ggml `[kw,kh,1,C]` 로 그대로 온다(GGUF 경유가 아니라
+// 그래프 텐서라 `conv_2d_depthwise` 의 레이아웃 되돌림이 필요 없다).
+tensor conv_2d_wt_dw(model_ref m, tensor x, tensor weight, tensor bias,
+                     int stride = 1, int pad = 0, int dilation = 1);
+
 tensor conv_2d_depthwise(model_ref m, tensor x, int stride = 1, int pad = 0, int dilation = 1);
 tensor conv_2d_deform(
     model_ref m, tensor x, tensor weight, tensor offset, tensor mask, int stride, int pad);
