@@ -20,6 +20,9 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mmseg_families
+
 sys.stdout.reconfigure(line_buffering=True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -59,7 +62,12 @@ def families():
             continue
         m = models[0]
         cfg = MM + "/" + m["Config"] if not m["Config"].startswith("/") else m["Config"]
-        out.append((fam, cfg, m.get("Weights", "")))
+        w = m.get("Weights", "")
+        # ⚠️ metafile 이 틀린 줄이 있다(emanet 의 config 이름 오타). vendor 트리를 고치면
+        #    재클론에 날아가므로 **예외는 저장소 안 `mmseg_families.py` 에 적고** 여기서
+        #    얹는다. 열거 자체는 그대로 metafile 이 한다 — 손목록은 정본이 아니다.
+        cfg, w = mmseg_families.apply(fam, cfg, w, MM + "/configs")
+        out.append((fam, cfg, w))
     return out
 
 

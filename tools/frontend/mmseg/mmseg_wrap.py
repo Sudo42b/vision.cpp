@@ -36,10 +36,40 @@ class MMSegWrap(nn.Module):
 
     def __init__(self, seg):
         super().__init__()
-        self.backbone = seg.backbone
-        self.neck = seg.neck if getattr(seg, "with_neck", False) else None
+        # ⚠️ **`backbone` 이 없는 세그멘터가 있다.** `MultimodalEncoderDecoder`(san)는
+        #    `image_encoder` + `text_encoder` 로 되어 있어 `seg.backbone` 을 무조건 집으면
+        #    `AttributeError: ... has no attribute 'backbone'` 로 죽는다. 「범위 밖」이
+        #    아니라 **하네스가 못 세운 것**이었다(2026-08-31).
+        self.multimodal = (not hasattr(seg, "backbone")
+                           and hasattr(seg, "image_encoder")
+                           and hasattr(seg, "text_encoder"))
+        if self.multimodal:
+            self.backbone = None
+            self.neck = None
+            self.image_encoder = seg.image_encoder
+            self.text_encoder = seg.text_encoder
+            # `encode_decode` 가 이미지 인코더에만 줄인 입력을 넣는다(san 은 0.5배).
+            self.asymetric_input = getattr(seg, "asymetric_input", False)
+            self.encoder_resolution = getattr(seg, "encoder_resolution", 1.0)
+        else:
+            self.backbone = seg.backbone
+            self.neck = seg.neck if getattr(seg, "with_neck", False) else None
         self.decode_head = seg.decode_head
         self.cascade = isinstance(seg.decode_head, nn.ModuleList)
+        # ⚠️ **cascade 라고 다 `forward(x, prev)` 로 끝나지 않는다.** `PointHead`(point_rend)의
+        #    `forward` 는 `(fine_grained_point_feats, coarse_point_feats)` 라 특징 튜플을
+        #    그대로 넘기면 `torch.cat` 이 `expected Tensor ... but got tuple` 로 죽는다.
+        #    mmseg 자신도 `cascade_encoder_decoder.py:135` 에 "TODO support PointRend
+        #    tensor mode" 라고 적어 두었다 — 추론 경로는 마지막 단계만 `predict` 다
+        #    (`encode_decode`: 0..n-2 는 forward, n-1 은 predict).
+        self.cascade_predict = (
+            self.cascade
+            and "prev_output" in inspect.signature(
+                seg.decode_head[-1].predict).parameters
+            and "fine_grained_point_feats" in inspect.signature(
+                seg.decode_head[-1].forward).parameters
+        )
+        self.test_cfg = getattr(seg, "test_cfg", None)
         # ⚠️ **MaskFormer 계열의 head 는 `forward(x)` 가 아니다** —
         #    `forward(x, batch_data_samples)` 라 그냥 부르면
         #    `forward() missing 1 required positional argument` 로 죽는다.
@@ -48,6 +78,7 @@ class MMSegWrap(nn.Module):
         #    `predict(x, batch_img_metas, test_cfg)` 다. 그쪽으로 부른다.
         self.needs_metas = (
             not self.cascade
+            and not self.multimodal
             and "batch_data_samples" in inspect.signature(
                 seg.decode_head.forward).parameters
         )
@@ -57,6 +88,8 @@ class MMSegWrap(nn.Module):
         # 계열마다 프로브를 새로 짜지 않으려고 여기 둔다. 튜플을 그대로 돌려주면
         # 하네스가 `out_i` 로 각각 덤프하고 `ref.shapes.txt` 도 여러 줄이 된다.
         _probe = os.environ.get("VISP_SEG_PROBE")
+        if self.multimodal:
+            return self._forward_multimodal(x, _probe)
         f = self.backbone(x)
         if _probe == "bb":
             return f if isinstance(f, torch.Tensor) else tuple(f)
@@ -71,9 +104,16 @@ class MMSegWrap(nn.Module):
             #    단계 규약은 mmseg `cascade_encoder_decoder.py:78` 과 같다: 0단계는
             #    `forward(x)`, 이후는 `forward(x, prev)`. 마지막 단계의 `predict` 는
             #    `forward(x, prev)` 뒤 **resize** 만 하는데 그건 그래프 밖이라 뺀다.
+            n = len(self.decode_head)
             out = self.decode_head[0](f)
-            for i in range(1, len(self.decode_head)):
+            # `cascade_predict` 면 마지막 단계는 forward 가 아니라 predict 로 부른다.
+            # 그 외(ocrnet 등)는 예전 그대로 끝까지 forward 다.
+            for i in range(1, (n - 1) if self.cascade_predict else n):
                 out = self.decode_head[i](f, out)
+            if self.cascade_predict:
+                h, w = int(x.shape[-2]), int(x.shape[-1])
+                metas = [{"img_shape": (h, w), "batch_input_shape": (h, w)}]
+                out = self.decode_head[n - 1].predict(f, out, metas, self.test_cfg)
         elif self.needs_metas:
             # `predict` 는 마스크를 **입력 크기로** 올린 뒤 클래스 점수와 곱해
             # seg_logits 를 만든다(`einsum('bqc,bqhw->bchw')`). 다른 계열의
@@ -123,6 +163,32 @@ class MMSegWrap(nn.Module):
         # 러너가 `out_i` 로 순서대로 덤프한다.
         return out if isinstance(out, torch.Tensor) else tuple(out)
 
+    def _forward_multimodal(self, x, probe=None):
+        """`MultimodalEncoderDecoder`(san) 전용 경로.
+
+        mmseg `multimodal_encoder_decoder.py:121` 의 `encode_decode` 와 **같은 순서**다:
+        (필요하면 입력을 줄여) `image_encoder` → `text_encoder()` → 
+        `decode_head.predict([원본입력, 시각특징, 클래스임베딩], metas, test_cfg)`.
+        다르게 쓰면 재는 대상이 달라지므로 순서를 바꾸지 않는다.
+
+        `text_encoder()` 는 입력을 안 받는다 — 클래스 이름 임베딩이라 이미지와 무관하다.
+        `predict` 안에서 마스크를 입력 크기로 올려 클래스 점수와 곱하므로
+        (`einsum('bqc,bqhw->bchw')`) 그 resize 는 head 안의 계산이고 그래프에 남긴다
+        — maskformer 계열(`needs_metas`)과 같은 사정이다.
+        """
+        import torch.nn.functional as F
+        clip_x = x
+        if self.asymetric_input:
+            clip_x = F.interpolate(x, scale_factor=self.encoder_resolution,
+                                   mode="bilinear")
+        feats = self.image_encoder(clip_x)
+        if probe == "bb":
+            return feats if isinstance(feats, torch.Tensor) else tuple(feats)
+        cls_embeds = self.text_encoder()
+        h, w = int(x.shape[-2]), int(x.shape[-1])
+        metas = [{"img_shape": (h, w), "batch_input_shape": (h, w)}]
+        out = self.decode_head.predict([x, feats, cls_embeds], metas, self.test_cfg)
+        return out if isinstance(out, torch.Tensor) else tuple(out)
 
 
 def _pe_stage(pe, mask, stage):
