@@ -181,6 +181,18 @@ print("REF_OK", len(outs))
 '''
 
 
+
+def _phase(fam, name):
+    """계열 안의 **단계**를 찍는다.
+
+    하네스는 원래 계열이 끝나야 한 줄을 냈다. 계열 하나가 10~20분이라
+    그동안 `tail -f` 가 조용해서 「멈춘 것」과 구분이 안 됐다.
+    `VISP_SEG_PHASE=0` 으로 끌 수 있다(회귀 로그를 옛 판과 줄 단위로 대조할 때).
+    """
+    if os.environ.get("VISP_SEG_PHASE", "1") != "0":
+        print(f"      · {fam}: {name}", flush=True)
+
+
 def verify(fam, cfg, weights):
     import shutil
     d = os.path.join(WORKDIR, fam)
@@ -202,11 +214,13 @@ def verify(fam, cfg, weights):
 
     open(os.path.join(d, "ref.py"), "w").write(
         REF % {"SIZE": (str(SZ) if SZ else ""), "FE": FE, "FE_DET": FE_DET, "CFG": cfg, "CK": ck})
+    _phase(fam, "ref 생성 (torch 기준값)")
     r = run([PY, "ref.py"], d, {"PYTHONPATH": f"{FE}:{FE_DET}"})
     if not os.path.exists(os.path.join(d, "ref.shapes.txt")):
         return fam, "REF_FAIL", _last_error(r.stderr)[:70]
     W, H = [int(v) for v in open(os.path.join(d, "size.txt")).read().split()]
 
+    _phase(fam, "컴파일 (g2c → .cpp/.gguf)")
     gen = os.path.join(d, "out")
     r = run([PY, "-c", '''
 import sys
@@ -221,6 +235,7 @@ from shared.compile.pipeline import main; main()
     inc = os.path.join(gen, "inc", "visp", "arch")
     os.makedirs(inc, exist_ok=True)
     shutil.copy(os.path.join(gen, "Seg.h"), inc)
+    _phase(fam, "빌드 (g++)")
     b = run(["g++", "-std=c++20", OPT, "-DARCH=Seg",
              '-DVISP_ARCH_HEADER="visp/arch/Seg.h"',
              "-I" + os.path.join(gen, "inc"), "-I" + V + "/src", "-I" + V + "/include",
@@ -234,6 +249,7 @@ from shared.compile.pipeline import main; main()
     for f in os.listdir(d):
         if f.startswith("cpp.out.") and f.endswith(".bin"):
             os.remove(os.path.join(d, f))
+    _phase(fam, "실행 (ggml)")
     x = run([os.path.join(gen, "run_dump"), os.path.join(gen, "Seg.gguf"),
              os.path.join(d, "in.bin"), os.path.join(d, "cpp"), str(W), str(H)], d)
 

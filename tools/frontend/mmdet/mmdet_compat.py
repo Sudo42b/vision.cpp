@@ -156,6 +156,8 @@ def patch_ops():
 
     _patch_carafe()
     _patch_swin_mask()
+    _patch_pointrend_coords()
+    _patch_san_attn_bias()
     _patch_sac_dilation()
     _patch_masked_conv()
 
@@ -273,6 +275,183 @@ def _patch_sac_dilation():
 
     SAConv2d.forward = forward
     SAConv2d._visp_sac_patched = True
+
+
+import torch.nn as _nn
+
+
+class _ScalarAffine(_nn.Module):
+    """`nn.Linear(1, 1)` 을 **matmul 없이** 낸다 — 스칼라 affine 이다.
+
+    ⚠️ **모듈 스코프에 둔다.** 함수 안에 정의하면 `torch.save(model)` 가
+    `Can't pickle local object` 로 죽는다(하네스가 모델을 `.pt` 로 저장한다).
+    """
+
+    def __init__(self, lin):
+        super().__init__()
+        self.register_buffer("w", lin.weight.detach().reshape(()))
+        b = (lin.bias.detach().reshape(()) if lin.bias is not None
+             else lin.weight.detach().new_zeros(()))
+        self.register_buffer("b", b)
+
+    def forward(self, x):
+        return x * self.w + self.b
+
+
+def _patch_pointrend_coords():
+    """PointRend 의 좌표 조립을 **슬라이스 대입 대신 `stack`** 으로 다시 쓴다.
+
+    ⚠️ **trace 가 부분 슬라이스 대입을 삼킨다.** mmseg `point_head.py:357-366` 은
+
+        point_coords = torch.zeros(B, P, 2)
+        point_coords[:, :, 0] = w_step/2 + (idx %% width) * w_step
+        point_coords[:, :, 1] = h_step/2 + (idx // width) * h_step
+
+    로 좌표를 만드는데, 이 두 대입이 그래프에 안 실린다. 산술(`mul`·`sub`)은 실리는데
+    **되쓰기만 빠진다** — 그래서 `zeros` 가 그대로 흘러가 **8196개 점이 전부 같은
+    자리를 샘플링**하고, 그 값을 서로 다른 위치에 되쓴다.
+    `unhandled op` 표시조차 안 남는다(`grep -c` 가 0 이다).
+
+    실측(mmseg point_rend, 512x1024):
+      정제 없이 coarse 만 올린 것  vs torch 최종 = 2.44e-02  ← 통과선 안
+      우리 최종                    vs torch 최종 = 8.24e-02  ← **정제가 값을 망친다**
+    오차 분포도 산수가 맞는다 — 정제점 8196 x 업샘플 4 = 32,784 / 524,288 = 6.25%,
+    실측 「>1.0 오차 6.27%」와 일치.
+
+    ⚠️ swin 마스크(`_patch_swin_mask`)와 달리 **버퍼로 못 굽는다** — 좌표는 입력에 따라
+    변한다. 대신 **같은 수식을 `stack` 으로** 쓴다. 값이 동일하므로 torch 기준값 쪽이
+    이 패치를 지나도 결과가 같다.
+    """
+    try:
+        from mmseg.models.decode_heads.point_head import PointHead
+    except Exception:
+        return                                  # mmseg 가 없는 환경 — 조용히 넘어간다
+    if getattr(PointHead, "_visp_coords_patched", False):
+        return
+    import torch
+
+    def get_points_test(self, seg_logits, uncertainty_func, cfg):
+        num_points = cfg.subdivision_num_points
+        uncertainty_map = uncertainty_func(seg_logits)
+        batch_size, _, height, width = uncertainty_map.shape
+        # ⚠️ **파이썬 int 로 내린다.** trace 에서 `.shape` 은 동적 값으로 잡혀,
+        #    `idx %% width` 의 나누는 수가 상수가 아니게 된다 → `remainder`·`floor_divide`
+        #    렌더러가 상수를 못 뽑아 `unhandled op` 으로 떨어진다.
+        #    입력 크기가 고정이라(계열별 crop) 이 둘은 실제로 상수다.
+        height, width = int(height), int(width)
+        h_step = 1.0 / height
+        w_step = 1.0 / width
+        uncertainty_map = uncertainty_map.view(batch_size, height * width)
+        num_points = min(height * width, num_points)
+        point_indices = uncertainty_map.topk(num_points, dim=1)[1]
+        # 원식과 같은 값 — 대입 대신 stack 으로 쌓는다.
+        # ⚠️ **정수 인덱스를 먼저 f32 로 올린 뒤 계산한다.** ggml 의 산술(`sub`·`mul`·
+        #    `div`·`scale`·`concat`)은 정수 타입을 모르고 **abort** 한다. 정수인 채로
+        #    두면 렌더러마다 하나씩 걸린다(실측: sub → scale → concat 순으로 세 번).
+        #    인덱스 최대가 height*width(=131072)라 f32(2^24 까지 정확)로 손실이 없다.
+        idxf = point_indices.float()
+        xs = w_step / 2.0 + (idxf % width) * w_step
+        ys = h_step / 2.0 + torch.floor(idxf / width) * h_step
+        point_coords = torch.stack([xs, ys], dim=2)
+        return point_indices, point_coords
+
+    PointHead.get_points_test = get_points_test
+    PointHead._visp_coords_patched = True
+
+
+
+def _patch_san_attn_bias():
+    """SAN 의 어텐션 바이어스를 **대입 대신 `cat`** 으로 조립한다.
+
+    ⚠️ mmseg `san_head.py:401-409` 이 `new_zeros` 뒤 **대입 네 번**으로 마스크를 만든다:
+
+        new_attn_bias = attn_bias.new_zeros(S+1+L, S+1+L)
+        new_attn_bias[:, :S] = -100
+        new_attn_bias[arange(S), arange(S)] = 0
+        new_attn_bias[:S, S] = -100
+        new_attn_bias[..., :S, -L:] = attn_bias        # ← 이것만 입력 의존
+
+    trace 가 이 대입들을 삼켜 마스크가 **전부 0** 이 된다. `zeros` 가 그대로 흘러가고
+    `unhandled op 'index_put_inplace'` 하나만 남는다(`point_rend` 좌표와 같은 부류).
+
+    앞 셋은 **shape 만으로 정해지는 상수**이고 넷째만 입력에 의존한다.
+    블록으로 갈라 `cat` 으로 쌓으면 값이 동일하고 trace 에 실린다.
+
+        ┌─────────────┬────┬──────────┐
+        │ -100·(1-I)  │-100│ attn_bias│  S 행
+        ├─────────────┼────┴──────────┤
+        │    -100     │       0       │  1+L 행
+        └─────────────┴───────────────┘
+    """
+    try:
+        from mmseg.models.decode_heads.san_head import RecWithAttnbias
+    except Exception:
+        return                                  # mmseg/SAN 이 없는 환경 — 조용히 넘어간다
+    if getattr(RecWithAttnbias, "_visp_bias_patched", False):
+        return
+    import torch
+    import torch.nn.functional as F
+
+    def _build_attn_biases(self, attn_biases, target_shape):
+        formatted_attn_biases = []
+        for attn_bias in attn_biases:
+            n, num_head, num_sos, h, w = attn_bias.shape
+            attn_bias = F.adaptive_max_pool2d(
+                attn_bias.reshape(n, num_head * num_sos, h, w),
+                output_size=target_shape)
+            attn_bias = attn_bias.reshape(n, num_head, num_sos, *target_shape)
+            true_num_head = self.num_heads
+            if num_head == 1:
+                attn_bias = attn_bias.repeat(1, true_num_head, 1, 1, 1)
+            attn_bias = attn_bias.reshape(n * true_num_head, num_sos, -1)
+            L = int(attn_bias.shape[-1])
+            if self.cross_attn:
+                formatted_attn_biases.append(attn_bias)
+            else:
+                S = int(num_sos)
+                B = int(attn_bias.shape[0])
+                dev, dt = attn_bias.device, attn_bias.dtype
+                eye = torch.eye(S, device=dev, dtype=dt)
+                tl = -100.0 * (1.0 - eye)                        # (S,S) 대각만 0
+                tm = torch.full((S, 1), -100.0, device=dev, dtype=dt)
+                top_c = torch.cat([tl, tm], dim=-1).unsqueeze(0).expand(B, -1, -1)
+                top = torch.cat([top_c, attn_bias], dim=-1)      # (B, S, S+1+L)
+                bl = torch.full((1 + L, S), -100.0, device=dev, dtype=dt)
+                br = torch.zeros(1 + L, 1 + L, device=dev, dtype=dt)
+                bot = torch.cat([bl, br], dim=-1).unsqueeze(0).expand(B, -1, -1)
+                formatted_attn_biases.append(torch.cat([top, bot], dim=-2))
+        if len(formatted_attn_biases) == 1:
+            formatted_attn_biases = [
+                formatted_attn_biases[0] for _ in range(self.num_layers)
+            ]
+        return formatted_attn_biases
+
+    RecWithAttnbias._build_attn_biases = _build_attn_biases
+    RecWithAttnbias._visp_bias_patched = True
+
+    # ── `bias_scaling` 은 `nn.Linear(1,1)` = **스칼라 affine** 이다 ────────────────
+    # ⚠️ 호출부가 `bias_scaling(attn_bias[..., None]).squeeze(-1)`(san_head.py:91) 라
+    #    **크기-1 축을 만들어 matmul** 을 건다. 그 축은 `reduce_to_4d` 가 버리므로
+    #    `ggml_mul_mat` 이 `a->ne[0]=1` vs `b->ne[0]=32` 로 죽는다(`ggml.c:3203`).
+    #    matmul 없이 곱셈+덧셈으로 내면 그 축 자체가 필요 없다 — 값은 동일하다.
+    try:
+        from mmseg.models.decode_heads.san_head import MLPMaskDecoder
+    except Exception:
+        return
+    if getattr(MLPMaskDecoder, "_visp_scale_patched", False):
+        return
+    import torch.nn as nn
+
+    _orig_init = MLPMaskDecoder.__init__
+
+    def __init__(self, *a, **kw):
+        _orig_init(self, *a, **kw)
+        if isinstance(getattr(self, "bias_scaling", None), nn.Linear):
+            self.bias_scaling = _ScalarAffine(self.bias_scaling)
+
+    MLPMaskDecoder.__init__ = __init__
+    MLPMaskDecoder._visp_scale_patched = True
+
 
 def _patch_swin_mask():
     """Swin 의 shifted-window 어텐션 마스크를 **버퍼로 미리 굽는다.**

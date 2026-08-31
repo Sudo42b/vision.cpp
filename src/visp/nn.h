@@ -30,6 +30,23 @@ tensor space_to_depth_quad(model_ref m, tensor x, int sw, int sh);
 tensor permute_cwhn_to_whcn(model_ref m, tensor x);
 tensor permute_whcn_to_cwhn(model_ref m, tensor x);
 
+// 정수 텐서를 f32 로 올린다.
+//
+// ⚠️ **ggml 의 이항 연산(add/sub/mul/div)은 정수 타입을 모른다.**
+//    `ggml-cpu/binary-ops.cpp` 가 `binary_op: unsupported types: dst: i32, src0: i32, src1: i32`
+//    로 **abort** 한다. 인덱스 계산이 그 자리다 — `ggml_get_rows` 가 I32 를 강제하므로
+//    한 번 i32 가 된 텐서가 그대로 산술까지 흘러온다(mmseg point_rend 의 점 좌표 차).
+//
+// ⚠️ 그 abort 는 **크래시로 안 보인다.** OpenMP 병렬 구간 안에서 나면 나머지 스레드가
+//    교착에 빠져 프로세스가 CPU 0% 로 매달린다 — 「느린 모델」로 오인된다(12분 관측).
+//    행의 지문은 「경과 시간은 느는데 CPU 시간이 0」이다.
+//
+// 좌표·인덱스는 정수라 f32 로 계산해도 값이 안 깨진다(f32 는 2^24 까지 정확).
+// **이미 f32 면 그대로 돌려주므로 비용이 없다** — 그래서 무조건 감싸도 된다.
+inline tensor as_f32(model_ref m, tensor x) {
+    return x->type == GGML_TYPE_F32 ? x : ggml_cast(m, ggml_cont(m, x), GGML_TYPE_F32);
+}
+
 // "Contiguous 2D" refers to the layout configured in `m` model flags, ie. the preferred
 // memory layout for 2D operations like convolution.
 inline bool is_whcn(model_ref m) { return !(m.flags & model_build_flag::cwhn); }
