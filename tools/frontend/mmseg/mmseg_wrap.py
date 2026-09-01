@@ -207,9 +207,11 @@ class MMSegWrap(nn.Module):
                 out = self.decode_head.predict(f, metas, None)
         else:
             out = self.decode_head(f)
-        # 대부분 단일 텐서다. 여럿을 내는 것도 있어 튜플이면 그대로 흘린다 —
-        # 러너가 `out_i` 로 순서대로 덤프한다.
-        return out if isinstance(out, torch.Tensor) else tuple(out)
+        # ⚠️ **항상 튜플이다.** 예전엔 출력이 하나면 벌거벗은 Tensor 를 돌려줬는데,
+        #    `build()` 는 shape 을 늘 리스트로 알려줘서 **호출자가 두 겹 벗기는 사고**가
+        #    났다 — `outs[0][0]` 이 19장짜리 클래스 맵에서 1장만 남겼다(2026-09-01 실측).
+        #    형태를 하나로 고정해 그 사고 자체를 없앤다. 러너는 `out_i` 로 순서대로 덤프한다.
+        return (out,) if isinstance(out, torch.Tensor) else tuple(out)
 
     def _forward_multimodal(self, x, probe=None):
         """`MultimodalEncoderDecoder`(san) 전용 경로.
@@ -425,3 +427,21 @@ def build(config, checkpoint=None, size=512):
     if isinstance(outs, torch.Tensor):
         outs = (outs,)
     return m, [tuple(o.shape) for o in outs]
+
+
+def save(model, path):
+    """`.pt` 를 쓰고 **여는 데 필요한 모듈을 그 옆에 전부 복사한다.**
+
+    `torch.save` 는 클래스를 `__module__` 이름으로 절이므로 여는 쪽이 그 이름을 import
+    할 수 있어야 한다. g2c 는 `.pt` 가 있는 디렉터리를 `sys.path` 에 넣으므로, 모듈이
+    거기 **있기만 하면** `PYTHONPATH` 없이 열린다.
+
+    ⚠️ **자기 파일 하나로는 부족하다.** 이 래퍼는 `mmdet_wrap`·`mmdet_compat` 을 import
+    하므로 그것들도 같이 날라야 한다 — 안 그러면 컴파일이
+    `ModuleNotFoundError: No module named 'mmdet_compat'` 에서 멈춘다(2026-09-01 실측).
+    mmdet 쪽 `install_loader_modules` 가 그 일을 이미 한다.
+    """
+    import torch
+
+    torch.save(model, path)
+    return mmdet_compat.install_loader_modules(path, "mmseg_wrap", "mmdet_wrap")

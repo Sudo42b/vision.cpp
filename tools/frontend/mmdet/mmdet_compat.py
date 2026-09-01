@@ -605,12 +605,18 @@ def install_loader_modules(out_path, *names):
     import os
     import shutil
 
+    import sys
+
     here = os.path.dirname(os.path.abspath(__file__))
     dst_dir = out_path if os.path.isdir(out_path) else os.path.dirname(os.path.abspath(out_path))
     os.makedirs(dst_dir, exist_ok=True)
     copied = []
     for name in (*names, "mmdet_compat"):
-        src = os.path.join(here, name + ".py")
+        # ⚠️ **이 폴더에만 있다고 보지 마라.** `mmseg_wrap`·`mmpose_wrap` 은 형제 폴더에
+        #    있어서 `here` 로 찾으면 `FileNotFoundError` 가 난다(2026-09-01 실측).
+        #    이미 import 된 모듈이면 그 실제 위치를 쓴다.
+        mod = sys.modules.get(name)
+        src = getattr(mod, "__file__", None) or os.path.join(here, name + ".py")
         dst = os.path.join(dst_dir, name + ".py")
         if os.path.abspath(src) == os.path.abspath(dst):
             continue
