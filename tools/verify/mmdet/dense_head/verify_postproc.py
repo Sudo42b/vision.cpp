@@ -81,8 +81,11 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     # mmdet v3 체크포인트는 학습 메타(HistoryBuffer)를 함께 담고 있어 torch 2.6 의
     # weights_only=True 기본값에서 로드가 거부된다(rtmdet 이 그랬다). 프론트엔드가
     # 이미 쓰는 우회를 그대로 쓴다 — 필요한 클래스만 이름으로 허용한다.
+    # ⚠️ `..` 은 **셋**이다. dense_head → mmdet → verify → tools 로 세 칸 올라가야
+    #    `tools/frontend/mmdet` 이다. 둘이면 없는 경로라 import 가 조용히 실패하고,
+    #    허용 목록이 안 걸려 DETR 계열 8개가 통째로 RUN_FAIL 났다(2026-09-01 실측).
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "..", "..", "frontend", "mmdet"))
+                                    "..", "..", "..", "frontend", "mmdet"))
     try:
         import mmdet_wrap
         mmdet_wrap.allow_mmengine_checkpoint_globals()

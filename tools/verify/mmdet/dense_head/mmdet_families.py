@@ -34,8 +34,12 @@ _IMAGE = {f: "bench-image.jpg" for f in
            "masktrack_rcnn")}
 # 이미지는 **저장소 안**에 있다. 사용자가 준 `--image` 의 디렉토리에서 찾으면
 # 엉뚱한 곳(`~/pics/bench-image.jpg`)을 가리키고, 상대경로면 하위 프로세스의 cwd 로 풀린다.
+# ⚠️ `..` 은 **넷**이다. dense_head → mmdet → verify → tools → vision.cpp.
+#    셋이면 `tools/tests/input` 이라 없는 경로다. 그러면 `test_image` 가 default 로
+#    조용히 떨어져 **위 매핑이 통째로 무효가 된다** — 트래커를 사람 없는 이미지로 재고
+#    양쪽 0건이 나와 `EMPTY` 로 찍힌다(2026-09-01 실측).
 _IMG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                        "..", "..", "..", "tests", "input"))
+                                        "..", "..", "..", "..", "tests", "input"))
 
 
 def test_image(fam, default):

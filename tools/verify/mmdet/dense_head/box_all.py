@@ -62,26 +62,54 @@ RE_BAND = re.compile(r"임계값 [\d.]+~[\d.]+ 구간: mmdet (\d+)건 · C\+\+ (
 RE_COUNT = re.compile(r"mmdet (\d+)건 · run_mmdet (\d+)건")
 
 
-def pair_for(fam, gen_root):
-    """(config, checkpoint) — **구울 때 쓴 짝**이 정본이다.
+def _rebase(path, fam, gen_root):
+    """`used.json` 에 박힌 절대경로를 지금 `gen_root` 로 되돌린다.
 
-    `used.json` 이 있으면 그것. 없으면 `mmdet_families.resolve_pair` 로 떨어진다
-    (그 경우 래퍼 계열은 경고가 뜰 수 있다 — 산출물이 옛 것이라는 뜻이다).
+    ⚠️ **경로는 트리를 옮기면 죽는다.** `used.json` 은 구울 때의 절대경로를 적는데,
+    2026-08-28 홈 재편으로 `~/work/box-full` 이 `~/company/artifacts/box-full` 로
+    옮겨가면서 래퍼 계열의 `cfg.py` 를 통째로 못 찾게 됐다. 그런데 `pair_for` 는
+    **조용히 원본 mmdet config 로 떨어진다** — 트래커는 `model.backbone` 이 없어서
+    `'ConfigDict' object has no attribute 'backbone'`, `ld` 는 선생 config 를 상대경로로
+    가리켜 `FileNotFoundError` 가 난다. 넷 다 「실패」로 보이지만 **짝을 잘못 준 것**이다.
+
+    산출물 디렉터리 안의 파일(`cfg.py`·`ckpt.pth`)이면 파일명만 살려 지금 자리에서 찾는다.
+    """
+    if not path:
+        return path
+    if os.path.exists(path):
+        return path
+    here = os.path.join(gen_root, fam, os.path.basename(path))
+    return here if os.path.exists(here) else path
+
+
+def pair_for(fam, gen_root):
+    """(config, checkpoint) — **구울 때 쓴 짝**이 정본이다. `used.json` 하나만 본다.
+
+    ⛔ **원본 mmdet config 로 떨어지지 않는다.** 예전엔 `used.json` 을 못 읽으면 조용히
+       `resolve_pair` 로 내려갔는데, 그러면 **남의 짝으로 재고도 실패처럼 보인다.**
+       실측 2026-09-01: 홈 재편으로 `used.json` 의 절대경로가 죽자 래퍼 4계열이
+       원본 config 로 떨어져 `'ConfigDict' object has no attribute 'backbone'` ·
+       `FileNotFoundError` 를 냈다. 넷 다 **모델은 멀쩡했다** — 짝이 틀렸을 뿐이다.
+
+       못 잰 것은 못 잤다고 적는다. 실패 칸에 넣지 않는다.
     """
     u = os.path.join(gen_root, fam, "used.json")
-    if os.path.exists(u):
-        try:
-            d = json.load(open(u, encoding="utf-8"))
-            c, k = d.get("config"), d.get("checkpoint")
-            if c and k and os.path.exists(c) and os.path.exists(k):
-                return c, k
-        except Exception:
-            pass
-    cfg, ckpt = MF.resolve_pair(os.path.join(CFG.mmdet, "configs"), fam)
-    if not cfg or not ckpt:
+    if not os.path.exists(u):
+        print(f"  ⚠️ {fam}: used.json 이 없다 — verify_heads.py 로 먼저 구워라")
         return None, None
-    ck = ckpt if os.path.isabs(ckpt) else os.path.join(CFG.mmdet, "checkpoints", ckpt)
-    return (cfg, ck) if os.path.exists(ck) else (cfg, None)
+    try:
+        d = json.load(open(u, encoding="utf-8"))
+    except Exception as e:
+        print(f"  ⚠️ {fam}: used.json 을 못 읽는다 — {type(e).__name__}: {e}")
+        return None, None
+    c = _rebase(d.get("config"), fam, gen_root)
+    k = _rebase(d.get("checkpoint"), fam, gen_root)
+    if c and k and os.path.exists(c) and os.path.exists(k):
+        return c, k
+    for name, v in (("config", c), ("checkpoint", k)):
+        if not v or not os.path.exists(v):
+            print(f"  ⚠️ {fam}: used.json 의 {name} 이 없다 — {v}")
+    return None, None
 
 
 def one(fam, gen_root, size, image, verbose):
