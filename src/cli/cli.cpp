@@ -486,17 +486,21 @@ void run_generated(cli_args const& args) {
     image_data image = image_load(args.inputs[0]);
 
     arch_task const& task = e->task;
-    const int SZ = task.input_size;
-    // 정사각 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
+    // 비정사각 모델은 `input_w`/`input_h` 를 싣는다. 0 이면 정사각(`input_size`).
+    const int IW = task.input_w ? task.input_w : task.input_size;
+    const int IH = task.input_h ? task.input_h : task.input_size;
+    const int SZ = IW;  // 정사각 경로의 옛 이름 — 아래 박스 되돌리기가 쓴다
+    // 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
     // **letterbox 가 아니라 단순 리사이즈**다 — 종횡비가 바뀌므로 박스를 되돌릴 때
     // x·y 배율을 따로 쓴다.
     const int nch = n_channels(image.format);
     std::vector<float> input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0],
-                                               nch, SZ, task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
+                                               nch, IW, IH, task.mean.data(), task.stdv.data(),
+                                               /*to_rgb=*/false);
 
     compute_graph graph = compute_graph_init(262144);
     model_ref m(weights, graph);
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, SZ, SZ, 1}, "x");
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, IW, IH, 1}, "x");
     ggml_build_forward_expand(graph, input);
     ggml_build_forward_expand(graph, e->forward(m, input, file));
     compute_graph_allocate(graph, backend);

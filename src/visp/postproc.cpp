@@ -700,18 +700,18 @@ std::vector<float> roi_align(
 
 // ── 전처리: 이미지(HWC u8) → 모델 입력(CWHN f32) ─────────────────────────────
 std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
-                              int out_size, float const mean[3], float const std[3],
+                              int dst_w, int dst_h, float const mean[3], float const std[3],
                               bool to_rgb, int* out_w, int* out_h) {
-    if (out_w) *out_w = out_size;
-    if (out_h) *out_h = out_size;
-    // bilinear resize → out_size×out_size, normalize, CWHN(index=(h*W+w)*C+c)
-    std::vector<float> out((size_t)out_size * out_size * 3);
-    float sh = (float)img_h / out_size, sw = (float)img_w / out_size;
-    for (int oh = 0; oh < out_size; ++oh) {
+    if (out_w) *out_w = dst_w;
+    if (out_h) *out_h = dst_h;
+    // bilinear resize → dst_w×dst_h, normalize, CWHN(index=(h*W+w)*C+c)
+    std::vector<float> out((size_t)dst_w * dst_h * 3);
+    float sh = (float)img_h / dst_h, sw = (float)img_w / dst_w;
+    for (int oh = 0; oh < dst_h; ++oh) {
         float fy = (oh + 0.5f) * sh - 0.5f;
         int y0 = (int)std::floor(fy); float wy = fy - y0;
         int y0c = std::min(std::max(y0, 0), img_h - 1), y1c = std::min(y0 + 1, img_h - 1);
-        for (int ow = 0; ow < out_size; ++ow) {
+        for (int ow = 0; ow < dst_w; ++ow) {
             float fx = (ow + 0.5f) * sw - 0.5f;
             int x0 = (int)std::floor(fx); float wx = fx - x0;
             int x0c = std::min(std::max(x0, 0), img_w - 1), x1c = std::min(x0 + 1, img_w - 1);
@@ -722,7 +722,7 @@ std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_
                 };
                 float v = at(y0c, x0c) * (1 - wy) * (1 - wx) + at(y0c, x1c) * (1 - wy) * wx +
                           at(y1c, x0c) * wy * (1 - wx) + at(y1c, x1c) * wy * wx;
-                out[((size_t)oh * out_size + ow) * 3 + c] = (v - mean[c]) / std[c];
+                out[((size_t)oh * dst_w + ow) * 3 + c] = (v - mean[c]) / std[c];
             }
         }
     }

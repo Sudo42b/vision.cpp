@@ -122,14 +122,14 @@ def traced_size(out_dir, cls, fallback):
     try:
         src = open(path, encoding="utf-8").read()
     except OSError:
-        return fallback
+        return fallback, fallback
     m = re.search(r"np\.random\.randn\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)", src)
     if not m:
-        return fallback
+        return fallback, fallback
     h, w = int(m.group(1)), int(m.group(2))
     if h != w:
-        print(f"  ⚠ 입력이 정사각이 아니다({h}x{w}) — {h} 로 등록한다. 필요하면 --size 로 덮어써라")
-    return h
+        print(f"  · 입력이 정사각이 아니다 — {h}x{w} 를 그대로 등록한다")
+    return h, w
 
 
 def main():
@@ -161,7 +161,10 @@ def main():
     shutil.copy(cpp, os.path.join(ARCH_DIR, cls + ".cpp"))
     shutil.copy(hdr, os.path.join(ARCH_DIR, header))
 
-    size = a.size or traced_size(a.out_dir, cls, 640)
+    ih, iw = traced_size(a.out_dir, cls, 640)
+    if a.size:
+        ih = iw = a.size
+    size = ih  # 옛 필드 호환 — 정사각이면 이 값 하나로 충분하다
 
     def _triple(spec, what):
         v = [x.strip() for x in spec.split(",") if x.strip()]
@@ -183,6 +186,8 @@ def main():
             f"    t.nms_free = {'false' if a.nms else 'true'};",
             f"    t.score_thr = {a.score_thr}f;",
             f"    t.input_size = {size};",
+            f"    t.input_w = {iw};",
+            f"    t.input_h = {ih};",
         ] + norm
         if names:
             body.append("    t.class_names = {")
@@ -192,7 +197,9 @@ def main():
     else:
         # 검출기가 아니어도 크기는 실어야 한다 — 러너가 그 크기로 입력을 만든다.
         body = ["    t.kind = visp::arch_kind::raw;",
-                f"    t.input_size = {size};"] + norm
+                f"    t.input_size = {size};",
+                f"    t.input_w = {iw};",
+                f"    t.input_h = {ih};"] + norm
 
     reg_path = os.path.join(ARCH_DIR, arch + "_register.cpp")
     with open(reg_path, "w", encoding="utf-8") as f:
