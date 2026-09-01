@@ -35,7 +35,11 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 V = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))    # vision.cpp (tools/verify/mmdet/roi 에서 4단계 위)
 FE = os.path.join(V, "tools", "frontend", "mmdet")
-DH = os.path.join(V, "tools", "verify", "dense_head")
+# ⚠️ `dense_head` 는 `verify/` 바로 밑이 아니라 `verify/mmdet/` 밑이다. 빠뜨리면
+#    `os.path.join` 이 없는 경로를 만들고 `sys.path.insert` 도 성공한다 —
+#    `import mmdet_families` 만 죽는다. → wiki `하네스-상대경로는-틀려도-안-죽는다`
+DH = os.path.join(V, "tools", "verify", "mmdet", "dense_head")
+assert os.path.isdir(DH), f"dense_head 를 못 찾는다: {DH}"
 GGUF_PY = os.path.join(V, "depend", "llama", "gguf-py")
 G2C = os.path.abspath(os.path.join(V, ".."))                 # vision.cpp 를 담은 컴파일러 루트
 MM = os.path.expanduser(os.environ.get("MMDET", "~/mmbuild/mmdetection"))
@@ -773,7 +777,14 @@ def main():
     # 배너가 거짓말하지 않게 — 계열별 지정이 끼어들 수 있으면 그렇다고 적는다.
     img_note = os.path.basename(a.image) if a.image else \
         f"{os.path.basename(DEFAULT_IMAGE)} (계열별 지정 적용)"
-    print(f"size={a.size} · image={img_note} · thr={THR}"
+    # ⚠️ **머리글이 실제 측정 조건을 말해야 한다.** `a.size` 만 찍으면 계열별 크기
+    #    표(`MF._SIZE`)로 올라간 계열이 로그에 거짓으로 적힌다 — `fpg` 를 1024 로
+    #    재고도 `size=800` 이라고 찍혔다(2026-09-01). 합계는 입력 크기와 같이 묶는다.
+    over = {f: MF.test_size(f, a.size) for f in fams if MF.test_size(f, a.size) != a.size}
+    size_note = f"{a.size}" + (
+        " (계열별: " + ", ".join(f"{f}={v}" for f, v in sorted(over.items())) + ")"
+        if over else "")
+    print(f"size={size_note} · image={img_note} · thr={THR}"
           f" · 판정: 박스<{BOX_TOL}px 점수<{SCORE_TOL} 라벨0 개수차0")
     print(f"{len(fams)}계열: {' '.join(fams)}\n")
 
@@ -785,7 +796,9 @@ def main():
     def _one_guarded(fam):
         """한 계열. **판정 로직은 순차와 완전히 같다** — 감싸기만 한다."""
         try:
-            return one(fam, a.size, a.image, a.workdir, a.keep, a.verbose)
+            # 계열별 크기 표를 따른다 — `fpg` 는 800 에서 안 나눠떨어진다
+            return one(fam, MF.test_size(fam, a.size), a.image,
+                       a.workdir, a.keep, a.verbose)
         except subprocess.TimeoutExpired:
             return (fam, "TIMEOUT", "-", None)
         except Exception as e:                     # 한 계열이 죽어도 스윕은 계속한다

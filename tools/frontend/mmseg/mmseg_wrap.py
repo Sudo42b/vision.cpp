@@ -148,6 +148,54 @@ class MMSegWrap(nn.Module):
                     out = self.decode_head.decoder_pe(mask) + zero
                 else:
                     out = _pe_stage(self.decode_head.decoder_pe, mask, probe) + zero
+            elif probe in ("pix", "pix_ms"):
+                # ⚠️ **head 안을 픽셀 디코더와 트랜스포머 디코더로 가른다.**
+                # `pixel_decoder`(MSDeformAttn) 는 head 의 앞단이다. 여기서 틀리면
+                # deform-attn 이 범인이고, 여기가 맞으면 뒤의 디코더 층이다.
+                mask_features, multi_scale_memorys = self.decode_head.pixel_decoder(f)
+                out = (mask_features if probe == "pix"
+                       else _flatten_tensors(multi_scale_memorys))
+            elif probe and ((probe.startswith("am") and probe[2:].isdigit()) or (
+                    probe.startswith("ami") and probe[3:].isdigit())):
+                # `_forward_head` 가 만드는 **attn_mask** 자체를 그래프 출력으로 뺀다.
+                # 계단 함수(`sigmoid()<0.5`)라 여기가 한 비트만 틀려도 뒤가 크게 벌어진다 —
+                # 「자를 의심하기 전에 자가 맞는지 재라」에 해당하는 자리.
+                head = self.decode_head
+                want = int(probe[3:] if probe.startswith("ami") else probe[2:])
+                grabbed = {}
+                orig = head._forward_head
+
+                import torch.nn.functional as _F
+                logits = probe.startswith("ami")
+
+                def _spy(decoder_out, mask_feature, attn_mask_target_size):
+                    cls_pred, mask_pred, attn_mask = orig(
+                        decoder_out, mask_feature, attn_mask_target_size)
+                    # `ami` 는 **문턱 전 로짓**을 잡는다. 여기가 통과선 안이면
+                    # 마스크 비트 차이는 계단 함수의 민감도지 별개의 버그가 아니다.
+                    grabbed.setdefault(
+                        len(grabbed),
+                        _F.interpolate(mask_pred, attn_mask_target_size,
+                                       mode="bilinear", align_corners=False)
+                        if logits else attn_mask)
+                    return cls_pred, mask_pred, attn_mask
+
+                head._forward_head = _spy
+                try:
+                    from mmseg.structures import SegDataSample
+                    head(f, [SegDataSample(metainfo=metas[0])])
+                finally:
+                    head._forward_head = orig
+                am = grabbed[want]
+                # bool → float. 하네스는 f32 만 비교한다.
+                out = am.to(torch.float32).unsqueeze(0)
+            elif probe and probe.startswith("mask") and probe[4:].isdigit():
+                # 디코더 **층별** 마스크 예측. `all_mask_preds[0]` 은 층을 하나도 안 거친
+                # 예측이다 — 거기서 맞으면 범인은 디코더 층(마스크드 어텐션)이다.
+                from mmseg.structures import SegDataSample
+                _, all_mask_preds = self.decode_head(
+                    f, [SegDataSample(metainfo=metas[0])])
+                out = all_mask_preds[int(probe[4:])]
             elif probe == "mask":
                 # 값이 어디서 벌어지는지 가르는 자리 — 디코더까지만 내고
                 # `predict` 의 interpolate·softmax·einsum 은 뺀다.

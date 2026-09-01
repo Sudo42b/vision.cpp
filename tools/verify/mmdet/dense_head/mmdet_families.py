@@ -42,6 +42,25 @@ _IMG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),
                                         "..", "..", "..", "..", "tests", "input"))
 
 
+# 계열별 **입력 크기**. 지정이 없으면 호출자가 준 기본값을 쓴다.
+#
+# ⚠️ **이 표가 없으면 전수를 돌릴 때마다 같은 계열이 다시 실패한다.** `fpg`(Feature
+#    Pyramid Grids)는 P5 아래로 레벨을 더 쌓는데 800·512 가 거기서 안 나눠떨어져
+#    `size of tensor a (25) must match b (26) at dim 3` 로 죽는다. 2026-08-18 에
+#    「1024 로 재측정」으로 해결됐고 0.28px 로 통과하는데, **그 해결이 코드에 안 들어가
+#    있어서** 09-01 전수에서 또 EXPORT_FAIL 이 났다.
+#    → wiki `pitfall/하네스가-못-잰-것을-대상이-못-하는-것으로-적지-마라`
+#
+# ⚠️ **여기 걸린 계열은 분모가 다르다.** 다른 크기에서 잰 값을 같은 전수 PASS 수에
+#    합치지 마라 — 측정 조건이 섞인다. 보고할 때 크기를 같이 적는다.
+_SIZE = {"fpg": 1024}
+
+
+def test_size(fam, default):
+    """이 계열로 잴 때 쓸 입력 한 변. 지정이 없으면 `default`."""
+    return _SIZE.get(fam, default)
+
+
 def test_image(fam, default):
     """이 계열로 잴 때 쓸 이미지 경로. 지정이 없거나 파일이 없으면 `default` 그대로."""
     name = _IMAGE.get(fam)
