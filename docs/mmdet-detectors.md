@@ -80,17 +80,19 @@ python tools/frontend/mmdet/mmdet_to_pt.py \
 
 Outputs:
 
-`backbone.pt`
-:   The backbone and neck as a traceable module. The head is kept as an attribute so that its
-    weights are preserved in the `state_dict`, but it does not participate in the forward pass.
+**`backbone.pt`**
 
-`backbone.postproc.h`
-:   Everything the C++ side needs to reconstruct the head and decode its output: anchor
-    generator settings, bbox coder statistics, head convolution layout, and the pre-processing
-    normalisation taken from the config's `data_preprocessor` — emitted as a generated
-    `mmdet_params()` function. These values are constants once the architecture is chosen, so
-    they are compiled into the runner rather than read at run time.
-    See [Configuration reference](#configuration-reference).
+  The backbone and neck as a traceable module. The head is kept as an attribute so that its
+  weights are preserved in the `state_dict`, but it does not participate in the forward pass.
+
+**`backbone.postproc.h`**
+
+  Everything the C++ side needs to reconstruct the head and decode its output: anchor
+  generator settings, bbox coder statistics, head convolution layout, and the pre-processing
+  normalisation taken from the config's `data_preprocessor` — emitted as a generated
+  `mmdet_params()` function. These values are constants once the architecture is chosen, so
+  they are compiled into the runner rather than read at run time.
+  See [Configuration reference](#configuration-reference).
 
 Those two are what you read. Two more land beside them, and they are not optional: saving a
 module pickles its classes by module name, so whatever opens the `.pt` has to be able to
@@ -160,15 +162,16 @@ bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 The script compiles three translation units together, with the generated parameters
 included as a header, and links them against `libvisioncpp`:
 
-- `tools/verify/backbone/run_mmdet.cpp` — the runner,
+- `tools/verify/mmdet/backbone/run_mmdet.cpp` — the runner,
 - `tools/detect/head.cpp` — the head component,
 - `output/MMDetBackbone/MMDetBackbone.cpp` — the generated graph,
 - `backbone.postproc.h` — the generated parameters.
 
-`build_mmdet_cpp.sh <gen_dir> [params.h] [arch_name]`
-:   `gen_dir` is the directory holding the generated `.cpp`, `.h` and `.gguf`. The parameters
-    header is found in `gen_dir` when it is there, and named explicitly otherwise.
-    `arch_name` defaults to the base name of the `.cpp` found there.
+**`build_mmdet_cpp.sh <gen_dir> [params.h] [arch_name]`**
+
+  `gen_dir` is the directory holding the generated `.cpp`, `.h` and `.gguf`. The parameters
+  header is found in `gen_dir` when it is there, and named explicitly otherwise.
+  `arch_name` defaults to the base name of the `.cpp` found there.
 
 The library is looked up in `build/`, which is where [Building](../README.md#building) puts it.
 If you configured elsewhere, name that directory:
@@ -194,22 +197,26 @@ output/MMDetBackbone/run_mmdet \
 run_mmdet <gguf> <input> <output> [size=512]
 ```
 
-`<gguf>`
-:   Weights produced in step 2.
+**`<gguf>`**
 
-`<input>`
-:   An image (`.jpg`, `.jpeg`, `.png`, `.bmp`) or a pre-processed tensor (`.bin`).
-    Images are resized and normalised in-process using `preprocess()`; the mean, standard
-    deviation and channel order are compiled in. A `.bin` file is taken as-is and must
-    contain `3 × size × size` `float32` values in CWHN order.
+  Weights produced in step 2.
 
-`<output>`
-:   Where to write the result. The extension decides what is written: `.bin` gives raw
-    detections, anything else gives the input image with the boxes drawn on it.
+**`<input>`**
 
-`[size]`
-:   Input resolution. Must match the value passed to `--size` in step 1 and the shape the graph
-    was compiled for.
+  An image (`.jpg`, `.jpeg`, `.png`, `.bmp`) or a pre-processed tensor (`.bin`).
+  Images are resized and normalised in-process using `preprocess()`; the mean, standard
+  deviation and channel order are compiled in. A `.bin` file is taken as-is and must
+  contain `3 × size × size` `float32` values in CWHN order.
+
+**`<output>`**
+
+  Where to write the result. The extension decides what is written: `.bin` gives raw
+  detections, anything else gives the input image with the boxes drawn on it.
+
+**`[size]`**
+
+  Input resolution. Must match the value passed to `--size` in step 1 and the shape the graph
+  was compiled for.
 
 ### Output
 
@@ -256,7 +263,7 @@ import numpy as np
 d = np.fromfile("boxes.bin", dtype="float32").reshape(-1, 6)
 ```
 
-`tools/verify/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
+`tools/verify/common/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
 
 
 ## Models whose head survives tracing
@@ -409,35 +416,40 @@ struct detection {
 
 ### Pre-processing
 
-`std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c, int out_size, float const mean[3], float const std[3], bool to_rgb, int* out_w = nullptr, int* out_h = nullptr)`
-:   Resize to `out_size × out_size` and normalise to `(v - mean) / std`, optionally swapping
-    channel order. Returns a CWHN `float32` tensor ready for the graph input.
+**`std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c, int out_size, float const mean[3], float const std[3], bool to_rgb, int* out_w = nullptr, int* out_h = nullptr)`**
+
+  Resize to `out_size × out_size` and normalise to `(v - mean) / std`, optionally swapping
+  channel order. Returns a CWHN `float32` tensor ready for the graph input.
 
 ### Dense heads
 
 <a id="detect_anchor"></a>
-`std::vector<detection> detect_anchor(cls_scores, bbox_preds, feat_hw, det_params const& p, score_factors = nullptr)`
-:   Anchor-based decoding: anchor generation, delta decoding, per-level top-k, score
-    thresholding and NMS. Used by RetinaNet, ATSS, PAA and other delta-coded heads.
-    `score_factors` is the optional centerness/IoU branch. MMDetection thresholds and takes
-    top-k on the class score **alone** and multiplies the factor in afterwards, so passing it
-    here rather than folding it into `cls_scores` keeps the surviving set the same.
+**`std::vector<detection> detect_anchor(cls_scores, bbox_preds, feat_hw, det_params const& p, score_factors = nullptr)`**
 
-`std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`
-:   Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
-    the class score and have no such branch. `bbox_preds` are already pixel distances: the head
-    component applies the DFL integral — DFL is Distribution Focal Loss, which predicts each
-    box edge as a distribution over bins and recovers the distance by integrating it — plus the
-    stride multiply and the exponent, so this function
-    must not apply a stride again. `point_offset` is 0.5 for FCOS and 0 for the heads built on
-    an `AnchorGenerator`.
+  Anchor-based decoding: anchor generation, delta decoding, per-level top-k, score
+  thresholding and NMS. Used by RetinaNet, ATSS, PAA and other delta-coded heads.
+  `score_factors` is the optional centerness/IoU branch. MMDetection thresholds and takes
+  top-k on the class score **alone** and multiplies the factor in afterwards, so passing it
+  here rather than folding it into `cls_scores` keeps the surviving set the same.
 
-`std::vector<detection> detect_yolox(cls, box, obj, feat_hw, yolox_params const& p)`
-:   Grid-based decoding with an objectness branch; score is `sigmoid(cls) * sigmoid(obj)`.
+**`std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`**
 
-`std::vector<detection> detect_detr(float const* cls, float const* bbox, detr_params const& p)`
-:   Set prediction. Takes query logits and normalised `cxcywh` boxes, applies top-k, and
-    performs no NMS. Set `use_sigmoid` for Deformable-DETR-style heads.
+  Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
+  the class score and have no such branch. `bbox_preds` are already pixel distances: the head
+  component applies the DFL integral — DFL is Distribution Focal Loss, which predicts each
+  box edge as a distribution over bins and recovers the distance by integrating it — plus the
+  stride multiply and the exponent, so this function
+  must not apply a stride again. `point_offset` is 0.5 for FCOS and 0 for the heads built on
+  an `AnchorGenerator`.
+
+**`std::vector<detection> detect_yolox(cls, box, obj, feat_hw, yolox_params const& p)`**
+
+  Grid-based decoding with an objectness branch; score is `sigmoid(cls) * sigmoid(obj)`.
+
+**`std::vector<detection> detect_detr(float const* cls, float const* bbox, detr_params const& p)`**
+
+  Set prediction. Takes query logits and normalised `cxcywh` boxes, applies top-k, and
+  performs no NMS. Set `use_sigmoid` for Deformable-DETR-style heads.
 
 `det_params` carries the anchor generator (`strides`, `octave_base_scale`, `octave_scales`,
 `ratios`, `center_offset`), the bbox coder (`means`, `stds`), and the test-time thresholds
@@ -446,32 +458,38 @@ image.
 
 ### Two-stage components
 
-`std::vector<detection> detect_rpn(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`
-:   Region proposals with their objectness scores. NMS runs **per level**, not per class —
-    MMDetection passes level ids to `batched_nms` — and there is no pre-NMS score threshold.
-    The returned `label` is the level the proposal came from.
+**`std::vector<detection> detect_rpn(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`**
 
-`std::vector<float> rpn_proposals(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`
-:   The same computation with the scores dropped: `M × 4` boxes in image coordinates,
-    `M ≤ max_per_img`, which is the form the RoIAlign stage takes.
+  Region proposals with their objectness scores. NMS runs **per level**, not per class —
+  MMDetection passes level ids to `batched_nms` — and there is no pre-NMS score threshold.
+  The returned `label` is the level the proposal came from.
 
-`std::vector<float> roi_align(feats, feat_hw, float const* rois, int m, roi_align_params const& p)`
-:   MMCV-compatible RoIAlign (`aligned = true`, adaptive `sampling_ratio`). Level assignment
-    follows `clamp(floor(log2(sqrt(w*h) / finest_scale + 1e-6)), 0, L-1)`.
-    Returns `M × C × out × out` in NCHW order.
+**`std::vector<float> rpn_proposals(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`**
 
-`std::vector<detection> detect_roi(float const* scores, float const* bbox_deltas, float const* proposals, int n, roi_params const& p)`
-:   Final RoI-head decoding: class-wise delta decoding and per-class NMS. `scores` are
-    post-softmax with background last. Set `class_agnostic` when `bbox_pred` has four columns
-    instead of `num_classes * 4`.
+  The same computation with the scores dropped: `M × 4` boxes in image coordinates,
+  `M ≤ max_per_img`, which is the form the RoIAlign stage takes.
+
+**`std::vector<float> roi_align(feats, feat_hw, float const* rois, int m, roi_align_params const& p)`**
+
+  MMCV-compatible RoIAlign (`aligned = true`, adaptive `sampling_ratio`). Level assignment
+  follows `clamp(floor(log2(sqrt(w*h) / finest_scale + 1e-6)), 0, L-1)`.
+  Returns `M × C × out × out` in NCHW order.
+
+**`std::vector<detection> detect_roi(float const* scores, float const* bbox_deltas, float const* proposals, int n, roi_params const& p)`**
+
+  Final RoI-head decoding: class-wise delta decoding and per-class NMS. `scores` are
+  post-softmax with background last. Set `class_agnostic` when `bbox_pred` has four columns
+  instead of `num_classes * 4`.
 
 ### Masks and keypoints
 
-`std::vector<uint8_t> paste_mask(float const* mask_logit, int mh, int mw, detection const& box, float thr = 0.5f, int* out_h = nullptr, int* out_w = nullptr)`
-:   Sigmoid, resize to the box, threshold. Returns a binary mask covering the box.
+**`std::vector<uint8_t> paste_mask(float const* mask_logit, int mh, int mw, detection const& box, float thr = 0.5f, int* out_h = nullptr, int* out_w = nullptr)`**
 
-`std::vector<float> decode_keypoints(float const* heatmap, int k, int hm_h, int hm_w, float stride)`
-:   Per-keypoint argmax over a heatmap; returns `k × 3` as `(x, y, score)`.
+  Sigmoid, resize to the box, threshold. Returns a binary mask covering the box.
+
+**`std::vector<float> decode_keypoints(float const* heatmap, int k, int hm_h, int hm_w, float stride)`**
+
+  Per-keypoint argmax over a heatmap; returns `k × 3` as `(x, y, score)`.
 
 ### Building blocks
 

@@ -96,18 +96,31 @@ def gguf_arch(out_dir, cls):
 
 
 def detect_shapes(out_dir, cls):
-    """생성 .cpp 의 출력 등록에서 (클래스 수, 앵커 수) 를 추정한다.
+    r"""생성 `<cls>.py` 에서 탐지 헤드의 클래스 수를 읽는다. 못 읽으면 80.
 
-    `compute_graph_output(..., "out_i")` 앞의 텐서 shape 를 직접 읽을 수는 없으므로,
-    **weights_manifest 의 마지막 conv 출력 채널**로 클래스 수를 잡는다. 실패하면 80.
+    ⚠️ **예전엔 `<cls>.weights.txt` 에서 `cv3.*\[(\d+),` 를 찾았는데 그 파일에는
+       shape 대괄호가 없다** — 순수 텐서 이름만 있다. 정규식이 **한 번도 안 맞아서**
+       언제나 80 으로 조용히 떨어졌다(2026-09-01 실측). COCO 모델은 우연히 맞았고
+       커스텀 클래스 수 모델은 조용히 틀렸다.
+
+       생성 `.py` 에는 `out_channels=` 가 주석의 모듈 경로와 함께 남는다. 탐지 헤드
+       (`Detect[...]`) 안의 마지막 `cv3` conv 출력 채널이 클래스 수다.
     """
-    nc = 80
-    wt = os.path.join(out_dir, cls + ".weights.txt")
-    if os.path.exists(wt):
-        for line in open(wt, encoding="utf-8"):
-            m = re.search(r"cv3.*?\[(\d+),", line)
-            if m:
-                nc = int(m.group(1))
+    py = os.path.join(out_dir, cls + ".py")
+    if not os.path.exists(py):
+        print(f"  ⚠ {cls}.py 가 없다 — 클래스 수를 80 으로 둔다. 다르면 --classes 로 줘라")
+        return 80
+    nc = None
+    for line in open(py, encoding="utf-8"):
+        if "CONV2D" not in line or "Detect[" not in line or "cv3" not in line:
+            continue
+        m = re.search(r"out_channels=(\d+)", line)
+        if m:
+            nc = int(m.group(1))
+    if nc is None:
+        print(f"  ⚠ {cls}.py 에서 탐지 헤드를 못 찾았다 — 80 으로 둔다. "
+              f"다르면 --classes 로 줘라")
+        return 80
     return nc
 
 
@@ -122,14 +135,14 @@ def traced_size(out_dir, cls, fallback):
     try:
         src = open(path, encoding="utf-8").read()
     except OSError:
-        return fallback
+        return fallback, fallback
     m = re.search(r"np\.random\.randn\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)", src)
     if not m:
-        return fallback
+        return fallback, fallback
     h, w = int(m.group(1)), int(m.group(2))
     if h != w:
-        print(f"  ⚠ 입력이 정사각이 아니다({h}x{w}) — {h} 로 등록한다. 필요하면 --size 로 덮어써라")
-    return h
+        print(f"  · 입력이 정사각이 아니다 — {h}x{w} 를 그대로 등록한다")
+    return h, w
 
 
 def main():
@@ -161,7 +174,10 @@ def main():
     shutil.copy(cpp, os.path.join(ARCH_DIR, cls + ".cpp"))
     shutil.copy(hdr, os.path.join(ARCH_DIR, header))
 
-    size = a.size or traced_size(a.out_dir, cls, 640)
+    ih, iw = traced_size(a.out_dir, cls, 640)
+    if a.size:
+        ih = iw = a.size
+    size = ih  # 옛 필드 호환 — 정사각이면 이 값 하나로 충분하다
 
     def _triple(spec, what):
         v = [x.strip() for x in spec.split(",") if x.strip()]
@@ -183,6 +199,11 @@ def main():
             f"    t.nms_free = {'false' if a.nms else 'true'};",
             f"    t.score_thr = {a.score_thr}f;",
             f"    t.input_size = {size};",
+            f"    t.input_w = {iw};",
+            f"    t.input_h = {ih};",
+            # YOLO 는 letterbox 를 전제한다. 직접 리사이즈로 넣으면 비정사각 이미지에서
+            # 종횡비가 뭉개져 점수가 흔들린다(2026-09-02 실측).
+            "    t.letterbox = true;",
         ] + norm
         if names:
             body.append("    t.class_names = {")
@@ -192,7 +213,9 @@ def main():
     else:
         # 검출기가 아니어도 크기는 실어야 한다 — 러너가 그 크기로 입력을 만든다.
         body = ["    t.kind = visp::arch_kind::raw;",
-                f"    t.input_size = {size};"] + norm
+                f"    t.input_size = {size};",
+                f"    t.input_w = {iw};",
+                f"    t.input_h = {ih};"] + norm
 
     reg_path = os.path.join(ARCH_DIR, arch + "_register.cpp")
     with open(reg_path, "w", encoding="utf-8") as f:

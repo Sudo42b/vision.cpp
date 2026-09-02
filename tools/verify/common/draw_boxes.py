@@ -5,7 +5,7 @@ The runners write detections as raw float32 -- six numbers per box -- because th
 comparing against a reference implementation needs. This turns such a file into something to
 look at.
 
-    python tools/verify/draw_boxes.py image.jpg boxes.bin -o annotated.png
+    python tools/verify/common/draw_boxes.py image.jpg boxes.bin -o annotated.png
 
 Boxes are in the coordinate space of the resized square input the detector ran on, so the
 script scales them back to the original image. Pass --size if the detector ran at something

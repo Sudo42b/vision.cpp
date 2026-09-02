@@ -392,9 +392,38 @@ std::vector<float> roi_align(
     float const* level_rois = nullptr);
 
 // ── 전처리: 이미지(HWC u8) → 모델 입력 텐서(CWHN f32) ───────────────────────
-// resize(size×size) + normalize((v-mean)/std). BGR/RGB·mean/std 는 인자.
+// resize(dst_w×dst_h) + normalize((v-mean)/std). BGR/RGB·mean/std 는 인자.
+//
+// ⚠️ **가로·세로를 따로 받는다.** 예전엔 `out_size` 하나로 정사각 리사이즈만 했는데,
+//    그러면 비정사각 모델이 **조용히 틀린다** — mmseg cityscapes(512×1024)를 넣으면
+//    512×512 로 줄여 출력이 절반만 나오고 에러는 안 난다(2026-09-01 실측).
+//    mmpose 는 전부 256×192 라 하나도 못 돌았다.
+//    정사각 모델은 두 인자에 같은 값을 주면 예전과 동일하다.
 std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
-                              int out_size, float const mean[3], float const std[3],
+                              int dst_w, int dst_h, float const mean[3], float const std[3],
                               bool to_rgb, int* out_w = nullptr, int* out_h = nullptr);
+
+// letterbox: **비율을 유지**하고 남는 자리를 회색(114)으로 채운다. YOLO 계열이 이 규약이다.
+// ⚠️ **분할·자세 계열에 켜지 마라.** 그쪽은 비율을 뭉개는 직접 리사이즈가 맞다
+//    (mmseg cityscapes 512×1024 는 512×1024 로 그대로 넣는다).
+// ⚠️ 켜면 좌표계가 달라진다 — 되돌릴 때 `(좌표 - pad) / scale` 이다. 단순 배율로 되돌리면
+//    비정사각 이미지에서 박스가 밀린다(2026-09-02 실측: handbag 점수 0.87 vs 0.94).
+struct letterbox_info {
+    float scale = 1.0f;   // 원본 → 리사이즈 배율(가로·세로 동일)
+    float pad_x = 0.0f;   // 왼쪽 패딩(픽셀)
+    float pad_y = 0.0f;   // 위쪽 패딩(픽셀)
+};
+std::vector<float> preprocess_letterbox(uint8_t const* img, int img_h, int img_w, int img_c,
+                                        int dst_w, int dst_h, float const mean[3],
+                                        float const std[3], bool to_rgb, letterbox_info* info,
+                                        float pad_value = 114.0f);
+
+// 정사각 편의 오버로드 — 기존 호출부 호환.
+inline std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
+                                     int out_size, float const mean[3], float const std[3],
+                                     bool to_rgb, int* out_w = nullptr, int* out_h = nullptr) {
+    return preprocess(img, img_h, img_w, img_c, out_size, out_size, mean, std,
+                      to_rgb, out_w, out_h);
+}
 
 }  // namespace visp

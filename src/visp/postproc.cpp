@@ -699,19 +699,73 @@ std::vector<float> roi_align(
 }
 
 // ── 전처리: 이미지(HWC u8) → 모델 입력(CWHN f32) ─────────────────────────────
-std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
-                              int out_size, float const mean[3], float const std[3],
-                              bool to_rgb, int* out_w, int* out_h) {
-    if (out_w) *out_w = out_size;
-    if (out_h) *out_h = out_size;
-    // bilinear resize → out_size×out_size, normalize, CWHN(index=(h*W+w)*C+c)
-    std::vector<float> out((size_t)out_size * out_size * 3);
-    float sh = (float)img_h / out_size, sw = (float)img_w / out_size;
-    for (int oh = 0; oh < out_size; ++oh) {
+std::vector<float> preprocess_letterbox(uint8_t const* img, int img_h, int img_w, int img_c,
+                                        int dst_w, int dst_h, float const mean[3],
+                                        float const std[3], bool to_rgb, letterbox_info* info,
+                                        float pad_value) {
+    // ultralytics LetterBox(auto=false, scaleFill=false): 긴 변에 맞춘 **단일 배율**로 줄이고
+    // 남는 자리를 양쪽에 반씩 패딩한다. 배율이 가로·세로 따로면 종횡비가 뭉개져
+    // 컷 근처 물체의 점수가 흔들린다.
+    const float scale = std::min((float)dst_w / img_w, (float)dst_h / img_h);
+    const int rw = std::max(1, (int)std::round(img_w * scale));
+    const int rh = std::max(1, (int)std::round(img_h * scale));
+    const float pad_x = (dst_w - rw) / 2.0f;
+    const float pad_y = (dst_h - rh) / 2.0f;
+    if (info) {
+        info->scale = scale;
+        info->pad_x = pad_x;
+        info->pad_y = pad_y;
+    }
+
+    std::vector<float> out((size_t)dst_w * dst_h * 3);
+    // 패딩 자리를 먼저 채운다 — 정규화도 같이 먹인다(패딩은 원시 114 가 아니라 정규화된 값이다).
+    for (int i = 0; i < dst_w * dst_h; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            out[(size_t)i * 3 + c] = (pad_value - mean[c]) / std[c];
+        }
+    }
+
+    const int x_off = (int)std::round(pad_x), y_off = (int)std::round(pad_y);
+    const float sh = (float)img_h / rh, sw = (float)img_w / rw;
+    for (int oh = 0; oh < rh; ++oh) {
         float fy = (oh + 0.5f) * sh - 0.5f;
         int y0 = (int)std::floor(fy); float wy = fy - y0;
         int y0c = std::min(std::max(y0, 0), img_h - 1), y1c = std::min(y0 + 1, img_h - 1);
-        for (int ow = 0; ow < out_size; ++ow) {
+        for (int ow = 0; ow < rw; ++ow) {
+            float fx = (ow + 0.5f) * sw - 0.5f;
+            int x0 = (int)std::floor(fx); float wx = fx - x0;
+            int x0c = std::min(std::max(x0, 0), img_w - 1), x1c = std::min(x0 + 1, img_w - 1);
+            for (int c = 0; c < 3; ++c) {
+                int sc = to_rgb ? (2 - c) : c;
+                auto at = [&](int yy, int xx) {
+                    return (float)img[((size_t)yy * img_w + xx) * img_c + sc];
+                };
+                float v = at(y0c, x0c) * (1 - wy) * (1 - wx) + at(y0c, x1c) * (1 - wy) * wx +
+                          at(y1c, x0c) * wy * (1 - wx) + at(y1c, x1c) * wy * wx;
+                // ultralytics 는 리사이즈 결과를 uint8 로 되돌린다. 안 맞추면 픽셀의 12% 가
+                // 1~3 레벨 달라지고 컷 근처 점수가 흔들린다(2026-09-02 실측).
+                v = std::round(std::min(std::max(v, 0.0f), 255.0f));
+                out[((size_t)(oh + y_off) * dst_w + (ow + x_off)) * 3 + c] =
+                    (v - mean[c]) / std[c];
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
+                              int dst_w, int dst_h, float const mean[3], float const std[3],
+                              bool to_rgb, int* out_w, int* out_h) {
+    if (out_w) *out_w = dst_w;
+    if (out_h) *out_h = dst_h;
+    // bilinear resize → dst_w×dst_h, normalize, CWHN(index=(h*W+w)*C+c)
+    std::vector<float> out((size_t)dst_w * dst_h * 3);
+    float sh = (float)img_h / dst_h, sw = (float)img_w / dst_w;
+    for (int oh = 0; oh < dst_h; ++oh) {
+        float fy = (oh + 0.5f) * sh - 0.5f;
+        int y0 = (int)std::floor(fy); float wy = fy - y0;
+        int y0c = std::min(std::max(y0, 0), img_h - 1), y1c = std::min(y0 + 1, img_h - 1);
+        for (int ow = 0; ow < dst_w; ++ow) {
             float fx = (ow + 0.5f) * sw - 0.5f;
             int x0 = (int)std::floor(fx); float wx = fx - x0;
             int x0c = std::min(std::max(x0, 0), img_w - 1), x1c = std::min(x0 + 1, img_w - 1);
@@ -722,7 +776,7 @@ std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_
                 };
                 float v = at(y0c, x0c) * (1 - wy) * (1 - wx) + at(y0c, x1c) * (1 - wy) * wx +
                           at(y1c, x0c) * wy * (1 - wx) + at(y1c, x1c) * wy * wx;
-                out[((size_t)oh * out_size + ow) * 3 + c] = (v - mean[c]) / std[c];
+                out[((size_t)oh * dst_w + ow) * 3 + c] = (v - mean[c]) / std[c];
             }
         }
     }

@@ -33,9 +33,13 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-V = os.path.abspath(os.path.join(HERE, "..", "..", ".."))    # vision.cpp (tools/verify/roi 에서 3단계 위)
+V = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))    # vision.cpp (tools/verify/mmdet/roi 에서 4단계 위)
 FE = os.path.join(V, "tools", "frontend", "mmdet")
-DH = os.path.join(V, "tools", "verify", "dense_head")
+# ⚠️ `dense_head` 는 `verify/` 바로 밑이 아니라 `verify/mmdet/` 밑이다. 빠뜨리면
+#    `os.path.join` 이 없는 경로를 만들고 `sys.path.insert` 도 성공한다 —
+#    `import mmdet_families` 만 죽는다. → wiki `하네스-상대경로는-틀려도-안-죽는다`
+DH = os.path.join(V, "tools", "verify", "mmdet", "dense_head")
+assert os.path.isdir(DH), f"dense_head 를 못 찾는다: {DH}"
 GGUF_PY = os.path.join(V, "depend", "llama", "gguf-py")
 G2C = os.path.abspath(os.path.join(V, ".."))                 # vision.cpp 를 담은 컴파일러 루트
 MM = os.path.expanduser(os.environ.get("MMDET", "~/mmbuild/mmdetection"))
@@ -67,6 +71,15 @@ for n in ("mmpretrain.models.multimodal.blip", "mmpretrain.models.multimodal.bli
 
 # 판정 기준 — dense head 와 **같게 둔다**. 다르면 18계열 숫자와 나란히 못 놓는다.
 BOX_TOL, SCORE_TOL, THR = 2.0, 0.05, 0.30
+
+# 마스크 축 — `paste_mask` **전** 로짓의 상대 L1. 텐서 축이 이미 쓰는 수라 새 기준을
+# 만들지 않는다. ⚠️ **이진 마스크 IoU 는 쓰지 않는다** — 0.5 이진화는 절벽이라 fp16
+# 타이 플립이 그대로 점수에 실린다.
+MASK_TOL = 5e-2
+# ⚠️ **게이트는 이 집합뿐이다.** 다른 마스크 계열은 수치만 찍는다 — 모수가 1인 축을
+#    전 계열 문턱으로 올리면, 재본 적 없는 계열을 측정 없이 재분류하게 된다.
+#    수치가 모이면 **별도 이슈로** 전체 게이트를 켤지 판단한다.
+MASK_GATE = {"groie"}
 
 
 def run(cmd, cwd, env_extra=None, timeout=3600):
@@ -141,6 +154,37 @@ np.save(out, np.concatenate([res.bboxes.numpy(),
                              res.scores.numpy()[:, None],
                              res.labels.numpy()[:, None].astype("float32")], 1))
 print("REF_OK", len(res.scores))
+'''
+
+# 마스크 축 기준값 — **러너가 쓴 그 박스**로 mmdet 의 마스크 갈래를 돌린다.
+#
+# ⚠️ **mmdet 이 스스로 고른 검출로 재면 안 된다.** 박스가 0.05px 라도 다르면 RoIAlign
+#    격자가 달라져 로짓이 통째로 움직인다 — 그러면 마스크 head 가 아니라 **박스 차이**를
+#    재게 된다. 러너가 낸 좌표를 그대로 먹여야 마스크 갈래만 남는다.
+# ⚠️ `_mask_forward` 를 부른다. RoI 추출기 선택·shared_head 까지 mmdet 자신의 순서다 —
+#    우리가 다시 조립하면 그 조립을 재게 된다(`groie` 는 추출기가 `SumGenericRoiExtractor`).
+MREF = r'''
+import _stub, sys, numpy as np, torch
+cfg, ckpt, size, npy, bx, out = (sys.argv[1], sys.argv[2], int(sys.argv[3]),
+                                 sys.argv[4], sys.argv[5], sys.argv[6])
+sys.path.insert(0, "%(FE)s")
+try:
+    import mmdet_wrap; mmdet_wrap.allow_mmengine_checkpoint_globals()
+except Exception:
+    pass
+from mmdet.apis import init_detector
+from mmdet.structures.bbox import bbox2roi
+from frcnn_to_pt import _desync_norm
+det = init_detector(_desync_norm(cfg), ckpt, device="cpu"); det.eval()
+x = np.load(npy)
+t = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0).contiguous()
+boxes = np.load(bx)
+with torch.no_grad():
+    feats = det.extract_feat(t)
+    rois = bbox2roi([torch.from_numpy(boxes.astype("float32"))])
+    mp = det.roi_head._mask_forward(feats, rois)["mask_preds"]
+np.save(out, mp.numpy())
+print("MREF_OK", tuple(mp.shape))
 '''
 
 # 전처리 상수는 detector 의 `data_preprocessor` 가 정본이다. 러너와 torch 에 **같은 배열**을
@@ -390,11 +434,21 @@ def _one(fam, size, image, workdir, keep, verbose):
     #    크래시가 없어 조용히 틀린다. mask head 의 14→28 deconv 가 그 경로다.
     has_miou = bool(J.get("has_mask_iou"))
     MO = int(J.get("mask_roi_out", 14))
+    # 마스크 축을 재려면 SubC(mask head)를 구워야 한다. head 가 **하나일 때만** 굽는다 —
+    # HTC·SCNet 은 `mask_head` 가 `ModuleList` 라 통째로 태울 수 없다(`mask_head_single`).
+    # ⚠️ **여기서 실패해도 박스 판정을 바꾸지 않는다.** 아래 컴파일 루프가 SubC 만
+    #    따로 처리하는 이유다 — 마스크는 더 재는 축이지 문턱이 아니다.
+    want_mask = bool(J.get("has_mask")) and bool(J.get("mask_head_single"))
+    mask_jobs = []
+    if want_mask:
+        # ⚠️ 배치가 **1 이 아닐 수 있다.** 마스크 추출기가 `GenericRoIExtractor` 면 러너가
+        #    레벨 L 개를 배치로 쌓아 넣고 SubC 가 그 안에서 합산한다(`mask_groie_levels`).
+        MLV = int(J.get("mask_groie_levels") or 0) or 1
+        mask_jobs += [("MaskRCNN_SubC", "MaskRCNN_SubC", "out_MaskRCNN_SubC",
+                       f"{MLV},{RC},{MO},{MO}")]
     if has_miou:
-        jobs += [("MaskRCNN_SubC", "MaskRCNN_SubC", "out_MaskRCNN_SubC",
-                  f"1,{RC},{MO},{MO}"),
-                 ("MSRCNN_SubD", "MSRCNN_SubD", "out_MSRCNN_SubD",
-                  f"1,{RC + 1},{MO},{MO}")]
+        mask_jobs += [("MSRCNN_SubD", "MSRCNN_SubD", "out_MSRCNN_SubD",
+                       f"1,{RC + 1},{MO},{MO}")]
     # Grid R-CNN: bbox head 에 회귀 분기가 없고 격자점 히트맵이 박스를 낸다.
     # 여기도 배치 1 이다 — grid head 가 deconv 를 두 번 탄다.
     has_grid = bool(J.get("has_grid"))
@@ -402,7 +456,8 @@ def _one(fam, size, image, workdir, keep, verbose):
     if has_grid:
         jobs += [("GridRCNN_SubE", "GridRCNN_SubE", "out_GridRCNN_SubE",
                   f"1,{RC},{GO},{GO}")]
-    for src, name, outdir, shape in jobs:
+    def compile_sub(src, name, outdir, shape):
+        """서브그래프 하나를 굽는다. 성공하면 None, 실패하면 사유 문자열."""
         try:
             os.remove(os.path.join(fr, outdir, f"{name}.gguf"))   # 위와 같은 이유
         except OSError:
@@ -413,13 +468,38 @@ sys.argv = ["g2c","--model","{src}.pt","--name","{name}","--output","{outdir}","
 from shared.compile.pipeline import main; main()
 '''], fr, {"PYTHONPATH": f"{d}:{fr}:{G2C}:{FE}:{GGUF_PY}"})
         if not os.path.exists(os.path.join(fr, outdir, f"{name}.gguf")):
-            return fam, "COMPILE_FAIL", f"{src}: " + last_error(r.stderr)[:100], None
+            return f"{src}: " + last_error(r.stderr)[:100]
+        return None
+
+    for src, name, outdir, shape in jobs:
+        why = compile_sub(src, name, outdir, shape)
+        if why:
+            return fam, "COMPILE_FAIL", why, None
+
+    # 마스크 갈래는 **박스 판정과 분리한다.** 마스크 축만 끄고 박스는 그대로 잰다 —
+    # 마스크가 없다고 이미 맞은 박스를 못 쓰게 만들 이유가 없다.
+    # ⚠️ 단, 끈 사실을 **말한다.** 조용히 끄면 다음 사람이 "쟀는데 통과했다" 로 읽는다.
+    # ⚠️ **Mask Scoring R-CNN 은 예외다.** 거기서는 마스크가 더 재는 축이 아니라
+    #    **점수를 정하는 경로**다(`score *= mask_iou`) — SubC·SubD 중 하나만 없어도
+    #    박스 점수가 틀리므로 예전처럼 COMPILE_FAIL 이어야 한다.
+    mask_off = None
+    for src, name, outdir, shape in mask_jobs:
+        why = compile_sub(src, name, outdir, shape)
+        if not why:
+            continue
+        if has_miou:
+            return fam, "COMPILE_FAIL", why, None
+        mask_off = why
+        want_mask = False
+        break
 
     # ③ 러너 빌드 — 빌드 라인은 build_frcnn_cpp.sh / verify_heads.py 와 같아야 한다.
     import shutil
     incs = [("FRCNN_SubA", "incA"), (subs[0], "incB")]
+    if want_mask:
+        incs += [("MaskRCNN_SubC", "incC")]
     if has_miou:
-        incs += [("MaskRCNN_SubC", "incC"), ("MSRCNN_SubD", "incD")]
+        incs += [("MSRCNN_SubD", "incD")]
     if has_grid:
         incs += [("GridRCNN_SubE", "incE")]
     for name, inc in incs:
@@ -427,11 +507,12 @@ from shared.compile.pipeline import main; main()
         shutil.copy(os.path.join(fr, "out_" + name, name + ".h"),
                     os.path.join(fr, inc, "visp", "arch"))
     extra = []
+    if want_mask:
+        extra += ["-DARCH_C=MaskRCNN_SubC",
+                  '-DVISP_ARCH_HEADER_C="visp/arch/MaskRCNN_SubC.h"', "-IincC"]
     if has_miou:
-        extra += ["-DARCH_C=MaskRCNN_SubC", "-DARCH_D=MSRCNN_SubD",
-                  '-DVISP_ARCH_HEADER_C="visp/arch/MaskRCNN_SubC.h"',
-                  '-DVISP_ARCH_HEADER_D="visp/arch/MSRCNN_SubD.h"',
-                  "-IincC", "-IincD"]
+        extra += ["-DARCH_D=MSRCNN_SubD",
+                  '-DVISP_ARCH_HEADER_D="visp/arch/MSRCNN_SubD.h"', "-IincD"]
     if has_grid:
         extra += ["-DARCH_E=GridRCNN_SubE",
                   '-DVISP_ARCH_HEADER_E="visp/arch/GridRCNN_SubE.h"', "-IincE"]
@@ -440,10 +521,10 @@ from shared.compile.pipeline import main; main()
              f'-DVISP_ARCH_HEADER_B="visp/arch/{subs[0]}.h"'] + extra + [
              "-IincA", "-IincB", "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/backbone/run_frcnn.cpp",
+             V + "/tools/verify/mmdet/backbone/run_frcnn.cpp",
              "out_FRCNN_SubA/FRCNN_SubA.cpp", f"out_{subs[0]}/{subs[0]}.cpp"] + (
-             ["out_MaskRCNN_SubC/MaskRCNN_SubC.cpp", "out_MSRCNN_SubD/MSRCNN_SubD.cpp"]
-             if has_miou else []) + (
+             ["out_MaskRCNN_SubC/MaskRCNN_SubC.cpp"] if want_mask else []) + (
+             ["out_MSRCNN_SubD/MSRCNN_SubD.cpp"] if has_miou else []) + (
              ["out_GridRCNN_SubE/GridRCNN_SubE.cpp"] if has_grid else []) + [
              "-L" + BUILD + "/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + BUILD + "/lib", "-o", "run_frcnn"], fr)
@@ -464,18 +545,20 @@ from shared.compile.pipeline import main; main()
     argv = [os.path.join(fr, "run_frcnn"), "out_FRCNN_SubA/FRCNN_SubA.gguf",
             ",".join(f"out_{s}/{subs[0]}.gguf" for s in subs),
             "frcnn.json", binp, pref, str(size)]
-    if has_miou:
-        argv += ["out_MaskRCNN_SubC/MaskRCNN_SubC.gguf", "out_MSRCNN_SubD/MSRCNN_SubD.gguf"]
+    # 자리 인자다 — 7=SubC · 8=SubD · 9=SubE. 없는 자리는 빈 문자열로 채운다.
+    if want_mask or has_miou or has_grid:
+        argv.append("out_MaskRCNN_SubC/MaskRCNN_SubC.gguf" if want_mask else "")
+    if has_miou or has_grid:
+        argv.append("out_MSRCNN_SubD/MSRCNN_SubD.gguf" if has_miou else "")
     if has_grid:
-        # 러너 인자는 자리로 읽는다 — SubE 는 9번째다. 마스크가 없으면 자리를 채운다.
-        while len(argv) < 9:
-            argv.append("")
         argv.append("out_GridRCNN_SubE/GridRCNN_SubE.gguf")
     rr = run(argv, fr, {"VISP_BACKEND": "cpu", **prop_env})
     if not os.path.exists(pref + ".boxes.bin"):
         return fam, "RUN_FAIL", last_error(rr.stderr)[:110], None
-    got = np.fromfile(pref + ".boxes.bin", dtype="float32").reshape(-1, 6)
-    got = got[got[:, 4] >= THR]
+    got_all = np.fromfile(pref + ".boxes.bin", dtype="float32").reshape(-1, 6)
+    # ⚠️ 마스크 로짓은 **거르기 전** 검출 전부에 대해 나온다 — 러너가 그 순서로 돌렸다.
+    #    거른 뒤 배열로 짝지으면 행이 밀린다.
+    got = got_all[got_all[:, 4] >= THR]
 
     # ⑥ mmdet 기준값
     open(os.path.join(d, "ref.py"), "w").write(REF % {"FE": FE})
@@ -502,6 +585,17 @@ from shared.compile.pipeline import main; main()
     # 안 적으면 나중에 0건이 "대상이 못 한다" 인지 "안 맞는 사진을 넣었다" 인지 못 가른다.
     if os.path.basename(image) != os.path.basename(default_image):
         note += f" · {os.path.basename(image)}"
+    # ── ⑦ 마스크 축 — `paste_mask` 전 로짓의 상대 L1 ─────────────────────────
+    #    ⚠️ **박스 판정과 섞지 않는다.** 게이트는 `MASK_GATE` 뿐이고, 나머지 계열은
+    #       수치만 남긴다. 못 잰 계열에 「통과」도 「실패」도 적지 않는다.
+    if mask_off:
+        note += f" · 마스크 못 잼({mask_off[:40]})"
+    elif want_mask:
+        m_note, m_ok = _mask_axis(fam, d, fr, pref, cfg, ckpt, size, npy, got_all, prop_env)
+        note += " · " + m_note
+        if fam in MASK_GATE and not m_ok:
+            ok = False
+
     if verbose and rows:
         for r, g, db in rows:
             print(f"     {int(r[5]):4d} [{r[0]:6.1f},{r[1]:6.1f},{r[2]:6.1f},{r[3]:6.1f}] {r[4]:.3f}"
@@ -509,6 +603,99 @@ from shared.compile.pipeline import main; main()
     if not keep:
         shutil.rmtree(fr, ignore_errors=True)
     return fam, ("PASS" if ok else "FAIL"), note, dt
+
+
+def _mask_axis(fam, d, fr, pref, cfg, ckpt, size, npy, got_all, prop_env):
+    """마스크 로짓을 mmdet 과 대조한다. `(비고 문자열, 통과 여부)`.
+
+    ⚠️ **못 잰 것을 실패로 적지 않는다.** 로짓 파일이 없거나 기준값이 안 나오면
+       「못 잼」이라고 쓰고 `True` 를 돌려준다 — 게이트 계열이라도 측정 실패를
+       대상의 실패로 바꾸지 않는다. 게이트는 **수치가 나왔는데 넘었을 때** 걸린다.
+    """
+    import numpy as np
+    lg, dims_p = pref + ".mlogit.bin", pref + ".mlogit.dims.bin"
+    if not (os.path.exists(lg) and os.path.exists(dims_p)):
+        return "마스크 못 잼(로짓 없음)", True
+    dims = np.fromfile(dims_p, dtype="float32")
+    if dims.size < 4:
+        return "마스크 못 잼(축 미상)", True
+    MD, NCLS, MH, MW = (int(v) for v in dims[:4])
+    if MD <= 0:
+        return "마스크 0건", True
+
+    got = np.fromfile(lg, dtype="float32")
+    want_n = MD * NCLS * MH * MW
+    if got.size != want_n:
+        return f"마스크 못 잼(원소 {got.size} != {want_n})", True
+    # 러너는 행마다 **cwhn** 으로 낸다: ((y*MW + x) * NCLS + k). torch 는 NCHW 다.
+    got = got.reshape(MD, MH, MW, NCLS).transpose(0, 3, 1, 2)
+
+    bx = os.path.join(d, "mboxes.npy")
+    np.save(bx, got_all[:MD, :4].astype("float32"))
+    open(os.path.join(d, "mref.py"), "w").write(MREF % {"FE": FE})
+    refp = os.path.join(d, "mref.npy")
+    q = run([PY, "mref.py", cfg, ckpt, str(size), npy, bx, refp], d,
+            {"PYTHONPATH": f"{d}:{FE}", **prop_env})
+    if "MREF_OK" not in (q.stdout or ""):
+        return "마스크 못 잼(기준값: " + last_error(q.stderr)[:40] + ")", True
+    ref = np.load(refp)
+    if ref.shape != got.shape:
+        return f"마스크 못 잼(모양 {tuple(ref.shape)} vs {tuple(got.shape)})", True
+
+    den = float(np.abs(ref).sum())
+    if den <= 0:
+        return "마스크 못 잼(기준값이 0)", True
+    rel = float(np.abs(ref - got).sum()) / den
+    # 이진 IoU 는 **적되 판정에 쓰지 않는다** — 0.5 이진화는 절벽이라 fp16 타이 플립이
+    # 그대로 점수에 실린다. 눈으로 볼 때만 쓴다.
+    a, b = ref > 0, got > 0
+    inter, uni = float((a & b).sum()), float((a | b).sum())
+    iou = inter / uni if uni else 1.0
+    tag = "PASS" if rel < MASK_TOL else "FAIL"
+    if fam not in MASK_GATE:
+        tag = "수치만"          # 게이트가 아닌 계열은 판정하지 않는다
+    return f"마스크 rel L1 {rel:.2e} (IoU {iou:.3f}, {MD}건) {tag}", rel < MASK_TOL
+
+
+# 계열 하나의 피크 RSS 는 **3.26GB** 다(실측 2026-08-25, 60초 샘플링 — 최대 기여는
+# `ref.py` 의 `init_detector` + 800px 추론). WSL 은 `.wslconfig` 로 13GB 상한이다.
+# 그래서 워커 2가 안전선이고 3이 상한이다 — 그 이상은 swap 으로 밀려 **더 느려진다.**
+# ⚠️ **OOM 을 내면 WSL 이 통째로 죽는다.** 이 저장소는 이미 겪었다(2026-08-10:
+#    OOM 0건인데 크래시 덤프 626회로 C: 가 찼다). `.wslconfig` 의 `maxCrashDumpCount=0`
+#    이 그 대응이니 되돌리지 마라.
+WORKER_CAP = 3
+PER_FAM_MB = 3400          # 계열당 피크 RSS(실측 3.26GB)에 여유를 붙인 값
+
+
+def _avail_mb():
+    """가용 메모리(MB). 못 읽으면 가드를 끈다 — 측정 실패로 막지 않는다."""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 1 << 30
+
+
+def _safe_workers(want):
+    """요청한 워커 수를 **가용 메모리로 다시 깎는다.** 플래그를 그대로 믿지 않는다.
+
+    ⚠️ 왜 플래그를 안 믿나 — 이 기계는 세션이 여럿 떠 있고 그때그때 여유가 다르다.
+       `--workers 3` 이 어제 됐다고 오늘 되는 게 아니다. **재서 정한다.**
+    """
+    want = max(1, int(want))
+    if want > WORKER_CAP:
+        print(f"  ⚠️ --workers {want} 는 상한 {WORKER_CAP} 을 넘는다 — {WORKER_CAP} 로 낮춘다."
+              f" 계열당 피크 RSS 가 {PER_FAM_MB}MB 다(실측).", flush=True)
+        want = WORKER_CAP
+    avail = _avail_mb()
+    fit = max(1, avail // PER_FAM_MB)
+    if fit < want:
+        print(f"  ⚠️ 가용 메모리 {avail}MB → 워커 {want} → **{fit}** 로 낮춘다"
+              f" (계열당 {PER_FAM_MB}MB).", flush=True)
+        return fit
+    return want
 
 
 def two_stage_families():
@@ -556,6 +743,9 @@ def main():
     #    수정이 특정 조건에서만 도는 코드면(예: `NS>1`·`RSF>0`) 영향 계열만 골라 재라.
     ap.add_argument("--skip-pass", metavar="results.json",
                     help="이전 결과에서 PASS 였던 계열은 건너뛴다")
+    ap.add_argument("--workers", type=int, default=1,
+                    help=f"동시 실행 계열 수(기본 1, 상한 {WORKER_CAP}). "
+                         "가용 메모리를 읽어 더 낮출 수 있다")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
 
@@ -587,21 +777,60 @@ def main():
     # 배너가 거짓말하지 않게 — 계열별 지정이 끼어들 수 있으면 그렇다고 적는다.
     img_note = os.path.basename(a.image) if a.image else \
         f"{os.path.basename(DEFAULT_IMAGE)} (계열별 지정 적용)"
-    print(f"size={a.size} · image={img_note} · thr={THR}"
+    # ⚠️ **머리글이 실제 측정 조건을 말해야 한다.** `a.size` 만 찍으면 계열별 크기
+    #    표(`MF._SIZE`)로 올라간 계열이 로그에 거짓으로 적힌다 — `fpg` 를 1024 로
+    #    재고도 `size=800` 이라고 찍혔다(2026-09-01). 합계는 입력 크기와 같이 묶는다.
+    over = {f: MF.test_size(f, a.size) for f in fams if MF.test_size(f, a.size) != a.size}
+    size_note = f"{a.size}" + (
+        " (계열별: " + ", ".join(f"{f}={v}" for f, v in sorted(over.items())) + ")"
+        if over else "")
+    print(f"size={size_note} · image={img_note} · thr={THR}"
           f" · 판정: 박스<{BOX_TOL}px 점수<{SCORE_TOL} 라벨0 개수차0")
     print(f"{len(fams)}계열: {' '.join(fams)}\n")
 
-    res = []
-    for i, fam in enumerate(fams, 1):
-        print(f"[{i}/{len(fams)}] {fam} …", flush=True)
+    nw = _safe_workers(a.workers)
+    if nw > 1:
+        print(f"워커 {nw}개로 돈다 (가용 {_avail_mb()}MB · 계열당 {PER_FAM_MB}MB 가정)\n",
+              flush=True)
+
+    def _one_guarded(fam):
+        """한 계열. **판정 로직은 순차와 완전히 같다** — 감싸기만 한다."""
         try:
-            row = one(fam, a.size, a.image, a.workdir, a.keep, a.verbose)
+            # 계열별 크기 표를 따른다 — `fpg` 는 800 에서 안 나눠떨어진다
+            return one(fam, MF.test_size(fam, a.size), a.image,
+                       a.workdir, a.keep, a.verbose)
         except subprocess.TimeoutExpired:
-            row = (fam, "TIMEOUT", "-", None)
+            return (fam, "TIMEOUT", "-", None)
         except Exception as e:                     # 한 계열이 죽어도 스윕은 계속한다
-            row = (fam, "HARNESS_FAIL", f"{type(e).__name__}: {e}"[:110], None)
-        res.append(row)
-        print(f"    {row[1]:14s} {row[2]}" + (f"   ({row[3]:.0f}s)" if row[3] else ""), flush=True)
+            return (fam, "HARNESS_FAIL", f"{type(e).__name__}: {e}"[:110], None)
+
+    res = []
+    # ⚠️ **계열마다 작업 폴더가 따로다**(`workdir/<fam>`) — 겹치는 파일이 없어야
+    #    병렬이 안전하다. `one()` 이 이미 그렇게 짜여 있다(정리도 그 폴더 단위).
+    #    여기서 `workdir` 하나를 공유하는 파일은 `results.json` 뿐이고, 그건 부모만 쓴다.
+    if nw <= 1:
+        for i, fam in enumerate(fams, 1):
+            print(f"[{i}/{len(fams)}] {fam} …", flush=True)
+            row = _one_guarded(fam)
+            res.append(row)
+            print(f"    {row[1]:14s} {row[2]}" + (f"   ({row[3]:.0f}s)" if row[3] else ""),
+                  flush=True)
+            with open(os.path.join(a.workdir, "results.json"), "w") as f:
+                json.dump(res, f, indent=1, ensure_ascii=False)
+    else:
+        import concurrent.futures as _fut
+        with _fut.ThreadPoolExecutor(max_workers=nw) as ex:
+            futs = {ex.submit(_one_guarded, f): f for f in fams}
+            for i, fu in enumerate(_fut.as_completed(futs), 1):
+                row = fu.result()
+                res.append(row)
+                print(f"[{i}/{len(fams)}] {row[0]:22s} {row[1]:14s} {row[2]}"
+                      + (f"   ({row[3]:.0f}s)" if row[3] else ""), flush=True)
+                with open(os.path.join(a.workdir, "results.json"), "w") as f:
+                    json.dump(res, f, indent=1, ensure_ascii=False)
+        # ⚠️ **완료 순서로 오므로 다시 정렬한다.** 안 하면 실행마다 줄 순서가 달라져
+        #    두 실행을 `diff` 로 못 댄다 — 회귀를 눈으로 보는 길이 막힌다.
+        res.sort(key=lambda r: fams.index(r[0]))
         with open(os.path.join(a.workdir, "results.json"), "w") as f:
             json.dump(res, f, indent=1, ensure_ascii=False)
 

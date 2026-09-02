@@ -469,6 +469,38 @@ void run_sam(cli_args const& args) {
 //
 // g2c 생성 arch (레지스트리 경유). **모델이 늘어도 이 함수는 안 바뀐다.**
 
+// 좌표까지 찍는다. 그리기만 하면 결과를 수치로 확인할 방법이 없어서, 참조 구현과
+// 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
+// SZ 는 그래프가 구워진 입력 크기 — 원본 이미지 크기로 되돌리는 배율을 여기서 만든다.
+static void report_and_draw(image_data& image, std::vector<detection> const& dets,
+                            arch_task const& task, int SZ, letterbox_info const& lb) {
+    // letterbox 면 좌표계가 다르다 — 배율 하나에 패딩이 붙는다. 단순 배율로 되돌리면
+    // 비정사각 이미지에서 박스가 통째로 밀린다.
+    const float sx = task.letterbox ? 0.0f : float(image.extent[0]) / float(SZ);
+    const float sy = task.letterbox ? 0.0f : float(image.extent[1]) / float(SZ);
+    auto ux = [&](float v) { return task.letterbox ? (v - lb.pad_x) / lb.scale : v * sx; };
+    auto uy = [&](float v) { return task.letterbox ? (v - lb.pad_y) / lb.scale : v * sy; };
+    printf("  %4s %9s %9s %9s %9s %8s  %s\n", "#", "x1", "y1", "x2", "y2", "score", "class");
+    for (size_t i = 0; i < dets.size(); ++i) {
+        detection const& d = dets[i];
+        char const* name = (d.label >= 0 && size_t(d.label) < task.class_names.size())
+                               ? task.class_names[d.label].c_str()
+                               : "";
+        printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d %s\n", i,
+               ux(d.x1), uy(d.y1), ux(d.x2), uy(d.y2), d.score, d.label, name);
+    }
+    if (task.letterbox) {
+        // draw_detections 는 배율만 받는다 — 패딩을 뺀 좌표로 미리 옮겨 넣는다.
+        std::vector<detection> shifted = dets;
+        for (detection& d : shifted) {
+            d.x1 = ux(d.x1); d.y1 = uy(d.y1); d.x2 = ux(d.x2); d.y2 = uy(d.y2);
+        }
+        draw_detections(image_span(image), shifted, task.class_names, 1.0f, 1.0f);
+    } else {
+        draw_detections(image_span(image), dets, task.class_names, sx, sy);
+    }
+}
+
 void run_generated(cli_args const& args) {
     arch_entry const* e = arch_find(args.arch);
     ASSERT(e != nullptr, "arch not registered");   // 파싱에서 이미 확인했다
@@ -486,17 +518,25 @@ void run_generated(cli_args const& args) {
     image_data image = image_load(args.inputs[0]);
 
     arch_task const& task = e->task;
-    const int SZ = task.input_size;
-    // 정사각 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
+    // 비정사각 모델은 `input_w`/`input_h` 를 싣는다. 0 이면 정사각(`input_size`).
+    const int IW = task.input_w ? task.input_w : task.input_size;
+    const int IH = task.input_h ? task.input_h : task.input_size;
+    const int SZ = IW;  // 정사각 경로의 옛 이름 — 아래 박스 되돌리기가 쓴다
+    // 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
     // **letterbox 가 아니라 단순 리사이즈**다 — 종횡비가 바뀌므로 박스를 되돌릴 때
     // x·y 배율을 따로 쓴다.
     const int nch = n_channels(image.format);
-    std::vector<float> input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0],
-                                               nch, SZ, task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
+    letterbox_info lb;
+    std::vector<float> input_cwhn =
+        task.letterbox
+            ? preprocess_letterbox(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
+                                   task.mean.data(), task.stdv.data(), /*to_rgb=*/false, &lb)
+            : preprocess(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
+                         task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
 
     compute_graph graph = compute_graph_init(262144);
     model_ref m(weights, graph);
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, SZ, SZ, 1}, "x");
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, IW, IH, 1}, "x");
     ggml_build_forward_expand(graph, input);
     ggml_build_forward_expand(graph, e->forward(m, input, file));
     compute_graph_allocate(graph, backend);
@@ -543,9 +583,62 @@ void run_generated(cli_args const& args) {
             }
         }
     }
+    // v8·v9·v11·v12 는 **디코드까지 그래프 안에서 끝내고** 박스와 확률을 한 텐서로 붙여 낸다
+    // (`cat(dbox, cls.sigmoid())` → 4 + nc 채널). 여기서는 자르고 NMS 만 하면 된다 —
+    // `detect_yolo_dense` 에 넘기면 stride·sigmoid 를 **두 번** 먹는다.
+    int fused = -1;
     if (bi < 0 || si < 0) {
+        for (int i = (int)outs.size() - 1; i >= 0; --i) {
+            if (hw[i].first == task.num_classes + 4) {
+                fused = i;
+                break;
+            }
+        }
+    }
+    if (fused < 0 && (bi < 0 || si < 0)) {
         throw except("Could not find box/score outputs (num_classes={})", task.num_classes);
     }
+    if (fused >= 0) {
+        // 채널 우선 배치: flat[c*N + a]. 0~3 = cx,cy,w,h(입력 픽셀 단위), 4.. = 클래스 확률.
+        const int n = hw[fused].second;
+        float const* d = outs[fused].data();
+        std::vector<detection> raw;
+        for (int a = 0; a < n; ++a) {
+            int best = -1;
+            float best_p = task.score_thr;
+            for (int c = 0; c < task.num_classes; ++c) {
+                float p = d[(size_t)(4 + c) * n + a];
+                if (p > best_p) {
+                    best_p = p;
+                    best = c;
+                }
+            }
+            if (best < 0) {
+                continue;
+            }
+            float cx = d[a], cy = d[(size_t)n + a];
+            float w = d[(size_t)2 * n + a], h = d[(size_t)3 * n + a];
+            raw.push_back({cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, best_p, best});
+        }
+        printf("- decode: fused=out_%d anchors=%d (%zu over thr)\n", fused, n, raw.size());
+
+        std::vector<detection> dets;
+        if (task.nms_free) {
+            dets = std::move(raw);
+        } else {
+            for (int k : nms(raw, task.nms_thr)) {
+                dets.push_back(raw[k]);
+            }
+        }
+        if ((int)dets.size() > task.max_det) {
+            dets.resize(task.max_det);
+        }
+        report_and_draw(image, dets, task, SZ, lb);
+        image_save(image, args.output);
+        printf("-> %zu boxes drawn, saved to %s\n", dets.size(), args.output);
+        return;
+    }
+
     const int n_anchor = hw[si].second;
     printf("- decode: box=out_%d score=out_%d anchors=%d\n", bi, si, n_anchor);
 
@@ -574,22 +667,7 @@ void run_generated(cli_args const& args) {
     std::vector<detection> dets =
         detect_yolo_dense(outs[bi].data(), outs[si].data(), feat_hw, dp);
 
-    const float sx = float(image.extent[0]) / float(SZ);
-    const float sy = float(image.extent[1]) / float(SZ);
-
-    // 좌표까지 찍는다. 그리기만 하면 결과를 수치로 확인할 방법이 없어서, 참조 구현과
-    // 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
-    printf("  %4s %9s %9s %9s %9s %8s  %s\n", "#", "x1", "y1", "x2", "y2", "score", "class");
-    for (size_t i = 0; i < dets.size(); ++i) {
-        detection const& d = dets[i];
-        char const* name = (d.label >= 0 && size_t(d.label) < task.class_names.size())
-                               ? task.class_names[d.label].c_str()
-                               : "";
-        printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d %s\n", i,
-               d.x1 * sx, d.y1 * sy, d.x2 * sx, d.y2 * sy, d.score, d.label, name);
-    }
-
-    draw_detections(image_span(image), dets, task.class_names, sx, sy);
+    report_and_draw(image, dets, task, SZ, lb);
     image_save(image, args.output);
     printf("-> %zu boxes drawn, saved to %s\n", dets.size(), args.output);
 }

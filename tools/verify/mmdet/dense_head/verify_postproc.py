@@ -40,7 +40,16 @@ from PIL import Image                                     # noqa: E402
 
 
 def cpp_boxes(gen_dir, image, size, thr):
-    """run_mmdet 을 돌려 디코드된 박스를 받는다(.bin = 박스당 6값)."""
+    """run_mmdet 을 돌려 디코드된 박스를 받는다(.bin = 박스당 6값).
+
+    ⚠️ **`image` 는 기준값이 쓴 것과 같은 픽셀이어야 한다.** 여기 오는 것이
+       `.bin`(전처리된 CWHN f32)이면 그대로 넘긴다 — 러너가 전처리를 건너뛴다.
+       jpg 를 넘기면 **러너가 자기 방식으로 디코드·리사이즈**하는데, 기준값 쪽은
+       PIL `BILINEAR`(축소 때 안티에일리어싱이 들어간다)로 줄인다. 같은 사진이라도
+       픽셀이 달라져 점수가 계통적으로 어긋난다(실측 중앙값 5e-04~9e-04).
+       그 크기면 컷(0.30) 언저리의 검출 하나가 갈려 **개수차 1** 이 난다.
+       two-stage 하네스는 처음부터 `in.bin` 을 한 번 만들어 양쪽에 준다.
+    """
     out = os.path.join(gen_dir, "_postproc_check.bin")
     exe = os.path.join(gen_dir, "run_mmdet")
     if not os.path.exists(exe):
@@ -60,6 +69,11 @@ def _one_gguf(gen_dir):
     return os.path.join(gen_dir, g[0])
 
 
+# 기준값이 만든 픽셀을 러너에게도 주기 위한 슬롯. `main()` 이 채운다.
+# 리스트인 이유는 함수 서명을 안 바꾸려는 것뿐이다(부르는 곳이 여럿이다).
+_SHARED_INPUT = [None]
+
+
 def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     """mmdet 자신의 predict_by_feat — 앵커·디코드·NMS 의 정본."""
     from mmdet.apis import init_detector
@@ -67,8 +81,11 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     # mmdet v3 체크포인트는 학습 메타(HistoryBuffer)를 함께 담고 있어 torch 2.6 의
     # weights_only=True 기본값에서 로드가 거부된다(rtmdet 이 그랬다). 프론트엔드가
     # 이미 쓰는 우회를 그대로 쓴다 — 필요한 클래스만 이름으로 허용한다.
+    # ⚠️ `..` 은 **셋**이다. dense_head → mmdet → verify → tools 로 세 칸 올라가야
+    #    `tools/frontend/mmdet` 이다. 둘이면 없는 경로라 import 가 조용히 실패하고,
+    #    허용 목록이 안 걸려 DETR 계열 8개가 통째로 RUN_FAIL 났다(2026-09-01 실측).
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "..", "..", "frontend", "mmdet"))
+                                    "..", "..", "..", "frontend", "mmdet"))
     try:
         import mmdet_wrap
         mmdet_wrap.allow_mmengine_checkpoint_globals()
@@ -97,6 +114,11 @@ def mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb):
     #    `expected scalar type Double but found Float` 로 죽는다. 계열 탓처럼 보이지만
     #    전처리 dtype 문제다.
     x = ((np.ascontiguousarray(x) - mean) / std).astype(np.float32)
+    # ⚠️ **러너에게도 이 픽셀을 그대로 준다.** 각자 jpg 를 열면 리사이즈 구현이
+    #    달라 픽셀이 갈리고, 그러면 백엔드가 아니라 **리사이즈를 재게 된다.**
+    #    `x` 는 이미 HWC(=러너의 cwhn) 라 그대로 쓴다.
+    if _SHARED_INPUT[0]:
+        np.ascontiguousarray(x).tofile(_SHARED_INPUT[0])
     t = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0)
 
     meta = {"img_shape": (size, size), "ori_shape": (size, size),
@@ -226,8 +248,12 @@ def main():
     except Exception:                            # 계열을 못 알아내도 계속 간다
         pass
 
-    got = cpp_boxes(gen, image, size, thr)
+    # ⚠️ **순서를 바꾸지 마라.** 기준값 쪽이 픽셀을 만들면서 `in.bin` 을 떨구고,
+    #    러너는 그 파일을 받는다. 러너를 먼저 돌리면 파일이 없어 jpg 로 떨어지고
+    #    **각자 리사이즈**하게 된다(그게 원래 상태였다).
+    _SHARED_INPUT[0] = os.path.join(gen, "_postproc_in.bin")
     ref = mmdet_boxes(cfg, ckpt, image, size, thr, to_rgb)
+    got = cpp_boxes(gen, _SHARED_INPUT[0], size, thr)
     print(f"\nmmdet {len(ref)}건 · run_mmdet {len(got)}건")
 
     rows = match(ref, got)

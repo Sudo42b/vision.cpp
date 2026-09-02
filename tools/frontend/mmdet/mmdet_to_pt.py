@@ -198,9 +198,12 @@ def main(argv=None):
     ap.add_argument("--checkpoint", default=None, help="가중치(.pth) — 없으면 config init")
     ap.add_argument("--out", required=True, help="출력 .pt")
     ap.add_argument("--size", type=int, default=512)
+    # 텍스트 조건부 계열(GLIP)만 쓴다. 캡션이 고정이면 텍스트 임베딩이 상수라
+    # 버퍼로 구워 그래프 입력을 이미지 하나로 만든다 — `MMDetTextCond` 주석 참고.
+    ap.add_argument("--caption", default=None, help="텍스트 조건부 계열의 고정 문구")
     a = ap.parse_args(argv)
 
-    m, shapes, cfg = build(a.config, a.checkpoint, a.size)
+    m, shapes, cfg = build(a.config, a.checkpoint, a.size, caption=a.caption)
     print(f"  backbone/neck features: {shapes}")
     torch.save(m, a.out)
     n_head = sum(1 for k in m.state_dict() if k.startswith("bbox_head"))

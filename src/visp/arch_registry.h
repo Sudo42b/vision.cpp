@@ -45,7 +45,19 @@ struct arch_task {
     float score_thr = 0.25f;
     float nms_thr = 0.7f;          // nms_free 면 안 쓴다
     int max_det = 300;
-    int input_size = 640;
+    int input_size = 640;          // 정사각 모델의 한 변
+    // ⚠️ **비정사각 모델은 여기에 실어야 한다.** 0 이면 `input_size` 를 정사각으로 쓴다.
+    //    안 실으면 러너가 정사각으로 리사이즈해 **조용히 틀린 출력**을 낸다 —
+    //    mmseg cityscapes(512×1024)가 512×512 로 줄어 출력이 절반만 나왔다(2026-09-01).
+    //    mmpose 는 전부 256×192 라 한 계열도 못 돌았다.
+    int input_w = 0;
+    int input_h = 0;
+
+    // 비율을 유지하고 남는 자리를 회색으로 채운다(YOLO 규약). **YOLO 계열에서만 켠다** —
+    // 분할·자세는 비율을 뭉개는 직접 리사이즈가 맞다.
+    // ⚠️ 정사각 이미지로만 재면 이 값이 틀려도 안 드러난다(2026-09-02 실측:
+    //    512×512 는 차이 없고, 452×627 에서 handbag 점수가 0.87 vs 0.94 로 갈렸다).
+    bool letterbox = false;
 
     // 전처리 정규화 `(v - mean) / std`. 기본값은 0~1 (YOLO 규약).
     // ⚠️ **모델마다 다르다.** torchvision 분류기는 ImageNet 통계를 쓰는데, 0~1 로 돌리면

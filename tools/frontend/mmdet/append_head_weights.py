@@ -86,8 +86,15 @@ def append(pt_path: str, gguf_path: str, prefixes=None) -> int:
             continue
         arr = tensor.detach().cpu().numpy()
         # 정수 버퍼를 fp16 으로 구우면 값이 뭉개진다 — 부동소수만 내린다.
+        # ⚠️ **본체가 어떤 정밀도로 구워졌는지 따라가야 한다.** g2c 의 `generate_gguf` 는
+        #    `GTX_GGUF_F32=1` 이면 fp32 로 굽는데 여기만 fp16 을 하드코딩하고 있었다.
+        #    한 gguf 안에 두 정밀도가 섞이면 러너가 **세그폴트로 죽는다**(실측: fp32 로
+        #    구운 yolact·rpn 이 `run_mmdet` 진입 직후 SIGSEGV).
+        #    「정밀도냐 버그냐」를 가르는 fp32 대조가 one-stage 계열에서 **통째로 막혀
+        #    있었다** — two-stage 는 head 를 덧붙이지 않아 안 걸렸다.
         if arr.dtype.kind == "f":
-            arr = arr.astype(np.float16)
+            arr = arr.astype(np.float32
+                             if os.environ.get("GTX_GGUF_F32") == "1" else np.float16)
         # ⚠️ **여기도 이름을 줄여야 한다.** g2c 가 굽는 쪽(`generate_gguf`)만 줄이면
         #    나중에 덧붙는 head 가중치가 64자를 넘어 로드가 거부된다
         #    (`mask_head.mask_feature_head.convs_all_levels.…` 실측 64자).

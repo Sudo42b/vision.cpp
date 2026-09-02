@@ -23,36 +23,44 @@ The command selects the model, `-m` says which weights to load, `-i` and `-o` ar
 
 ## Options
 
-`-m, --model <file>`
-:   The `.gguf` weights. Omit it and each command looks for its own default name —
-    `MobileSAM-F16.gguf`, `BiRefNet-lite-F16.gguf`, and so on — under `models/`,
-    `$VISION_MODEL_DIR`, `$XDG_DATA_HOME/visioncpp`, `~/.local/share/visioncpp` and the
-    install directory, in that order.
+**`-m, --model <file>`**
 
-`-i, --input <image> [<image> ...]`
-:   Input image. `migan` takes two — the image and the mask.
+  The `.gguf` weights. Omit it and each command looks for its own default name —
+  `MobileSAM-F16.gguf`, `BiRefNet-lite-F16.gguf`, and so on — under `models/`,
+  `$VISION_MODEL_DIR`, `$XDG_DATA_HOME/visioncpp`, `~/.local/share/visioncpp` and the
+  install directory, in that order.
 
-`-o, --output <file>`
-:   Output file. Defaults to `output.png`. Images are always written as **PNG**, whatever
-    the name says — `-o out.jpg` produces a PNG file called `out.jpg`, which some viewers
-    refuse to open. Give it a `.png` name.
+**`-i, --input <image> [<image> ...]`**
 
-`-p, --prompt <x> [<y> ...]`
-:   Prompt for models that take one. `sam` accepts a point (`x y`) or a box
-    (`x1 y1 x2 y2`) in pixels, origin top-left.
+  Input image. `migan` takes two — the image and the mask.
 
-`-b, --backend <cpu|gpu>`
-:   Which device to run on. Defaults to automatic — GPU if the build has Vulkan and a device is
-    available, CPU otherwise.
+**`-o, --output <file>`**
 
-`--composite <file>`
-:   Also write the input image combined with the resulting mask, instead of the mask alone.
+  Output file. Defaults to `output.png`. Images are always written as **PNG**, whatever
+  the name says — `-o out.jpg` produces a PNG file called `out.jpg`, which some viewers
+  refuse to open. Give it a `.png` name.
 
-`--tile <size>`
-:   Split large inputs into tiles of this size. Used by `esrgan` to keep memory bounded.
+**`-p, --prompt <x> [<y> ...]`**
 
-`-h, --help`
-:   Print the command list and exit.
+  Prompt for models that take one. `sam` accepts a point (`x y`) or a box
+  (`x1 y1 x2 y2`) in pixels, origin top-left.
+
+**`-b, --backend <cpu|gpu>`**
+
+  Which device to run on. Defaults to automatic — GPU if the build has Vulkan and a device is
+  available, CPU otherwise.
+
+**`--composite <file>`**
+
+  Also write the input image combined with the resulting mask, instead of the mask alone.
+
+**`--tile <size>`**
+
+  Split large inputs into tiles of this size. Used by `esrgan` to keep memory bounded.
+
+**`-h, --help`**
+
+  Print the command list and exit.
 
 ## Getting weights
 

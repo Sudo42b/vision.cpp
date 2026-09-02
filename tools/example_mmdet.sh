@@ -20,7 +20,7 @@ SIZE="${SIZE:-512}"
 VCPP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MMDET="${MMDET:-$HOME/mmbuild/mmdetection}"
 WORK="${WORK:-/tmp/visp-example-$FAM}"
-DH="$VCPP/tools/verify/dense_head"
+DH="$VCPP/tools/verify/mmdet/dense_head"
 
 # ⚠️ 이 예제만 **mmdet 이 설치된 인터프리터**가 필요하다. 앞의 세 예제와 갈리는 지점이다 —
 #    거긴 `uv run --project` 로 g2c 환경을 쓰면 됐지만, 여기선 하네스가 mmdet 을 import 한다.

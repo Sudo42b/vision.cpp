@@ -72,8 +72,8 @@ OPT = CFG.opt
 # 저장소 관례(verify_pt.py)의 REL_L2_TOL=0.05 를 따른다.
 L1_TOL = CFG.l1
 L2_TOL = CFG.l2
-# g2c(컴파일러)와 vision.cpp 경로. 이 파일은 vision.cpp/tools/verify/dense_head/ 에 있다.
-V = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# g2c(컴파일러)와 vision.cpp 경로. 이 파일은 vision.cpp/tools/verify/mmdet/dense_head/ 에 있다.
+V = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 P = CFG.g2c
 PY = sys.executable
 FE = V + "/tools/frontend/mmdet"
@@ -353,7 +353,7 @@ for _k in range(len(_o) // 2):
         raise SystemExit(
             "SubB 의 bbox_pred 가 None 이다 — with_reg=False 인 head 다(좌표를 다른 head 가 낸다). "
             "이 하네스는 (cls, box) 쌍을 전제하므로 이 계열은 two-stage 하네스로 재라: "
-            "tools/verify/roi/verify_postproc_roi.py")
+            "tools/verify/mmdet/roi/verify_postproc_roi.py")
 for _k in range(len(_o) // 2):
     _c, _b = _o[2 * _k], _o[2 * _k + 1]
     np.ascontiguousarray(_c.numpy()).tofile("ref.cls.%%d.bin" %% _k)
@@ -399,7 +399,7 @@ from shared.compile.pipeline import main; main()
              "-DVISP_ARCH_HEADER=\"visp/arch/Fam.h\"",
              "-I" + os.path.join(gen, "inc"), "-I" + V + "/src", "-I" + V + "/include",
              "-I" + V + "/depend/llama/ggml/include",
-             V + "/tools/verify/backbone/run_dump.cpp", os.path.join(gen, "Fam.cpp"),
+             V + "/tools/verify/common/run_dump.cpp", os.path.join(gen, "Fam.cpp"),
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", os.path.join(gen, "run_dump")],
             d, phase="3_build_nb")
@@ -534,7 +534,7 @@ from shared.compile.pipeline import main; main()
              "-IincA", "-IincB",
              "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/backbone/run_frcnn.cpp",
+             V + "/tools/verify/mmdet/backbone/run_frcnn.cpp",
              "out_FRCNN_SubA/FRCNN_SubA.cpp", "out_" + subs[0] + "/" + subs[0] + ".cpp",
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", "run_frcnn"], fr, phase="3_build2")
@@ -672,9 +672,15 @@ def one(fam, rel, ckpt):
     kind = next((l.split(":")[-1].strip() for l in open(ph) if l.startswith("// head_type")), "?")
     # ⚠️ **텍스트 조건부 계열은 `bbox_head(feats)` 로 못 부른다.** GLIP·GroundingDINO 는
     #    이미지 feature 말고 **텍스트 임베딩**을 같이 받는다(`ATSSVLFusionHead.forward()
-    #    missing 1 required positional argument`). 박스를 판정 기준으로 삼을 수가 없으므로
-    #    박스 없는 계열과 같은 자로 잰다 — **컴파일된 그래프**를 torch 와 댄다.
-    #    ⚠️ 그래서 이 숫자는 "이 계열이 검증됐다" 가 아니라 "컴파일 범위가 맞다" 는 뜻이다.
+    #    missing 1 required positional argument`). 박스 하네스로는 못 재므로 **컴파일된
+    #    그래프의 출력**을 torch 와 대는 `_no_box` 로 보낸다.
+    #
+    #    ⚠️ **컴파일 범위가 계열마다 다르다 — 숫자를 같은 뜻으로 읽지 마라.**
+    #    · `glip`: 2026-08-27 부터 **융합헤드까지** 한 그래프다(`MMDetTextCond` 가 텍스트
+    #      임베딩을 상수로 굽는다) → 출력 15텐서. 이 숫자는 **헤드까지 검증**한 값이다.
+    #      아직 없는 것은 **디코드**(박스 delta·토큰→문구 점수 집계)뿐이다.
+    #    · `grounding_dino`·`mm_grounding_dino`: head 가 DETR 꼴이라 아직 백본+넥뿐이다.
+    #      그 숫자는 "이 계열이 검증됐다" 가 아니라 "컴파일 범위가 맞다" 는 뜻이다.
     try:
         from mmengine.config import Config as _C
         if (_C.fromfile(cfg_path).get("model") or {}).get("language_model"):
@@ -754,7 +760,7 @@ from shared.compile.pipeline import main; main()
              "-I" + gen + "/inc", "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/tools/detect",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/backbone/run_mmdet.cpp", HEAD_OBJ,
+             V + "/tools/verify/mmdet/backbone/run_mmdet.cpp", HEAD_OBJ,
              gen + "/Fam.cpp",
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", gen + "/run_mmdet"], d, phase="3b_build")

@@ -232,12 +232,41 @@ def num_bbox_stages(det):
 
 
 class MaskRCNN_SubC(nn.Module):
-    """mask RoIAlign feat (M,256,14,14) → mask_logits (M, num_classes, 28, 28). (Mask R-CNN)."""
+    """mask RoIAlign feat (M,256,14,14) → mask_logits (M, num_classes, 28, 28). (Mask R-CNN).
+
+    ⚠️ **마스크 추출기도 `GenericRoIExtractor` 일 수 있다**(`groie`). 그때는 bbox 쪽과
+    똑같이 레벨을 고르지 않고 전 레벨에 RoIAlign 을 걸어 pre→합산→post 를 태운다.
+    러너가 레벨별 결과를 **배치로 이어붙여** 넣고 여기서 가른다 — `FRCNN_SubB` 와 같은 수법.
+    다른 점 하나: 러너는 마스크 head 를 **검출 하나씩(배치 1)** 돌리므로 레벨당 RoI 수가
+    항상 **1** 이다(bbox 쪽은 `rpn.max_per_img`). 그래서 여기 `mgroie_n` 은 상수 1 이다.
+    """
     def __init__(self, det):
         super().__init__()
         self.mask_head = det.roi_head.mask_head
+        mext = getattr(det.roi_head, "mask_roi_extractor", None)
+        if isinstance(mext, nn.ModuleList):
+            mext = mext[0]
+        gen = mext is not None and type(mext).__name__ == "GenericRoIExtractor"
+        self.mgroie_pre = (getattr(mext, "pre_module", None)
+                           if gen and getattr(mext, "with_pre", False) else None)
+        self.mgroie_post = (getattr(mext, "post_module", None)
+                            if gen and getattr(mext, "with_post", False) else None)
+        self.mgroie_lvls = len(getattr(mext, "featmap_strides", []) or []) if gen else 0
 
     def forward(self, mask_feat):
+        # groie: (L, C, 14, 14) 로 들어온다 → pre 한 번 → 레벨별로 갈라 합산 → post
+        # ⚠️ `getattr(..., 기본값)` 으로 읽는다 — 이 클래스는 절여져서 **다른 프로세스**가
+        #    푼다. 새 속성을 그냥 읽으면 옛 코드가 절인 객체에서 AttributeError 가 난다.
+        L = getattr(self, "mgroie_lvls", 0)
+        if L:
+            if getattr(self, "mgroie_pre", None) is not None:
+                mask_feat = self.mgroie_pre(mask_feat)
+            acc = mask_feat[:1]                    # 러너가 검출 하나씩 넣는다 → 레벨당 1
+            for i in range(1, L):
+                acc = acc + mask_feat[i:i + 1]
+            mask_feat = acc
+            if getattr(self, "mgroie_post", None) is not None:
+                mask_feat = self.mgroie_post(mask_feat)
         return self.mask_head(mask_feat)
 
 
@@ -328,16 +357,22 @@ def frcnn_cfg(det, size=800):
     #    RoIAlign 은 그걸 표현 못 한다 — 조용히 레벨 선택으로 떨어뜨리면 값만 틀린다.
     # GenericRoIExtractor(groie): **집계 경로는 지원한다** — 러너가 레벨별로 RoIAlign 을
     # 걸어 배치로 이어붙이고, SubB 가 pre→합산→post 를 그래프 안에서 한다.
-    # ⚠️ 다만 `post_cfg` 가 `GeneralizedAttention` 이면 아직 못 굽는다. 위치 임베딩
-    #    broadcast 가 **5차원**인데 ggml 은 4D 까지라, 렌더러가 `ggml_cont` 로 떨어뜨리고
-    #    (생성 코드에 `repeat [N,6,7,4,42]` 주석이 남는다) 뒤의 add 가
-    #    `GGML_ASSERT(ggml_can_repeat)` 로 죽는다. 러너 크래시로 흘려보내지 말고
-    #    **여기서 이유를 말한다** — 렌더러 작업이지 하네스 작업이 아니다.
-    if type(ext).__name__ == "GenericRoIExtractor" and getattr(ext, "with_post", False):
-        if type(getattr(ext, "post_module", None)).__name__ == "GeneralizedAttention":
-            raise NotImplementedError(
-                "GenericRoIExtractor + GeneralizedAttention: 집계는 되지만 post 의 위치 임베딩 "
-                "broadcast 가 5차원이라 ggml(4D)로 못 편다 — g2c 렌더러 작업이다")
+    # `post_cfg` 가 `GeneralizedAttention` 인 경우(2026-08-24 진행 중):
+    #   ✔ 5D 위치 임베딩 repeat — 렌더러가 4D 로 접는다(`shape/render.reduce_to_4d`)
+    #   ✔ `aten::div_` — 렌더러 등록(없을 땐 나눗셈이 통째로 사라졌다)
+    #   ✔ 비균일 상수(`dim_mat` 64원소) — 리터럴 상수를 항상 GGUF 로 굽는다
+    #   ✔ `div` 양방향 broadcast — `sub` 와 같은 처방(좌변 실체화)
+    #   ✔ >4D `zeros` 가 1원소로 뭉개지던 것 — 같은 축소 규칙으로 접는다
+    #   ✗ **6D `energy` 를 4D 로 못 맞춘다.** `energy(n,heads,h,w,h_kv,w_kv)` 는 6D 이고
+    #     위치항은 5D 인데, 바깥 축 병합은 **각자 다른 개수의 축을 접는다** —
+    #     energy 는 (42000,7,4,4), 위치항은 (6000,7,7,4) 가 돼 broadcast 가 안 맞는다.
+    #     일반 규칙(인접 축 병합)으로는 여기까지다. **축을 피연산자끼리 맞추려면
+    #     이 op 전용 로우어링**(예: (h,w)→hw, (h_kv,w_kv)→kv 로 접어 (n*heads, hw, kv))
+    #     이 필요하다 — 그래프 전역 레이아웃 패스는 pvt 를 회귀시킨 전례가 있다.
+    # ⚠️ **op 이름으로 거절하는 게 아니다.** 위 둘은 실제로 남은 한계이고, 둘 다 고쳐지면
+    #    이 분기를 지운다. 이름 목록은 실제 한계보다 항상 넓거나 좁다 — 이전 조건은
+    #    `GeneralizedAttention` 전체를 막았지만 `empirical_attention`(`0010`)은 진작
+    #    통과하고 있었다. 막힌 건 `attention_type[1]/[3]`(기하 갈래)뿐이다.
     bh = det.roi_head.bbox_head
     # 캐스케이드는 bbox_head 도 ModuleList 다. 클래스 수·coder 종류는 단계 공통이라
     # **마지막 단계**를 쓴다(최종 박스를 내는 단계라 디코드 규약이 거기 맞춰져 있다).
@@ -381,6 +416,17 @@ def frcnn_cfg(det, size=800):
             "mask_finest_scale": int(getattr(mext, "finest_scale", 56)),
             "mask_thr_binary": float(rcnn_c.mask_thr_binary),
         }
+        # 마스크 로짓을 재려면 `MaskRCNN_SubC` 를 구울 수 있어야 한다. head 가 **하나일
+        # 때만** 굽는다 — HTC·SCNet 은 `mask_head` 가 `ModuleList`(단계마다 하나)라
+        # 통째로 태우면 `forward` 가 없어 export 에서 죽는다.
+        # ⚠️ 이 값이 **박스 판정을 바꾸면 안 된다.** 마스크는 더 재는 축이지 문턱이 아니다
+        #    (게이트는 `groie` 하나뿐 — `verify_postproc_roi.MASK_GATE`).
+        mask["mask_head_single"] = int(
+            not isinstance(det.roi_head.mask_head, nn.ModuleList))
+        # 마스크 추출기도 레벨을 고르지 않을 수 있다 — 러너가 레벨마다 RoIAlign 을 걸어
+        # 배치로 이어붙여야 한다(0 이면 평소대로 레벨 하나를 고른다).
+        mask["mask_groie_levels"] = (len(mext.featmap_strides)
+                                     if type(mext).__name__ == "GenericRoIExtractor" else 0)
     # Mask Scoring R-CNN: 마스크 IoU 로 점수를 다시 매긴다. 없으면 안 싣는다.
     if getattr(det.roi_head, "mask_iou_head", None) is not None:
         mih = det.roi_head.mask_iou_head
@@ -476,7 +522,11 @@ def frcnn_cfg(det, size=800):
         # SparseR-CNN/QueryInst: 단계마다 query(object_feats)를 함께 나른다.
         # 0 이면 평범한 캐스케이드다.
         "sparse_stages": ns if type(det.roi_head).__name__ == "SparseRoIHead" else 0,
-        "num_proposals": int(getattr(det.rpn_head, "num_proposals", 0) or 0),
+        # ⚠️ **`det.rpn_head` 를 직접 읽지 마라.** `FastRCNN` 은 proposal 을 밖에서 받는
+        #    것이 정의라 그 속성이 **아예 없다**(`AttributeError: 'FastRCNN' object has no
+        #    attribute 'rpn_head'`). 위에서 `rh` 로 안전하게 받아 뒀는데 여기 한 줄만
+        #    직접 읽고 있어서, 외부 proposal 경로를 다 갖춰 놓고도 이 줄에서 죽었다.
+        "num_proposals": int(getattr(rh, "num_proposals", 0) or 0),
         # groie: 러너가 레벨마다 RoIAlign 을 걸어 배치로 이어붙여야 한다(0 이면 평소대로).
         "groie_levels": len(getattr(ext, "featmap_strides", []) or [])
                         if type(ext).__name__ == "GenericRoIExtractor" else 0,
