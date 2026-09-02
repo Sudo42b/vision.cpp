@@ -473,9 +473,13 @@ void run_sam(cli_args const& args) {
 // 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
 // SZ 는 그래프가 구워진 입력 크기 — 원본 이미지 크기로 되돌리는 배율을 여기서 만든다.
 static void report_and_draw(image_data& image, std::vector<detection> const& dets,
-                            arch_task const& task, int SZ) {
-    const float sx = float(image.extent[0]) / float(SZ);
-    const float sy = float(image.extent[1]) / float(SZ);
+                            arch_task const& task, int SZ, letterbox_info const& lb) {
+    // letterbox 면 좌표계가 다르다 — 배율 하나에 패딩이 붙는다. 단순 배율로 되돌리면
+    // 비정사각 이미지에서 박스가 통째로 밀린다.
+    const float sx = task.letterbox ? 0.0f : float(image.extent[0]) / float(SZ);
+    const float sy = task.letterbox ? 0.0f : float(image.extent[1]) / float(SZ);
+    auto ux = [&](float v) { return task.letterbox ? (v - lb.pad_x) / lb.scale : v * sx; };
+    auto uy = [&](float v) { return task.letterbox ? (v - lb.pad_y) / lb.scale : v * sy; };
     printf("  %4s %9s %9s %9s %9s %8s  %s\n", "#", "x1", "y1", "x2", "y2", "score", "class");
     for (size_t i = 0; i < dets.size(); ++i) {
         detection const& d = dets[i];
@@ -483,9 +487,18 @@ static void report_and_draw(image_data& image, std::vector<detection> const& det
                                ? task.class_names[d.label].c_str()
                                : "";
         printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d %s\n", i,
-               d.x1 * sx, d.y1 * sy, d.x2 * sx, d.y2 * sy, d.score, d.label, name);
+               ux(d.x1), uy(d.y1), ux(d.x2), uy(d.y2), d.score, d.label, name);
     }
-    draw_detections(image_span(image), dets, task.class_names, sx, sy);
+    if (task.letterbox) {
+        // draw_detections 는 배율만 받는다 — 패딩을 뺀 좌표로 미리 옮겨 넣는다.
+        std::vector<detection> shifted = dets;
+        for (detection& d : shifted) {
+            d.x1 = ux(d.x1); d.y1 = uy(d.y1); d.x2 = ux(d.x2); d.y2 = uy(d.y2);
+        }
+        draw_detections(image_span(image), shifted, task.class_names, 1.0f, 1.0f);
+    } else {
+        draw_detections(image_span(image), dets, task.class_names, sx, sy);
+    }
 }
 
 void run_generated(cli_args const& args) {
@@ -513,9 +526,13 @@ void run_generated(cli_args const& args) {
     // **letterbox 가 아니라 단순 리사이즈**다 — 종횡비가 바뀌므로 박스를 되돌릴 때
     // x·y 배율을 따로 쓴다.
     const int nch = n_channels(image.format);
-    std::vector<float> input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0],
-                                               nch, IW, IH, task.mean.data(), task.stdv.data(),
-                                               /*to_rgb=*/false);
+    letterbox_info lb;
+    std::vector<float> input_cwhn =
+        task.letterbox
+            ? preprocess_letterbox(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
+                                   task.mean.data(), task.stdv.data(), /*to_rgb=*/false, &lb)
+            : preprocess(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
+                         task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
 
     compute_graph graph = compute_graph_init(262144);
     model_ref m(weights, graph);
@@ -616,7 +633,7 @@ void run_generated(cli_args const& args) {
         if ((int)dets.size() > task.max_det) {
             dets.resize(task.max_det);
         }
-        report_and_draw(image, dets, task, SZ);
+        report_and_draw(image, dets, task, SZ, lb);
         image_save(image, args.output);
         printf("-> %zu boxes drawn, saved to %s\n", dets.size(), args.output);
         return;
@@ -650,7 +667,7 @@ void run_generated(cli_args const& args) {
     std::vector<detection> dets =
         detect_yolo_dense(outs[bi].data(), outs[si].data(), feat_hw, dp);
 
-    report_and_draw(image, dets, task, SZ);
+    report_and_draw(image, dets, task, SZ, lb);
     image_save(image, args.output);
     printf("-> %zu boxes drawn, saved to %s\n", dets.size(), args.output);
 }

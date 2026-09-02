@@ -403,6 +403,21 @@ std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_
                               int dst_w, int dst_h, float const mean[3], float const std[3],
                               bool to_rgb, int* out_w = nullptr, int* out_h = nullptr);
 
+// letterbox: **비율을 유지**하고 남는 자리를 회색(114)으로 채운다. YOLO 계열이 이 규약이다.
+// ⚠️ **분할·자세 계열에 켜지 마라.** 그쪽은 비율을 뭉개는 직접 리사이즈가 맞다
+//    (mmseg cityscapes 512×1024 는 512×1024 로 그대로 넣는다).
+// ⚠️ 켜면 좌표계가 달라진다 — 되돌릴 때 `(좌표 - pad) / scale` 이다. 단순 배율로 되돌리면
+//    비정사각 이미지에서 박스가 밀린다(2026-09-02 실측: handbag 점수 0.87 vs 0.94).
+struct letterbox_info {
+    float scale = 1.0f;   // 원본 → 리사이즈 배율(가로·세로 동일)
+    float pad_x = 0.0f;   // 왼쪽 패딩(픽셀)
+    float pad_y = 0.0f;   // 위쪽 패딩(픽셀)
+};
+std::vector<float> preprocess_letterbox(uint8_t const* img, int img_h, int img_w, int img_c,
+                                        int dst_w, int dst_h, float const mean[3],
+                                        float const std[3], bool to_rgb, letterbox_info* info,
+                                        float pad_value = 114.0f);
+
 // 정사각 편의 오버로드 — 기존 호출부 호환.
 inline std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
                                      int out_size, float const mean[3], float const std[3],

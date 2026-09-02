@@ -201,6 +201,9 @@ def main():
             f"    t.input_size = {size};",
             f"    t.input_w = {iw};",
             f"    t.input_h = {ih};",
+            # YOLO 는 letterbox 를 전제한다. 직접 리사이즈로 넣으면 비정사각 이미지에서
+            # 종횡비가 뭉개져 점수가 흔들린다(2026-09-02 실측).
+            "    t.letterbox = true;",
         ] + norm
         if names:
             body.append("    t.class_names = {")
