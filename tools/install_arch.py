@@ -16,6 +16,7 @@
    객체를 링커가 버려 등록이 통째로 사라진다(`--whole-archive` 필요) → `DECISIONS.md`.
 """
 import argparse
+import json
 import os
 import re
 import shutil
@@ -145,21 +146,50 @@ def traced_size(out_dir, cls, fallback):
     return h, w
 
 
+
+def load_meta(out_dir, cls):
+    """`<cls>.meta.json` — g2c 가 컴파일 때 남긴 값. 없으면 빈 dict.
+
+    mean/std·검출기 종류·클래스 수는 **gguf 에 없다.** 컴파일 시점에는 원본 모델이
+    있으니 g2c 가 아는 것만 적어 둔다. 여기서 그것을 **기본값으로** 쓴다 —
+    **명령줄로 준 값이 언제나 이긴다.**
+    """
+    path = os.path.join(out_dir, cls + ".meta.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception as e:                       # noqa: BLE001
+        print(f"  ⚠ {path} 를 못 읽었다({e}) — 손으로 준 값만 쓴다")
+        return {}
+    known = ", ".join(k for k in ("mean", "std", "kind", "classes") if k in meta)
+    print(f"  · meta 사용: {path}" + (f" ({known})" if known else " (아는 값 없음)"))
+    return meta
+
+
+def _fmt3(v, fallback):
+    if not isinstance(v, (list, tuple)) or len(v) != 3:
+        return fallback
+    return ",".join(str(float(x)) for x in v)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", help="g2c --output 폴더")
     ap.add_argument("--name", help="클래스명(예: Yolo26m). 생략하면 .cpp 가 하나일 때 자동")
     ap.add_argument("--detect-yolo", action="store_true",
-                    help="YOLO dense 검출기로 등록(디코드+박스 그리기)")
+                    help="YOLO dense 검출기로 등록(디코드+박스 그리기). "
+                         "meta.json 에 kind=detect_yolo 면 안 줘도 켜진다")
     ap.add_argument("--classes", type=int, default=0, help="클래스 수(0=자동)")
-    ap.add_argument("--strides", default="8,16,32")
+    ap.add_argument("--strides", default=None)
     ap.add_argument("--size", type=int, default=0,
                     help="입력 해상도. 생략하면 생성 <Arch>.py 에서 읽는다")
-    ap.add_argument("--mean", default="0,0,0",
-                    help="전처리 평균(픽셀 0~255 기준). torchvision 분류기는 "
-                         "'123.675,116.28,103.53'")
-    ap.add_argument("--std", default="255,255,255",
-                    help="전처리 표준편차. torchvision 분류기는 '58.395,57.12,57.375'")
+    ap.add_argument("--mean", default=None,
+                    help="전처리 평균(픽셀 0~255 기준). 생략하면 meta.json → 없으면 0,0,0. "
+                         "torchvision 분류기는 '123.675,116.28,103.53'")
+    ap.add_argument("--std", default=None,
+                    help="전처리 표준편차. 생략하면 meta.json → 없으면 255,255,255")
     ap.add_argument("--score-thr", type=float, default=0.25)
     ap.add_argument("--nms", action="store_true",
                     help="NMS 를 건다(기본은 NMS-free — YOLOv10/26 은 one2one 이라 필요 없다)")
@@ -167,6 +197,16 @@ def main():
 
     cls, cpp, hdr = find_outputs(a.out_dir, a.name)
     arch = gguf_arch(a.out_dir, cls)
+
+    # 우선순위: 명령줄 > meta.json > 옛 기본값
+    meta = load_meta(a.out_dir, cls)
+    a.mean = a.mean or _fmt3(meta.get("mean"), "0,0,0")
+    a.std = a.std or _fmt3(meta.get("std"), "255,255,255")
+    a.strides = a.strides or ",".join(str(int(x)) for x in meta.get("strides", [8, 16, 32]))
+    if not a.detect_yolo and meta.get("kind") == "detect_yolo":
+        a.detect_yolo = True
+    if not a.classes and isinstance(meta.get("classes"), int):
+        a.classes = meta["classes"]
     os.makedirs(ARCH_DIR, exist_ok=True)
 
     # 생성 .cpp 는 `#include "<cls>.h"` 가 아니라 상대 include 를 쓸 수 있다 → 헤더 이름을 맞춘다.
