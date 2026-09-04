@@ -4,8 +4,8 @@
     vision-install Yolo26m
     vision-install Seg --mean 123.675,116.28,103.53 --std 58.395,57.12,57.375
 
-install_arch.py 로 등록한 뒤 CMake configure·build 까지 수행하고, 설치된 vision-cli 가
-있으면 그것도 새로 빌드한 것으로 덮어쓴다.
+install_arch.py 로 등록한 뒤 CMake configure·build 를 수행하고, cmake --install 로
+<prefix>/bin/vision-cli 를 갱신한다. 기본 prefix 는 ~/.local 이다.
 
 빌드가 필요한지는 여기서 판단하지 않는다. arch/*.cpp glob 에 CONFIGURE_DEPENDS 가 붙어
 있어 CMake 가 스스로 판단하고, 바뀐 것이 없으면 빌드 시스템이 넘어간다. 직접 판정하면
@@ -17,7 +17,6 @@ install_arch.py 로 등록한 뒤 CMake configure·build 까지 수행하고, �
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -83,9 +82,11 @@ def main(argv=None):
     ap.add_argument("--vision-dir", default=VCPP, help="vision.cpp 체크아웃")
     ap.add_argument("--build-dir", default=None, help="빌드 디렉터리 (기본: <vision-dir>/build)")
     ap.add_argument("--jobs", "-j", type=int, default=4, help="빌드 병렬 수")
-    ap.add_argument("--prefix", default=None,
-                    help="vision-cli 를 설치할 위치. 기본은 이미 설치되어 있는 자리를 갱신한다")
+    ap.add_argument("--prefix", default=os.path.expanduser("~/.local"),
+                    help="vision-cli 설치 위치 (기본: ~/.local). <prefix>/bin/vision-cli 가 된다")
     ap.add_argument("--no-build", action="store_true", help="등록만 하고 빌드하지 않는다")
+    ap.add_argument("--no-install", action="store_true",
+                    help="빌드만 하고 설치하지 않는다. 빌드 트리의 실행 파일을 직접 사용한다")
     args, extra = ap.parse_known_args(argv)
 
     build_dir = args.build_dir or os.path.join(args.vision_dir, "build")
@@ -109,17 +110,11 @@ def main(argv=None):
     print("등록: " + os.path.join(args.vision_dir, "src/visp/arch", args.name + ".cpp"))
     print("빌드: " + built)
 
-    installed = None
-    if args.prefix:
-        installed = os.path.join(args.prefix, "bin", "vision-cli")
-        os.makedirs(os.path.dirname(installed), exist_ok=True)
-    else:
-        found = shutil.which("vision-cli")
-        if found and os.path.abspath(found) != os.path.abspath(built):
-            installed = found
-    if installed:
-        shutil.copy2(built, installed)
-        print("갱신: " + installed)
+    if not args.no_install:
+        # 실행 파일만 복사하면 libvisioncpp.so 를 빌드 트리 경로로 계속 찾는다. cmake --install
+        # 은 라이브러리를 함께 두고 RPATH 를 설치 위치 기준으로 다시 쓴다.
+        run(["cmake", "--install", build_dir, "--prefix", args.prefix])
+        print("설치: " + os.path.join(args.prefix, "bin", "vision-cli"))
 
     if selected and args.name not in selected:
         joined = ";".join(selected)
