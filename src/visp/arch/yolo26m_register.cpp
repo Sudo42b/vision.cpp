@@ -21,6 +21,9 @@ visp::arch_task make_task() {
     t.nms_free = true;
     t.score_thr = 0.25f;
     t.input_size = 640;
+    t.input_w = 640;
+    t.input_h = 640;
+    t.letterbox = true;
     t.mean = {0.0f, 0.0f, 0.0f};
     t.stdv = {255.0f, 255.0f, 255.0f};
     t.class_names = {

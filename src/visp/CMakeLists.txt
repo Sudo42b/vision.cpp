@@ -6,6 +6,23 @@ add_library(visioncpp)
 # ⚠️ CONFIGURE_DEPENDS 가 있어야 파일을 추가했을 때 CMake 가 다시 돈다.
 file(GLOB VISP_ARCH_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/arch/*.cpp")
 
+# VISP_ARCHS 를 주면 그 이름만 빌드한다. 안 주면 위에서 모은 arch/ 전체 — 기본 동작은 그대로다.
+#   cmake -S . -B build -DVISP_ARCHS="Yolo26m;Seg"
+# ⚠️ 없는 이름은 여기서 멈춘다. 조용히 빠지면 「등록했는데 vision-cli 에 안 보인다」로
+#    나타나고, 원인이 이 목록이라 찾기 어렵다.
+if(VISP_ARCHS)
+  set(_visp_selected "")
+  foreach(_visp_arch IN LISTS VISP_ARCHS)
+    set(_visp_arch_src "${CMAKE_CURRENT_SOURCE_DIR}/arch/${_visp_arch}.cpp")
+    if(NOT EXISTS "${_visp_arch_src}")
+      message(FATAL_ERROR "VISP_ARCHS: arch/${_visp_arch}.cpp 가 없다")
+    endif()
+    list(APPEND _visp_selected "${_visp_arch_src}")
+  endforeach()
+  set(VISP_ARCH_SOURCES ${_visp_selected})
+  message(STATUS "visp: arch 선택 빌드 — ${VISP_ARCHS}")
+endif()
+
 target_sources(visioncpp PRIVATE
   ${VISP_ARCH_SOURCES}
   arch_registry.cpp
