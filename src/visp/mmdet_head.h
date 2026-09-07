@@ -1,7 +1,7 @@
-// mmdet 검출 head 를 **손코딩 C++ 부품**으로 조립한다. g2c 는 backbone/neck 만 그래프
-// 데이터(gguf graph.nodes)로 내보내고, head(공유 conv 타워 + 최종 cls/reg conv)는 여기서
-// 조립한다 — 교수님 지시("backbone 만 g2c, head 는 vision.cpp 부품"). decode+NMS 는
-// postproc.cpp(detect_anchor)가 담당하므로, 이 부품은 raw cls_score/bbox_pred 까지만 낸다.
+// mmdet 검출 head 를 손코딩 C++ 로 조립한다. g2c 는 backbone/neck 만 그래프 데이터(gguf
+// graph.nodes)로 내보내고, head(공유 conv 타워 + 최종 cls/reg conv)는 여기서 조립한다.
+// 디코드와 NMS 는 postproc.cpp 가 맡으므로 이 파일은 raw cls_score/bbox_pred 까지만 낸다.
+// 전체 실행 순서는 mmdet_run.cpp 가 엮는다.
 #pragma once
 
 #include "visp/ml.h"
@@ -12,7 +12,7 @@
 
 namespace visp {
 
-// 어느 조립기를 쓸지. 계열이 늘어도 러너는 안 바뀐다 — mmdet_head_forward 가 갈라준다.
+// 어느 조립기를 쓸지. 계열이 늘어도 부르는 쪽은 안 바뀐다 — mmdet_head_forward 가 갈라준다.
 enum class head_kind {
     anchor,     // RetinaNet · ATSS · PAA — cls/reg(+centerness) 타워, Delta 디코드
     // 타워 조립은 anchor 와 같다(레벨별 타워 + obj 갈래). **디코드가 다르다** — 코더가
@@ -43,7 +43,8 @@ enum class head_kind {
     ddq,              // + 층마다 NMS 로 중복 query 를 가린다 → **한 그래프로 못 돈다**
 };
 
-// head-conv 구조. 값은 mmdet_to_pt.py 가 <name>.postproc.h 에 굽는다(런타임 파일 없음).
+// head-conv 구조. 값은 mmdet_to_pt.py 가 <name>.postproc.h 에 C++ 상수로 굽고,
+// install_arch.py 가 그 헤더를 등록 단위에 실어 `arch_task::mmdet` 로 넣는다.
 //
 // 계열별로 함수를 따로 쓰지 않고 **플래그로 가른다** — RetinaNet/ATSS/PAA/FCOS/GFL 은
 // "타워 2개 + 출력 conv 몇 개"라는 뼈대가 같고 곁가지만 다르기 때문이다.
@@ -87,7 +88,7 @@ struct anchor_head_cfg {
     bool corner_emb = false;
     // CentripetalNet: emb 대신 guiding/centripetal shift 갈래 + DCNv1 feature adaption.
     bool corner_centripetal = false;
-    // 코너 디코드 파라미터(test_cfg). 조립기는 안 쓰고 러너가 디코더에 넘긴다.
+    // 코너 디코드 파라미터(test_cfg). 조립기는 안 쓰고 디코더로 넘어간다.
     int corner_topk = 100;
     int local_max_kernel = 3;
     float corner_distance_thr = 0.5f;
@@ -134,10 +135,8 @@ struct head_outputs {
     std::vector<std::pair<std::string, std::vector<tensor>>> extra;
 };
 
-// Everything the runner needs to run one detector.
-// Once an architecture is fixed these are constants, so mmdet_to_pt.py emits them as
-// mmdet_params() in <name>.postproc.h and they are compiled into the runner. Nothing is read
-// at run time.
+// 검출기 한 벌을 돌리는 데 필요한 값 전부. 아키텍처가 정해지면 상수이므로 mmdet_to_pt.py 가
+// <name>.postproc.h 에 굽고 실행 파일에 컴파일해 넣는다. 실행 시점에 읽는 파일은 없다.
 struct mmdet_cfg {
     anchor_head_cfg head;
     det_params det;
@@ -155,8 +154,8 @@ void anchor_head_forward(model_ref m, std::vector<tensor> const& feats,
                          std::vector<tensor>& cls_out, std::vector<tensor>& box_out);
 
 // VFNet head(distance + star-shaped deformable conv). anchor head 와 달리 offset 을
-// bbox_pred 로부터 손코딩으로 만들어 conv_2d_deform 에 넣는다("head 는 ggml 로 안 바뀐다"
-// → offset 생성이 자동변환 불가한 부분). 값은 <name>.vfhead.json 에서 읽는다.
+// bbox_pred 로부터 손코딩으로 만들어 conv_2d_deform 에 넣는다 — offset 생성이 자동 변환으로
+// 넘어가지 않는 부분이다.
 struct vfnet_head_cfg {
     int stacked_convs = 3;
     int feat_channels = 256;
@@ -168,7 +167,7 @@ struct vfnet_head_cfg {
 };
 
 // FPN features(레벨별, cwhn) → 레벨별 raw cls_score / bbox_pred_refine(cwhn, inference 모드).
-//  · dcn_base : {18,1,1,1} cwhn — dcn_base_offset(고정 3x3 그리드), 런타임이 값을 채워 넘김.
+//  · dcn_base : {18,1,1,1} cwhn — dcn_base_offset(고정 3x3 그리드). 부르는 쪽이 값을 채운다.
 //  · cls_out[l] : ne={num_classes, w, h, 1},  box_out[l] : ne={4, w, h, 1}
 // 가중치는 모든 레벨 공유. offset = star_dcn_offset(bbox_pred) - dcn_base 를 그래프로 조립.
 void vfnet_head_forward(model_ref m, std::vector<tensor> const& feats,
@@ -176,7 +175,7 @@ void vfnet_head_forward(model_ref m, std::vector<tensor> const& feats,
                         std::vector<tensor>& cls_out, std::vector<tensor>& box_out);
 
 // RepPoints. 점 9개를 예측하고 그 집합을 bbox 로 바꾼다(transform_method='moment').
-//  · dcn_base : {18,1,1,1} — dcn_base_offset(고정 3x3 그리드). 런타임이 값을 채운다.
+//  · dcn_base : {18,1,1,1} — dcn_base_offset(고정 3x3 그리드). 부르는 쪽이 값을 채운다.
 // 두 단계다: init 로 점을 놓고, 그 점을 offset 삼아 deform conv 로 refine 한다.
 void reppoints_head_forward(model_ref m, std::vector<tensor> const& feats,
                             anchor_head_cfg const& c, tensor dcn_base,
@@ -210,7 +209,7 @@ void dino_head_forward(model_ref m, std::vector<tensor> const& feats,
 // **이 계열만 한 그래프로 못 돈다.** decoder 층마다 `batched_nms` 로 중복 query 를 골라내
 // 다음 층의 self-attention 마스크를 만드는데(추론 경로에서도), NMS 는 반복 횟수와 분기가
 // 실행 중 값에 따라 정해지는 탐욕 알고리즘이라 정적 그래프로 표현할 수 없다.
-// → 조립기를 **토막**으로 나누고 러너가 패스 사이에서 호스트 NMS 를 돌린다.
+// → 조립기를 **토막**으로 나누고 mmdet_run 이 패스 사이에서 호스트 NMS 를 돌린다.
 //   패스 0 : ddq_encode_forward  → 호스트 NMS → query 900개
 //   패스 i : ddq_layer_forward   → 호스트 NMS → 다음 층 마스크
 struct ddq_stage {

@@ -16,6 +16,7 @@
 //    static 으로 바꾸려면 `--whole-archive` 가 필요하다 → `DECISIONS.md`.
 #pragma once
 
+#include "visp/mmdet_head.h"
 #include "visp/ml.h"
 
 #include <array>
@@ -32,7 +33,7 @@ using arch_forward_fn = tensor (*)(model_ref, tensor, model_file const&);
 
 // 그래프 뒤에 무엇을 해야 하는지. **gguf 에 이 정보가 없다** — g2c 가 안 쓴다.
 // g2c 를 고치지 않기로 했으므로 `tools/install_arch.py` 가 모델을 보고 등록 TU 에 박는다.
-enum class arch_kind { raw, detect_yolo };
+enum class arch_kind { raw, detect_yolo, detect_mmdet };
 
 struct arch_task {
     arch_kind kind = arch_kind::raw;
@@ -64,10 +65,18 @@ struct arch_task {
     //    크래시 없이 값만 틀린다(ResNet-18 실측 상대 L1 5.1e-02, argmax 는 우연히 일치).
     std::array<float, 3> mean{0.0f, 0.0f, 0.0f};
     std::array<float, 3> stdv{255.0f, 255.0f, 255.0f};
+    // 채널 순서를 뒤집는다. mmdet 설정의 `to_rgb` 가 그대로 온다 — 안 뒤집으면 크래시 없이
+    // 값만 틀린다.
+    bool to_rgb = false;
     // 그래프 출력 중 몇 번이 박스/점수인지. 생성 모델마다 다르다(one2many 분기가 앞에 올 수 있다).
     int box_out = -1;              // -1 = 자동(뒤에서 두 번째 4채널 출력)
     int score_out = -1;
     std::vector<std::string> class_names;   // 비면 "class N"
+
+    // detect_mmdet 전용. head 조립과 디코드에 필요한 값 전부가 여기 들어간다.
+    // ⚠️ 옛 경로는 이 값을 `<Arch>.postproc.h` 로 러너에 컴파일해 넣었고, 모델마다 실행
+    //    파일이 갈렸다. 등록 단위로 옮겨 vision-cli 하나가 여러 검출기를 돌린다.
+    mmdet_cfg mmdet;
 };
 
 struct arch_entry {

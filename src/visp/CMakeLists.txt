@@ -32,6 +32,8 @@ target_sources(visioncpp PRIVATE
   ml.cpp
   nn.cpp
   platform.cpp
+  mmdet_head.cpp
+  mmdet_run.cpp
   postproc.cpp
   tracker.cpp
   vision.cpp
