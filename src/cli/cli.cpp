@@ -367,6 +367,10 @@ struct sched_run {
     sched_run(ggml_backend_sched_t s, ggml_backend_t c) : sched(s), cpu(c) {}
     sched_run(sched_run const&) = delete;
     sched_run& operator=(sched_run const&) = delete;
+    sched_run(sched_run&& o) noexcept : sched(o.sched), cpu(o.cpu) {
+        o.sched = nullptr;
+        o.cpu = nullptr;
+    }
     ~sched_run() {
         if (sched) {
             ggml_backend_sched_free(sched);
@@ -377,49 +381,51 @@ struct sched_run {
     }
 };
 
-sched_run compute_timed_split(compute_graph& g, backend_device const& b, tensor input,
-                              span<const float> input_data) {
+// 그래프를 할당한다. 장치 백엔드로 실행할 때는 ggml_backend_sched 로 할당해 op 단위로
+// 백엔드를 고를 수 있게 한다. 장치에 커널이 없는 op(pool_2d·sub·sqrt·div·max 등)는
+// CPU 가 맡는다. 폴백이 없으면 그 노드가 실패한 채로 값을 다음 노드에 넘겨 결과가
+// 조용히 틀린다.
+//
+// 반환한 sched_run 은 출력을 다 읽을 때까지 살려 둔다. 출력 텐서가 sched 버퍼 안에 있다.
+sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
     if (b.type() == backend_type::cpu) {
         compute_graph_allocate(g, b);
-        transfer_to_backend(input, input_data);
-        compute_timed(g, b);
         return sched_run{};
     }
     ggml_backend_t b_dev = (ggml_backend_t)b;
     ggml_backend_t b_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-    ASSERT(b_cpu != nullptr, "CPU backend unavailable for fallback");
+    if (!b_cpu) {
+        throw except("CPU backend unavailable for fallback");
+    }
     ggml_backend_t backs[2] = {b_dev, b_cpu};
     ggml_cgraph* cg = g.graph;
-    ggml_backend_sched_t sched =
-        ggml_backend_sched_new(backs, nullptr, 2, ggml_graph_size(cg), false, true);
+    sched_run hold(ggml_backend_sched_new(backs, nullptr, 2, ggml_graph_size(cg), false, true),
+                   b_cpu);
 
-    // sched 를 켜면 장치의 MUL 이 깨진다(브로드캐스트 경로). SOFT_MAX 와 브로드캐스트
-    // MUL/ADD 는 CPU 로 못 박는다. G2C_NPU_NOPIN_BCAST 로 끄면 브로드캐스트도 장치로 간다.
+    // sched 를 켜면 장치의 MUL 이 브로드캐스트 경로에서 깨진다. SOFT_MAX 와 모양이 다른
+    // MUL/ADD 는 CPU 로 못 박는다. G2C_NPU_NOPIN_BCAST 로 이 핀을 끌 수 있다.
     bool no_pin_bcast = std::getenv("G2C_NPU_NOPIN_BCAST") != nullptr;
     int pinned = 0;
     for (int i = 0; i < ggml_graph_n_nodes(cg); ++i) {
         ggml_tensor* node = ggml_graph_node(cg, i);
         bool to_cpu = node->op == GGML_OP_SOFT_MAX;
         if (!to_cpu && !no_pin_bcast && (node->op == GGML_OP_MUL || node->op == GGML_OP_ADD) &&
-            node->src[1] && ggml_nelements(node->src[1]) < ggml_nelements(node->src[0])) {
+            node->src[0] && node->src[1] && !ggml_are_same_shape(node->src[0], node->src[1])) {
             to_cpu = true;
         }
         if (to_cpu) {
-            ggml_backend_sched_set_tensor_backend(sched, node, b_cpu);
+            ggml_backend_sched_set_tensor_backend(hold.sched, node, b_cpu);
             ++pinned;
         }
     }
     printf("- CPU-pinned (SOFT_MAX, broadcast MUL/ADD): %d nodes\n", pinned);
 
-    if (!ggml_backend_sched_alloc_graph(sched, cg)) {
-        ggml_backend_sched_free(sched);
-        ggml_backend_free(b_cpu);
+    if (!ggml_backend_sched_alloc_graph(hold.sched, cg)) {
         throw except("ggml_backend_sched_alloc_graph failed");
     }
-
     int n_dev = 0, n_cpu = 0, n_nodes = ggml_graph_n_nodes(cg);
     for (int i = 0; i < n_nodes; ++i) {
-        ggml_backend_t sel = ggml_backend_sched_get_tensor_backend(sched, ggml_graph_node(cg, i));
+        ggml_backend_t sel = ggml_backend_sched_get_tensor_backend(hold.sched, ggml_graph_node(cg, i));
         if (sel == b_dev) {
             ++n_dev;
         } else if (sel == b_cpu) {
@@ -433,21 +439,24 @@ sched_run compute_timed_split(compute_graph& g, backend_device const& b, tensor 
         transfer_to_backend(buf);
     }
     g.buffers.clear();
-    transfer_to_backend(input, input_data);
+    return hold;
+}
 
+// graph_allocate_split 로 할당한 그래프를 실행한다. 입력 전송은 할당과 실행 사이에 한다.
+void compute_timed_split(compute_graph const& g, backend_device const& b, sched_run const& r) {
+    if (!r.sched) {
+        compute_timed(g, b);
+        return;
+    }
     timer t;
     printf("Running inference... ");
-    enum ggml_status st = ggml_backend_sched_graph_compute(sched, cg);
+    enum ggml_status st = ggml_backend_sched_graph_compute(r.sched, g.graph);
     printf("complete (%s)\n", t.elapsed_str());
     if (st != GGML_STATUS_SUCCESS) {
-        ggml_backend_sched_free(sched);
-        ggml_backend_free(b_cpu);
         throw except("graph compute failed (status={})", (int)st);
     }
-    // 출력 텐서가 sched 버퍼 안에 있으므로 여기서 해제하면 호출한 쪽이 해제된 메모리를 읽는다.
-    // 해제는 호출한 쪽이 결과를 다 읽은 뒤에 한다.
-    return sched_run{sched, b_cpu};
 }
+
 
 void composite_image_with_mask(image_view image, image_view mask, char const* output_path) {
     if (!output_path) {
@@ -541,11 +550,11 @@ void run_sam(cli_args const& args) {
 
     sam_prediction output = sam_predict_mask(m, image_embed, prompt_embed);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(image_tensor, image_data_);
     transfer_to_backend(point_tensor, span(prompt_data.v, 4));
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     timer t_post;
     printf("Postprocessing output... ");
@@ -654,9 +663,10 @@ void run_generated(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, IW, IH, 1}, "x");
     ggml_build_forward_expand(graph, input);
     ggml_build_forward_expand(graph, e->forward(m, input, file));
-    // 반환값은 출력을 다 읽을 때까지 살아 있어야 한다(sched 버퍼 수명).
-    sched_run run_hold = compute_timed_split(
-        graph, backend, input, std::span<const float>(input_cwhn.data(), input_cwhn.size()));
+    // run_hold 는 출력을 다 읽을 때까지 살아 있어야 한다(sched 버퍼 수명).
+    sched_run run_hold = graph_allocate_split(graph, backend);
+    transfer_to_backend(input, std::span<const float>(input_cwhn.data(), input_cwhn.size()));
+    compute_timed_split(graph, backend, run_hold);
 
     // 등록된 out_0.. 를 전부 읽는다. **개수를 강제하지 않는다** — 계열마다 분기 수가 다르다
     // (YOLO26 은 one2many/one2one 두 벌을 낸다).
@@ -810,13 +820,13 @@ void run_birefnet(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
     tensor output = birefnet_predict(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(input, input_data);
     for (tensor_data const& buf : buffers) {
         transfer_to_backend(buf);
     }
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     tensor_data mask_data = transfer_from_backend(output);
     image_view mask_output(extent, mask_data.as_f32());
@@ -852,10 +862,10 @@ void run_depth_anything(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
     tensor output = depthany_predict(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(input, input_data);
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     tensor_data output_data = transfer_from_backend(output);
     image_data depth_raw = depthany_process_output(output_data.as_f32(), image.extent, params);
@@ -889,10 +899,10 @@ void run_migan(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
     tensor output = migan_generate(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(input, input_data);
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     tensor_data output_data = transfer_from_backend(output);
     image_data output_image = migan_process_output(output_data.as_f32(), image.extent, params);
@@ -931,7 +941,7 @@ void run_esrgan(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
     tensor output = esrgan_generate(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
 
     timer total;
     printf(
@@ -946,7 +956,14 @@ void run_esrgan(cli_args const& args) {
         image_u8_to_f32(image, input_tile, f32x4(0), f32x4(1), tile_offset);
         transfer_to_backend(input, input_tile);
 
-        compute(graph, backend);
+        if (run_hold.sched) {
+            enum ggml_status st = ggml_backend_sched_graph_compute(run_hold.sched, graph.graph);
+            if (st != GGML_STATUS_SUCCESS) {
+                throw except("graph compute failed (status={})", (int)st);
+            }
+        } else {
+            compute(graph, backend);
+        }
 
         transfer_from_backend(output, output_tile);
         tile_merge(output_tile, output_image, tile_coord, tiles_out);
