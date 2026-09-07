@@ -2,6 +2,7 @@
 #include "util/string.h"
 #include "visp/arch_registry.h"
 #include "visp/draw.h"
+#include "visp/mmdet_run.h"
 #include "visp/postproc.h"
 #include "visp/vision.h"
 
@@ -321,7 +322,11 @@ std::tuple<model_file, model_weights> load_model_weights(
     if (preferred_layout == tensor_data_layout::unknown) {
         preferred_layout = file.tensor_layout();
     }
-    model_transfer(file, weights, dev, dev.preferred_float_type(), preferred_layout);
+    // GTX(NPU) 백엔드는 f16 을 선호한다고 답하지만, 가중치를 f16 으로 올리면 f32 활성과
+    // 섞여 값이 어긋난다. 장치는 내부에서 f16 으로 변환하므로 여기서는 f32 로 통일한다.
+    ggml_type transfer_type = dev.type() == backend_type::cpu ? dev.preferred_float_type()
+                                                              : GGML_TYPE_F32;
+    model_transfer(file, weights, dev, transfer_type, preferred_layout);
     printf("done (%s)\n", t.elapsed_str());
 
     ggml_type ftype = file.float_type();
@@ -345,6 +350,103 @@ void compute_timed(compute_graph const& g, backend_device const& b) {
     printf("Running inference... ");
     compute(g, b);
     printf("complete (%s)\n", t.elapsed_str());
+}
+
+// 장치에 커널이 없는 op(pool_2d·sub·sqrt·div·max 등)를 CPU 로 내려보낸다.
+// ggml_backend_sched 가 op 단위로 백엔드를 고르므로 장치가 못 받는 노드만 CPU 가 맡는다.
+// 폴백이 없으면 그 노드가 실패한 채로 값을 다음 노드에 넘겨 결과가 조용히 틀린다.
+// CPU 백엔드로 실행할 때는 갈라 보낼 곳이 없으므로 기존 경로를 그대로 쓴다.
+// 입력 전송은 그래프 할당 뒤에 해야 하므로 이 함수 안에서 함께 처리한다.
+// sched 와 폴백 CPU 백엔드의 수명을 호출한 쪽으로 넘긴다. 출력 텐서가 sched 버퍼에 있어
+// 결과를 다 읽기 전에 해제하면 안 된다.
+struct sched_run {
+    ggml_backend_sched_t sched = nullptr;
+    ggml_backend_t cpu = nullptr;
+
+    sched_run() = default;
+    sched_run(ggml_backend_sched_t s, ggml_backend_t c) : sched(s), cpu(c) {}
+    sched_run(sched_run const&) = delete;
+    sched_run& operator=(sched_run const&) = delete;
+    ~sched_run() {
+        if (sched) {
+            ggml_backend_sched_free(sched);
+        }
+        if (cpu) {
+            ggml_backend_free(cpu);
+        }
+    }
+};
+
+sched_run compute_timed_split(compute_graph& g, backend_device const& b, tensor input,
+                              span<const float> input_data) {
+    if (b.type() == backend_type::cpu) {
+        compute_graph_allocate(g, b);
+        transfer_to_backend(input, input_data);
+        compute_timed(g, b);
+        return sched_run{};
+    }
+    ggml_backend_t b_dev = (ggml_backend_t)b;
+    ggml_backend_t b_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    ASSERT(b_cpu != nullptr, "CPU backend unavailable for fallback");
+    ggml_backend_t backs[2] = {b_dev, b_cpu};
+    ggml_cgraph* cg = g.graph;
+    ggml_backend_sched_t sched =
+        ggml_backend_sched_new(backs, nullptr, 2, ggml_graph_size(cg), false, true);
+
+    // sched 를 켜면 장치의 MUL 이 깨진다(브로드캐스트 경로). SOFT_MAX 와 브로드캐스트
+    // MUL/ADD 는 CPU 로 못 박는다. G2C_NPU_NOPIN_BCAST 로 끄면 브로드캐스트도 장치로 간다.
+    bool no_pin_bcast = std::getenv("G2C_NPU_NOPIN_BCAST") != nullptr;
+    int pinned = 0;
+    for (int i = 0; i < ggml_graph_n_nodes(cg); ++i) {
+        ggml_tensor* node = ggml_graph_node(cg, i);
+        bool to_cpu = node->op == GGML_OP_SOFT_MAX;
+        if (!to_cpu && !no_pin_bcast && (node->op == GGML_OP_MUL || node->op == GGML_OP_ADD) &&
+            node->src[1] && ggml_nelements(node->src[1]) < ggml_nelements(node->src[0])) {
+            to_cpu = true;
+        }
+        if (to_cpu) {
+            ggml_backend_sched_set_tensor_backend(sched, node, b_cpu);
+            ++pinned;
+        }
+    }
+    printf("- CPU-pinned (SOFT_MAX, broadcast MUL/ADD): %d nodes\n", pinned);
+
+    if (!ggml_backend_sched_alloc_graph(sched, cg)) {
+        ggml_backend_sched_free(sched);
+        ggml_backend_free(b_cpu);
+        throw except("ggml_backend_sched_alloc_graph failed");
+    }
+
+    int n_dev = 0, n_cpu = 0, n_nodes = ggml_graph_n_nodes(cg);
+    for (int i = 0; i < n_nodes; ++i) {
+        ggml_backend_t sel = ggml_backend_sched_get_tensor_backend(sched, ggml_graph_node(cg, i));
+        if (sel == b_dev) {
+            ++n_dev;
+        } else if (sel == b_cpu) {
+            ++n_cpu;
+        }
+    }
+    printf("- sched routing: %s=%d, CPU=%d / %d nodes\n", ggml_backend_name(b_dev), n_dev, n_cpu,
+           n_nodes);
+
+    for (tensor_data const& buf : g.buffers) {
+        transfer_to_backend(buf);
+    }
+    g.buffers.clear();
+    transfer_to_backend(input, input_data);
+
+    timer t;
+    printf("Running inference... ");
+    enum ggml_status st = ggml_backend_sched_graph_compute(sched, cg);
+    printf("complete (%s)\n", t.elapsed_str());
+    if (st != GGML_STATUS_SUCCESS) {
+        ggml_backend_sched_free(sched);
+        ggml_backend_free(b_cpu);
+        throw except("graph compute failed (status={})", (int)st);
+    }
+    // 출력 텐서가 sched 버퍼 안에 있으므로 여기서 해제하면 호출한 쪽이 해제된 메모리를 읽는다.
+    // 해제는 호출한 쪽이 결과를 다 읽은 뒤에 한다.
+    return sched_run{sched, b_cpu};
 }
 
 void composite_image_with_mask(image_view image, image_view mask, char const* output_path) {
@@ -530,18 +632,31 @@ void run_generated(cli_args const& args) {
     std::vector<float> input_cwhn =
         task.letterbox
             ? preprocess_letterbox(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
-                                   task.mean.data(), task.stdv.data(), /*to_rgb=*/false, &lb)
+                                   task.mean.data(), task.stdv.data(), task.to_rgb, &lb)
             : preprocess(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
-                         task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
+                         task.mean.data(), task.stdv.data(), task.to_rgb);
+
+    // mmdet 검출기는 백본 뒤에 C++ 로 조립하는 head 가 붙고, DDQ 는 층 사이에 호스트 NMS 가
+    // 끼어 그래프가 여러 벌로 갈린다. 그 경로 전체를 라이브러리가 맡는다.
+    if (task.kind == arch_kind::detect_mmdet) {
+        std::vector<detection> dets =
+            mmdet_run(backend, weights, file, e->forward, task.mmdet,
+                      std::span<const float>(input_cwhn.data(), input_cwhn.size()), IW, IH);
+        printf("- detections: %zu\n", dets.size());
+        report_and_draw(image, dets, task, SZ, lb);
+        image_save(image, args.output);
+        printf("-> %s\n", args.output);
+        return;
+    }
 
     compute_graph graph = compute_graph_init(262144);
     model_ref m(weights, graph);
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, IW, IH, 1}, "x");
     ggml_build_forward_expand(graph, input);
     ggml_build_forward_expand(graph, e->forward(m, input, file));
-    compute_graph_allocate(graph, backend);
-    transfer_to_backend(input, std::span<const float>(input_cwhn.data(), input_cwhn.size()));
-    compute_timed(graph, backend);
+    // 반환값은 출력을 다 읽을 때까지 살아 있어야 한다(sched 버퍼 수명).
+    sched_run run_hold = compute_timed_split(
+        graph, backend, input, std::span<const float>(input_cwhn.data(), input_cwhn.size()));
 
     // 등록된 out_0.. 를 전부 읽는다. **개수를 강제하지 않는다** — 계열마다 분기 수가 다르다
     // (YOLO26 은 one2many/one2one 두 벌을 낸다).
