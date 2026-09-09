@@ -1,3 +1,4 @@
+#include <cstdlib>
 // gtx_smoke.cpp — NPU 경로를 **계층별로** 최소 비용 검증한다.
 //
 // 모델 전체(LPRNet ~1시간, ISS)를 돌려 실패 지점을 찾는 건 너무 비싸다. 아래 사다리는
@@ -83,6 +84,50 @@ int main(int argc, char** argv) {
         for (int64_t i = 0; i < N; ++i) w = std::fmax(w, std::fabs(got[i] - (ha[i] + hb[i])));
         char d[64]; snprintf(d, sizeof d, "max|Δ|=%.3g (fp16 오차 허용)", w);
         step("L3 compute", w < 0.5, d);
+    }
+
+    // ── L3b: UNARY(ReLU) ─────────────────────────────────────────────
+    // ⚠️ **L3 는 ADD 하나만 돌린다.** 그래서 다른 커널이 틀려도 ALL PASS 가 나온다 —
+    //    실측(2026-09-09): ResNet-18 이 장치에서 argmax 282 → 228 로 틀렸는데
+    //    스모크는 통과했다. 원인은 ReLU 였다. 커널마다 한 단계씩 둔다.
+    {
+        ggml_init_params ip3 = ip;
+        ggml_context* c3 = ggml_init(ip3);
+        // 모델의 relu 는 4차원 WHCN 이다. 1차원만 재면 모양·stride 취급을 못 본다.
+        const char* shp = std::getenv("GTX_SMOKE_RELU_4D");
+        ggml_tensor* x = shp ? ggml_new_tensor_4d(c3, GGML_TYPE_F32, 56, 56, 64, 1)
+                             : ggml_new_tensor_1d(c3, GGML_TYPE_F32, N);
+        ggml_set_input(x);
+        const int64_t NR = ggml_nelements(x);
+        ggml_tensor* r = ggml_relu(c3, x);
+        ggml_set_output(r);
+        ggml_cgraph* g3 = ggml_new_graph_custom(c3, 256, false);
+        ggml_build_forward_expand(g3, r);
+        ggml_backend_buffer_t rbuf = ggml_backend_alloc_ctx_tensors(c3, gtx);
+        std::vector<float> hx(NR);
+        for (int64_t i = 0; i < NR; ++i) hx[i] = float((i % 41) - 20);  // 음수·0·양수를 고루
+        ggml_backend_tensor_set(x, hx.data(), 0, NR * sizeof(float));
+        enum ggml_status st3 = ggml_backend_graph_compute(gtx, g3);
+        if (st3 != GGML_STATUS_SUCCESS) {
+            step("L3b relu", false, "graph_compute 실패(status=" + std::to_string((int)st3) + ")");
+        } else {
+            std::vector<float> got(NR);
+            ggml_backend_tensor_get(r, got.data(), 0, NR * sizeof(float));
+            double w = 0;
+            int64_t bad = -1;
+            for (int64_t i = 0; i < NR; ++i) {
+                double want = hx[i] > 0 ? hx[i] : 0.0;
+                double diff = std::fabs(got[i] - want);
+                if (diff > w) { w = diff; bad = i; }
+            }
+            char d[128];
+            snprintf(d, sizeof d, "max|Δ|=%.3g @i=%lld (got %.3g, want %.3g)", w,
+                     (long long)bad, bad >= 0 ? got[bad] : 0.0,
+                     bad >= 0 ? (hx[bad] > 0 ? hx[bad] : 0.0) : 0.0);
+            step("L3b relu", w < 0.5, d);
+        }
+        ggml_backend_buffer_free(rbuf);
+        ggml_free(c3);
     }
 
     // ── L4: CPY/CONT 경로 (LPRNet 이 죽은 지점) ───────────────────────

@@ -406,6 +406,29 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
             printf(" %s=%d", name.c_str(), n);
         }
         printf("\n");
+        // 장치의 supports_op 은 **축마다** ne <= UINT16_MAX 만 본다. 축이 다 작아도
+        // 총 원소가 65535 를 넘는 텐서는 그 검사를 통과한다. 몇 개인지 센다.
+        {
+            int over = 0, total = 0;
+            int64_t worst = 0;
+            std::map<std::string, int> over_by_op;
+            for (int i = 0; i < ggml_graph_n_nodes(g.graph); ++i) {
+                ggml_tensor* n = ggml_graph_node(g.graph, i);
+                ++total;
+                int64_t ne = ggml_nelements(n);
+                if (ne > 65535) {
+                    ++over;
+                    ++over_by_op[ggml_op_name(n->op)];
+                    worst = std::max(worst, ne);
+                }
+            }
+            printf("- 원소 65535 초과 노드: %d / %d (최대 %lld):", over, total,
+                   (long long)worst);
+            for (auto const& [name, n] : over_by_op) {
+                printf(" %s=%d", name.c_str(), n);
+            }
+            printf("\n");
+        }
         // stride 까지 찍는다. 장치의 conv 문지기는 nb[0] 만 보므로, 바깥 축이 뒤섞인
         // 텐서도 통과한다. 그 상황인지는 nb 를 눈으로 봐야 갈린다.
         for (int i = 0; i < ggml_graph_n_nodes(g.graph); ++i) {
@@ -443,6 +466,14 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
     // MUL/ADD 는 CPU 로 못 박는다. G2C_NPU_NOPIN_BCAST 로 이 핀을 끌 수 있다.
     bool no_pin_bcast = std::getenv("G2C_NPU_NOPIN_BCAST") != nullptr;
     char const* pin_ops = std::getenv("G2C_NPU_PIN_OPS");
+    int64_t pin_big = 0;
+    if (char const* s_big = std::getenv("G2C_NPU_PIN_BIG")) {
+        pin_big = std::atoll(s_big);
+    }
+    // 장치에 **남길** op 만 지정한다. G2C_NPU_PIN_OPS 의 반대다.
+    // sched 는 전송을 줄이려고 그래프를 재분할하므로, op 하나를 CPU 로 빼면 이웃이 함께
+    // 따라간다. 그래서 "이것만 장치"를 표현하려면 나머지를 전부 못박아야 한다.
+    char const* only_ops = std::getenv("G2C_NPU_ONLY_OPS");
     // 같은 op 이 여럿일 때 어느 것이 틀렸는지 이분으로 좁힌다. 노드 번호를 쉼표로 잇는다.
     // 번호는 G2C_NPU_OP_CENSUS=1 이 찍는 conv[i] 의 i 와 같다.
     std::vector<int> pin_nodes;
@@ -468,6 +499,38 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
         bool to_cpu = node->op == GGML_OP_SOFT_MAX;
         if (!to_cpu && std::find(pin_nodes.begin(), pin_nodes.end(), i) != pin_nodes.end()) {
             to_cpu = true;
+        }
+        // 원소 수가 이 값을 넘는 노드를 CPU 로 뺀다. 장치의 계산이 크기에서 깨지는지
+        // 확인할 때 쓴다 — `gtx_smoke` 는 65536 부터 graph_compute 가 실패한다.
+        if (!to_cpu && pin_big > 0 && ggml_nelements(node) > pin_big) {
+            to_cpu = true;
+        }
+        // 뷰 계열은 계산이 없고 부모의 버퍼를 그대로 쓴다. 여기에 백엔드를 못박으면
+        // sched 가 분할을 못 만들고 죽는다(실측: 코어 덤프). 그대로 둔다.
+        bool is_view = node->op == GGML_OP_RESHAPE || node->op == GGML_OP_VIEW ||
+                       node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE ||
+                       node->op == GGML_OP_NONE;
+        if (!to_cpu && only_ops != nullptr && !is_view) {
+            std::string want = ggml_op_name(node->op);
+            for (auto& c : want) c = (char) std::toupper((unsigned char) c);
+            std::string list = only_ops;
+            for (auto& c : list) c = (char) std::toupper((unsigned char) c);
+            bool keep = false;
+            size_t at = list.find(want);
+            while (at != std::string::npos) {
+                bool lb = at == 0 || list[at - 1] == ',';
+                size_t end = at + want.size();
+                bool rb = end == list.size() || list[end] == ',';
+                if (lb && rb) { keep = true; break; }
+                at = list.find(want, at + 1);
+            }
+            if (!keep) {
+                to_cpu = true;
+            } else {
+                // 남길 op 은 **장치로 명시 배정**한다. 안 하면 이웃이 전부 CPU 일 때
+                // sched 가 지역성을 우선해 이것도 CPU 로 데려간다(실측).
+                ggml_backend_sched_set_tensor_backend(hold.sched, node, b_dev);
+            }
         }
         if (!to_cpu && !no_pin_bcast && (node->op == GGML_OP_MUL || node->op == GGML_OP_ADD) &&
             node->src[0] && node->src[1] && !ggml_are_same_shape(node->src[0], node->src[1])) {
@@ -503,13 +566,27 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
         throw except("ggml_backend_sched_alloc_graph failed");
     }
     int n_dev = 0, n_cpu = 0, n_nodes = ggml_graph_n_nodes(cg);
+    std::map<std::string, int> dev_ops;
+    int64_t dev_max_ne = 0;
     for (int i = 0; i < n_nodes; ++i) {
-        ggml_backend_t sel = ggml_backend_sched_get_tensor_backend(hold.sched, ggml_graph_node(cg, i));
+        ggml_tensor* nd = ggml_graph_node(cg, i);
+        ggml_backend_t sel = ggml_backend_sched_get_tensor_backend(hold.sched, nd);
         if (sel == b_dev) {
             ++n_dev;
+            ++dev_ops[ggml_op_name(nd->op)];
+            dev_max_ne = std::max(dev_max_ne, ggml_nelements(nd));
         } else if (sel == b_cpu) {
             ++n_cpu;
         }
+    }
+    if (std::getenv("G2C_NPU_OP_CENSUS")) {
+        // 장치가 실제로 맡은 op 과 그중 가장 큰 텐서. 값이 맞는 구성과 틀리는 구성이
+        // 무엇으로 갈리는지 보려면 개수가 아니라 **무엇을 맡았는지**를 봐야 한다.
+        printf("- 장치가 맡은 op (최대 원소 %lld):", (long long)dev_max_ne);
+        for (auto const& [name, n] : dev_ops) {
+            printf(" %s=%d", name.c_str(), n);
+        }
+        printf("\n");
     }
     printf("- sched routing: %s=%d, CPU=%d / %d nodes\n", ggml_backend_name(b_dev), n_dev, n_cpu,
            n_nodes);
