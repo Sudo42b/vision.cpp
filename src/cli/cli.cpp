@@ -1,4 +1,5 @@
 #include <cctype>
+#include <map>
 #include <string>
 
 #include "util/math.h"
@@ -391,6 +392,21 @@ struct sched_run {
 //
 // 반환한 sched_run 은 출력을 다 읽을 때까지 살려 둔다. 출력 텐서가 sched 버퍼 안에 있다.
 sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
+    // 백엔드마다 build flag 가 달라 **같은 모델이라도 그래프 모양이 달라진다.**
+    // CPU 와 장치의 값을 댈 때 그래프가 같은지 먼저 확인하지 않으면, 커널이 틀린 것과
+    // 그래프가 다른 것을 구별할 수 없다. G2C_NPU_OP_CENSUS=1 로 op 분포를 찍는다.
+    if (std::getenv("G2C_NPU_OP_CENSUS")) {
+        std::map<std::string, int> census;
+        for (int i = 0; i < ggml_graph_n_nodes(g.graph); ++i) {
+            ++census[ggml_op_name(ggml_graph_node(g.graph, i)->op)];
+        }
+        printf("- op census (%s, %d nodes):", b.type() == backend_type::cpu ? "cpu" : "dev",
+               ggml_graph_n_nodes(g.graph));
+        for (auto const& [name, n] : census) {
+            printf(" %s=%d", name.c_str(), n);
+        }
+        printf("\n");
+    }
     if (b.type() == backend_type::cpu) {
         compute_graph_allocate(g, b);
         return sched_run{};
