@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <vector>
 #include "nn.h"
 #include "util/string.h"
@@ -131,7 +132,14 @@ static tensor conv_2d_impl(model_ref m, tensor x, tensor weight, int sw, int sh,
             x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
         }
     } else { // WHCN layout
-        x = ggml_conv_2d_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
+        // conv 를 하나의 CONV_2D 노드로 낼지, im2col + mul_mat 두 노드로 쪼갤지 고른다.
+        // 둘 다 ggml 의 정식 표현이라 결과는 같아야 한다. 장치의 CONV_2D 커널이 틀린 값을
+        // 낼 때 im2col 조합으로 우회할 수 있고, 반대로 어느 쪽이 계약을 안 지키는지도 가른다.
+        if (std::getenv("VISP_CONV_IM2COL")) {
+            x = ggml_conv_2d(m, weight, x, sw, sh, pw, ph, dw, dh);
+        } else {
+            x = ggml_conv_2d_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
+        }
     }
     return x;
 }
