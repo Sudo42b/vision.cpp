@@ -14,8 +14,8 @@ tools/
       mmdet_to_pt.py    CLI: config -> backbone.pt + <name>.postproc.h
       frcnn_wrap.py     two-stage / mask sub-graphs
       frcnn_to_pt.py    CLI for the above
-  detect/             Framework-neutral head components, compiled into the runner
-    head.h  head.cpp
+  detect/             Drawing helper shared by the verification runners
+    draw.h
   verify/             Runners and inspection, grouped by task
     backbone/    run_mmdet.cpp  run_dump.cpp
     dense_head/  run_vfnet_head.cpp  verify_heads.py
@@ -32,7 +32,7 @@ control flow that depends on the data — suppression counts that are not known 
 deformable offsets derived from an earlier prediction, proposal counts that vary per image — and
 tracing records only the path one input happened to take.
 
-`detect/head.cpp` assembles the dense-head families with thirteen functions. RetinaNet, ATSS,
+`src/visp/mmdet_head.cpp` assembles the dense-head families with thirteen functions. RetinaNet, ATSS,
 PAA, FCOS and GFL share one skeleton — two convolution towers and a few output convolutions —
 so they differ only through flags on `anchor_head_cfg`: a third `centerness` branch, per-level
 learnable scales, the FCOS bbox transform, and GFL's distribution decode. VFNet, RepPoints and
@@ -71,8 +71,9 @@ flag. The attention primitives it would build on already exist in `src/visp/nn.h
 
 Two arrangements keep framework knowledge from spreading:
 
-- `detect/head.cpp` is not part of `libvisioncpp`. It is compiled together with the runner,
-  so detector-specific structure never enters the core library.
+- `src/visp/mmdet_head.cpp` assembles the heads and `src/visp/mmdet_run.cpp` sequences a whole
+  detector. Both live in `libvisioncpp`, so `vision-cli` runs MMDetection models like any other
+  architecture and the verification runner shares the same code.
 - Decoding lives in the library, not in the frontend. `detect_anchor`, `roi_align` and
   `rpn_proposals` in `src/visp/postproc.h` take numbers, not configuration objects, which is why
   they are reusable for detectors that never went through MMDetection.
@@ -90,12 +91,13 @@ python tools/frontend/mmdet/mmdet_to_pt.py \
 #    one input shape, and a graph built for another size aborts in ggml_can_repeat at run time.
 #    The interface the generated code must satisfy is in docs/mmdet-detectors.md.
 
-# 3. Build the runner: the generated graph, head.cpp and run_mmdet.cpp together.
-#    The parameters header is the one export wrote next to backbone.pt.
-bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
+# 3. Register and build. The parameters header is the one export wrote next to backbone.pt.
+python tools/install_arch.py output/MMDetBackbone --mmdet --postproc backbone.postproc.h
+cmake --build build -j8
 
 # 4. Run.
-output/MMDetBackbone/run_mmdet output/MMDetBackbone/MMDetBackbone.gguf image.jpg detected.png 512
+build/bin/vision-cli mmdetbackbone -m output/MMDetBackbone/MMDetBackbone.gguf \
+    -i image.jpg -o detected.png
 ```
 
 Step 3 looks for the library in `build/`. If you configured elsewhere, name it:
@@ -116,7 +118,9 @@ library's `preprocess()` driven by extracted values rather than anything hand-wr
 
 ## Looking at the output
 
-The extension of the output path decides what `run_mmdet` writes.
+`vision-cli` draws the boxes on the image. The verification runner `run_mmdet` is kept for two
+things `vision-cli` does not do: it accepts an already pre-processed `.bin` tensor as input, and
+`MMDET_DUMP_HEAD` dumps the tensors before decoding. Its output extension decides the format.
 
 ```sh
 run_mmdet model.gguf image.jpg detected.png 512   # the image, boxes drawn on it

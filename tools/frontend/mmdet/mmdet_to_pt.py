@@ -56,7 +56,7 @@ def emit_params(cfg, config_name):
         f"// head_type: {h}\n",
         "#pragma once\n\n",
         "#include <cmath>\n",
-        '#include "head.h"\n\n',
+        '#include "visp/mmdet_head.h"\n\n',
         "namespace visp {\n\n",
         "inline mmdet_cfg mmdet_params() {\n",
         "    mmdet_cfg c;\n",

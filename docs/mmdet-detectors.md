@@ -14,7 +14,7 @@ that way serves every family that shares its structure.
 ```
  image ──▶ backbone + neck (compiled ggml graph) ──▶ FPN levels
                                                           │
-                                                    head  │  tools/detect/head.cpp
+                                                    head  │  src/visp/mmdet_head.cpp
                                                           ▼
                                                     raw cls / bbox
                                                           │
@@ -153,17 +153,33 @@ Graph contract
 If a level cannot be found the runner stops and reports the missing `out_<n>`, which means the
 generated graph did not name its outputs as expected.
 
-### Step 3 — Build the runner
+### Step 3 — Register and build
+
+```sh
+python tools/install_arch.py output/MMDetBackbone --mmdet --postproc backbone.postproc.h
+cmake --build build -j8
+```
+
+Registration copies the generated graph and the parameters header into `src/visp/arch/` and
+writes a registration unit that carries the head configuration, so `vision-cli` finds the
+detector by name. The parameters header is renamed per architecture, which is what lets more
+than one detector live in the same executable.
+
+### Step 3b — The verification runner
+
+`vision-cli` covers the normal path. The separate runner exists for comparison work: it accepts
+an already pre-processed `.bin` tensor as input, and `MMDET_DUMP_HEAD` writes the tensors before
+decoding.
 
 ```sh
 bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 ```
 
-The script compiles three translation units together, with the generated parameters
-included as a header, and links them against `libvisioncpp`:
+The script compiles the runner and the generated graph, with the generated parameters included
+as a header, and links them against `libvisioncpp`, which now carries the head assembler and the
+decode sequence:
 
-- `tools/verify/mmdet/backbone/run_mmdet.cpp` — the runner,
-- `tools/detect/head.cpp` — the head component,
+- `tools/verify/mmdet/backbone/run_mmdet.cpp` — the verification runner,
 - `output/MMDetBackbone/MMDetBackbone.cpp` — the generated graph,
 - `backbone.postproc.h` — the generated parameters.
 
@@ -186,12 +202,14 @@ The result is `<gen_dir>/run_mmdet`.
 ### Step 4 — Run
 
 ```sh
-output/MMDetBackbone/run_mmdet \
-    output/MMDetBackbone/MMDetBackbone.gguf \
-    image.jpg \
-    detected.png \
-    512
+build/bin/vision-cli mmdetbackbone \
+    -m output/MMDetBackbone/MMDetBackbone.gguf \
+    -i image.jpg \
+    -o detected.png
 ```
+
+The input resolution is fixed at registration, so it is not passed on the command line. The
+verification runner takes it as an argument because it also accepts raw tensors.
 
 ```
 run_mmdet <gguf> <input> <output> [size=512]
@@ -302,7 +320,8 @@ is NMS-free — so the result comes back as boxes: `vision-cli` draws them and p
 coordinates and scores. Registered without the flag, the same command writes the graph
 outputs as raw `float32` files instead, which is what a numerical comparison needs. The `.bin`
 rule described under *Output* above belongs to `run_mmdet`; a registered detector writes an
-image whatever the output path is called.
+image whatever the output path is called. An MMDetection detector registered with `--mmdet`
+behaves like `--detect-yolo` here: `vision-cli` draws the boxes and prints them.
 
 The full version of this route — options, failure modes, how to measure it — is
 `docs/vision-cpp-mmdet-guide-en.md` in the compiler checkout that carries this repository
@@ -331,7 +350,7 @@ If you need to know how far to trust the number, read the method section above i
 ## Detection heads
 
 Head components take FPN features and produce the raw per-level tensors that the decoders
-expect. They are declared in `tools/detect/head.h`.
+expect. They are declared in `src/visp/mmdet_head.h`.
 
 ### `anchor_head_forward`
 
@@ -392,9 +411,9 @@ reg_denom`).
 
 ### Adding a head
 
-1. Add a `<name>_head_forward` function to `tools/detect/head.cpp` that turns FPN features
-   into raw per-level tensors. Use library primitives (`conv_2d`, `group_norm`,
-   `conv_2d_deform`); do not add framework-specific code to `src/visp`.
+1. Add a `<name>_head_forward` function to `src/visp/mmdet_head.cpp` that turns FPN features
+   into raw per-level tensors, and dispatch to it from `mmdet_head_forward`. Build on library
+   primitives (`conv_2d`, `group_norm`, `conv_2d_deform`).
 2. Extract the head's structural parameters in `mmdet_wrap.postproc_cfg`; they are emitted
    into the generated parameters header.
 3. Connect the raw output to the matching decoder in `visp/postproc.h`, or add one if the

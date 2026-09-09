@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 #
-# build_mmdet_cpp.sh — g2c 가 생성한 mmdet 백본(output/<ARCH>.cpp)을 러너(verify/mmdet/backbone/run_mmdet)·
-# head 부품(detect/head.cpp)과 함께 컴파일해 libvisioncpp 에 링크한다.
-# head.cpp 는 라이브러리가 아니라 여기서 러너와 함께 컴파일된다 → g2c output/.cpp 를 직접
-# 컴파일(arch/ 복사·cli REG 없음).
+# build_mmdet_cpp.sh — g2c 가 생성한 mmdet 백본(output/<ARCH>.cpp)을 검증 하네스
+# (verify/mmdet/backbone/run_mmdet)와 함께 컴파일해 libvisioncpp 에 링크한다.
+# head 조립과 디코드는 라이브러리 안에 있다(src/visp/mmdet_head.cpp · mmdet_run.cpp) —
+# 여기서는 백본과 러너만 컴파일한다.
+#
+# 배포 경로는 이 러너가 아니라 vision-cli 다. 하네스는 `.bin` 입력과 중간 텐서 덤프 때문에
+# 남아 있다.
 #
 # usage: build_mmdet_cpp.sh <gen_dir> <params.h> [arch_name]
 #   gen_dir  = g2c --output 디렉토리 (예: output/MMDetBackbone) — <ARCH>.cpp/.h/.gguf 있음
@@ -20,7 +23,7 @@
 set -e
 SELF="$(cd "$(dirname "$0")" && pwd)"     # vision.cpp/tools/build (빌드 스크립트)
 V="$(cd "$SELF/../.." && pwd)"            # vision.cpp (libvisioncpp 소스)
-DETECT="$V/tools/detect"                  # 공용 head/decode 부품 (head.cpp/head.h)
+DETECT="$V/tools/detect"                  # 하네스 전용 그리기 부품 (draw.h)
 RUN="$V/tools/verify"                     # E2E 검증 러너
 # `--build <dir>` 를 어디에 두든 받는다 — 위치 인자와 섞이지 않게 먼저 걷어낸다.
 ARG_BUILD=""
@@ -70,13 +73,13 @@ INC="$GEN/inc"
 mkdir -p "$INC/visp/arch"
 cp "$GEN/$ARCH.h" "$INC/visp/arch/$ARCH.h"
 
-# run_mmdet.cpp + head.cpp(러너와 함께 컴파일, 라이브러리 아님) + g2c 백본 output/.cpp
+# run_mmdet.cpp + g2c 백본 output/.cpp
 g++ -std=c++20 -O2 $FMT_FLAGS \
   -DARCH="$ARCH" -DVISP_ARCH_HEADER="\"visp/arch/$ARCH.h\"" \
   -DMMDET_PARAMS_HEADER="\"$PARAMS\"" \
   -I"$DETECT" -I"$INC" -I"$V/include" -I"$V/src" \
   -I"$V/depend/llama/ggml/include" -I"$V/depend/llama/vendor" \
-  "$RUN/backbone/run_mmdet.cpp" "$DETECT/head.cpp" "$GEN/$ARCH.cpp" \
+  "$RUN/backbone/run_mmdet.cpp" "$GEN/$ARCH.cpp" \
   -L"$LIB" -lvisioncpp -lggml -lggml-base -lggml-cpu \
   -Wl,-rpath,"$LIB" \
   -o "$GEN/run_mmdet"

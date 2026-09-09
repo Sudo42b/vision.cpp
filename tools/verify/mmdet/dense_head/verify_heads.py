@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tools/detect/head.cpp 가 mmdet 의 bbox_head 를 재현하는지 계열별로 잰다.
+"""src/visp/mmdet_head.cpp 가 mmdet 의 bbox_head 를 재현하는지 계열별로 잰다.
 
 백본만 컴파일하고 head 는 C++ 부품이 조립한다. 계열마다:
 mmdet → backbone .pt + 파라미터 헤더 → 컴파일 → run_mmdet 빌드 →
@@ -61,8 +61,6 @@ def _all_families():
 
 
 ROOT = CFG.workdir
-# head.cpp 를 미리 컴파일해 둘 자리(계열 무관). 지우면 다시 만든다.
-HEAD_OBJ = os.path.join(ROOT, "head.o")
 # 검증 빌드의 최적화 수준. 수치는 libggml 이 내므로 -O1 로 충분하다(컴파일이 빠르다).
 OPT = CFG.opt
 # 판정 기준: 출력 텐서의 **상대 L1/L2 거리**. 둘 다 임계 이하여야 PASS.
@@ -195,7 +193,7 @@ print("LEVELS", len(cls_l), "CTR", len(ctr_l))
 # 실측(3계열 96초): g2c 46% · export 21% · ref 21% · g++ 9% · 실행 3%.
 PHASE = {}
 _PHASE_LOCK = __import__("threading").Lock()
-# ⚠️ head.o 빌드용 락은 **따로** 둔다. 계측 락을 재사용하면 `run()` 안에서 같은 락을
+# ⚠️ 공용 빌드 락은 **따로** 둔다. 계측 락을 재사용하면 `run()` 안에서 같은 락을
 #    다시 잡아 자기 자신을 기다린다(비재진입 Lock → 교착). 실제로 한 번 걸렸다.
 _HEAD_LOCK = __import__("threading").Lock()
 
@@ -587,7 +585,7 @@ from shared.compile.pipeline import main; main()
 
 def one(fam, rel, ckpt):
     d = os.path.join(ROOT, fam)
-    os.makedirs(d, exist_ok=True)   # ROOT 도 같이 생긴다(head.o 자리)
+    os.makedirs(d, exist_ok=True)   # ROOT 도 같이 생긴다
     open(os.path.join(d, "_stub.py"), "w").write(STUB)
     cfg_path = os.path.join(MM, rel)
     if not os.path.exists(cfg_path):
@@ -721,29 +719,13 @@ from shared.compile.pipeline import main; main()
     if r.returncode != 0:
         return fam, "WEIGHTS_FAIL", _last_error(r.stderr)[:70]
 
-    # 3) run_mmdet 빌드 (백본 .cpp + head.cpp 를 함께 컴파일)
+    # 3) run_mmdet 빌드 (백본 .cpp 만 컴파일한다 — head 조립과 디코드는 libvisioncpp 안에
+    #    있다). 라이브러리를 고쳤으면 먼저 다시 빌드해야 한다.
     gen = os.path.join(d, "out")
     inc = os.path.join(gen, "inc", "visp", "arch")
     os.makedirs(inc, exist_ok=True)
     import shutil
     shutil.copy(os.path.join(gen, "Fam.h"), inc)
-    # head.cpp 는 `ARCH`·파라미터 헤더를 안 쓴다 → **계열마다 다시 컴파일할 이유가 없다.**
-    # 한 번 .o 로 만들어 두고 링크만 한다(38계열이면 37번을 아낀다).
-    # 여러 계열이 동시에 들어와도 한 번만 만든다.
-    with _HEAD_LOCK:
-        # ⚠️ **head.cpp 가 바뀌면 캐시를 버린다.** mtime 비교가 없으면 조립기를 고쳐도
-        #    옛 오브젝트로 링크돼 **값이 그대로**다 — 고친 줄 알고 한참 헤맨다(실제로 겪었다).
-        _src = V + "/tools/detect/head.cpp"
-        if (os.path.exists(HEAD_OBJ)
-                and os.path.getmtime(HEAD_OBJ) < max(os.path.getmtime(_src),
-                                                     os.path.getmtime(V + "/tools/detect/head.h"))):
-            os.remove(HEAD_OBJ)
-        b = run(["g++", "-std=c++20", OPT, "-c", V + "/tools/detect/head.cpp",
-                 "-I" + V + "/include", "-I" + V + "/src", "-I" + V + "/tools/detect",
-                 "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-                 "-o", HEAD_OBJ], d, phase="3a_head") if not os.path.exists(HEAD_OBJ) else None
-    if not os.path.exists(HEAD_OBJ):
-        return fam, "BUILD_FAIL", "head.o: " + (_last_error(b.stderr)[:70])
 
     # 최적화 수준은 **수치와 무관**하다 — 실제 계산은 libggml(사전 빌드)이 한다.
     # 이 코드는 그래프를 짜기만 하므로 -O1 이면 충분하고, 컴파일이 훨씬 빠르다.
@@ -760,7 +742,7 @@ from shared.compile.pipeline import main; main()
              "-I" + gen + "/inc", "-I" + V + "/include", "-I" + V + "/src",
              "-I" + V + "/tools/detect",
              "-I" + V + "/depend/llama/ggml/include", "-I" + V + "/depend/llama/vendor",
-             V + "/tools/verify/mmdet/backbone/run_mmdet.cpp", HEAD_OBJ,
+             V + "/tools/verify/mmdet/backbone/run_mmdet.cpp",
              gen + "/Fam.cpp",
              "-L" + V + "/build/lib", "-lvisioncpp", "-lggml", "-lggml-base", "-lggml-cpu",
              "-Wl,-rpath," + V + "/build/lib", "-o", gen + "/run_mmdet"], d, phase="3b_build")

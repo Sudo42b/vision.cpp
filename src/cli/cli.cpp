@@ -1,3 +1,6 @@
+#include <cctype>
+#include <string>
+
 #include "util/math.h"
 #include "util/string.h"
 #include "visp/arch_registry.h"
@@ -405,6 +408,7 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
     // sched 를 켜면 장치의 MUL 이 브로드캐스트 경로에서 깨진다. SOFT_MAX 와 모양이 다른
     // MUL/ADD 는 CPU 로 못 박는다. G2C_NPU_NOPIN_BCAST 로 이 핀을 끌 수 있다.
     bool no_pin_bcast = std::getenv("G2C_NPU_NOPIN_BCAST") != nullptr;
+    char const* pin_ops = std::getenv("G2C_NPU_PIN_OPS");
     int pinned = 0;
     for (int i = 0; i < ggml_graph_n_nodes(cg); ++i) {
         ggml_tensor* node = ggml_graph_node(cg, i);
@@ -413,12 +417,31 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
             node->src[0] && node->src[1] && !ggml_are_same_shape(node->src[0], node->src[1])) {
             to_cpu = true;
         }
+        // 어느 op 이 장치에서 틀린 값을 내는지 좁힐 때 쓴다. 쉼표로 이은 op 이름을
+        // G2C_NPU_PIN_OPS 에 주면 그 종류를 통째로 CPU 로 뺀다.
+        //     G2C_NPU_PIN_OPS=CONV_2D,MUL_MAT
+        // 이름은 ggml_op_name() 이 내는 것과 같다. 대소문자를 가리지 않는다.
+        if (!to_cpu && pin_ops != nullptr) {
+            std::string want = ggml_op_name(node->op);
+            for (auto& c : want) c = (char) std::toupper((unsigned char) c);
+            std::string list = pin_ops;
+            for (auto& c : list) c = (char) std::toupper((unsigned char) c);
+            size_t at = list.find(want);
+            while (at != std::string::npos) {
+                bool lb = at == 0 || list[at - 1] == ',';
+                size_t end = at + want.size();
+                bool rb = end == list.size() || list[end] == ',';
+                if (lb && rb) { to_cpu = true; break; }
+                at = list.find(want, at + 1);
+            }
+        }
         if (to_cpu) {
             ggml_backend_sched_set_tensor_backend(hold.sched, node, b_cpu);
             ++pinned;
         }
     }
-    printf("- CPU-pinned (SOFT_MAX, broadcast MUL/ADD): %d nodes\n", pinned);
+    printf("- CPU-pinned (SOFT_MAX, broadcast MUL/ADD%s): %d nodes\n",
+           pin_ops ? ", G2C_NPU_PIN_OPS" : "", pinned);
 
     if (!ggml_backend_sched_alloc_graph(hold.sched, cg)) {
         throw except("ggml_backend_sched_alloc_graph failed");
