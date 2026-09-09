@@ -406,6 +406,24 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
             printf(" %s=%d", name.c_str(), n);
         }
         printf("\n");
+        // stride 까지 찍는다. 장치의 conv 문지기는 nb[0] 만 보므로, 바깥 축이 뒤섞인
+        // 텐서도 통과한다. 그 상황인지는 nb 를 눈으로 봐야 갈린다.
+        for (int i = 0; i < ggml_graph_n_nodes(g.graph); ++i) {
+            ggml_tensor* n = ggml_graph_node(g.graph, i);
+            if (n->op != GGML_OP_CONV_2D) {
+                continue;
+            }
+            auto dump = [](char const* tag, ggml_tensor* t) {
+                printf("    %s ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] %s%s\n", tag,
+                       (long long)t->ne[0], (long long)t->ne[1], (long long)t->ne[2],
+                       (long long)t->ne[3], t->nb[0], t->nb[1], t->nb[2], t->nb[3],
+                       ggml_type_name(t->type), ggml_is_contiguous(t) ? " cont" : " NOTCONT");
+            };
+            printf("  conv[%d]\n", i);
+            dump("w  ", n->src[0]);
+            dump("x  ", n->src[1]);
+            dump("out", n);
+        }
     }
     if (b.type() == backend_type::cpu) {
         compute_graph_allocate(g, b);
@@ -425,10 +443,32 @@ sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
     // MUL/ADD 는 CPU 로 못 박는다. G2C_NPU_NOPIN_BCAST 로 이 핀을 끌 수 있다.
     bool no_pin_bcast = std::getenv("G2C_NPU_NOPIN_BCAST") != nullptr;
     char const* pin_ops = std::getenv("G2C_NPU_PIN_OPS");
+    // 같은 op 이 여럿일 때 어느 것이 틀렸는지 이분으로 좁힌다. 노드 번호를 쉼표로 잇는다.
+    // 번호는 G2C_NPU_OP_CENSUS=1 이 찍는 conv[i] 의 i 와 같다.
+    std::vector<int> pin_nodes;
+    if (char const* s = std::getenv("G2C_NPU_PIN_NODES")) {
+        int v = -1;
+        for (char const* p = s;; ++p) {
+            if (*p >= '0' && *p <= '9') {
+                v = (v < 0 ? 0 : v * 10) + (*p - '0');
+            } else {
+                if (v >= 0) {
+                    pin_nodes.push_back(v);
+                }
+                v = -1;
+                if (*p == '\0') {
+                    break;
+                }
+            }
+        }
+    }
     int pinned = 0;
     for (int i = 0; i < ggml_graph_n_nodes(cg); ++i) {
         ggml_tensor* node = ggml_graph_node(cg, i);
         bool to_cpu = node->op == GGML_OP_SOFT_MAX;
+        if (!to_cpu && std::find(pin_nodes.begin(), pin_nodes.end(), i) != pin_nodes.end()) {
+            to_cpu = true;
+        }
         if (!to_cpu && !no_pin_bcast && (node->op == GGML_OP_MUL || node->op == GGML_OP_ADD) &&
             node->src[0] && node->src[1] && !ggml_are_same_shape(node->src[0], node->src[1])) {
             to_cpu = true;
