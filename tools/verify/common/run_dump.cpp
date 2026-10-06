@@ -50,13 +50,31 @@ int main(int argc, char** argv) {
     model_ref m(weights, graph);
     auto p = DETECT_PARAMS(file);
 
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, W, H, 1}, "x");   // cwhn
+    // ⚠️ **입력이 이미지가 아닌 모델이 있다.** mmpose 의 pose-lift(TCN)는 2D 키포인트
+    //    [N, K*2, T] 를 받는다. 그런 계열은 `VISP_IN_NE="ne0,ne1,ne2,ne3"` 로 입력
+    //    ne 를 직접 준다. 안 주면 예전처럼 이미지 cwhn 이다 — 기존 호출자는 그대로다.
+    int64_t ne[4] = {3, W, H, 1};
+    size_t n_in = (size_t)3 * W * H;
+    if (const char* env = getenv("VISP_IN_NE")) {
+        std::string sv(env);
+        size_t pos = 0;
+        for (int i = 0; i < 4; ++i) {
+            size_t comma = sv.find(',', pos);
+            ne[i] = atoll(sv.substr(pos, comma == std::string::npos ? comma : comma - pos).c_str());
+            if (ne[i] <= 0) ne[i] = 1;
+            if (comma == std::string::npos) { for (int j = i + 1; j < 4; ++j) ne[j] = 1; break; }
+            pos = comma + 1;
+        }
+        n_in = (size_t)ne[0] * ne[1] * ne[2] * ne[3];
+    }
+    tensor input = compute_graph_input(m, GGML_TYPE_F32,
+                                       {ne[0], ne[1], ne[2], ne[3]}, "x");   // cwhn
     ggml_build_forward_expand(graph, input);
     tensor last = FWD(m, input, p);   // 내부에서 compute_graph_output 이 out_i 를 그래프에 등록
     ggml_build_forward_expand(graph, last);
 
     compute_graph_allocate(graph, backend);
-    auto in = load_bin(inb, (size_t)3 * W * H);
+    auto in = load_bin(inb, n_in);
     transfer_to_backend(input, std::span<const float>(in.data(), in.size()));
     compute(graph, backend);
 

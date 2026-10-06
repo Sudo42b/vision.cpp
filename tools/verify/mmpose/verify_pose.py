@@ -59,6 +59,15 @@ def families():
         if not cfg:
             continue
         cfg = cfg if cfg.startswith("/") else MM + "/" + cfg
+        # ⚠️ **metafile 의 Config 경로가 낡아 있을 수 있다.** mmpose 1.x 로 옮기면서
+        #    파일은 metafile 옆으로 왔는데 `Config:` 는 0.x 경로(`configs/body/
+        #    2d_kpt_sview_rgb_img/...`)를 그대로 들고 있는 것이 있다(`cpm_jhmdb.yml`).
+        #    그러면 `CONFIG_NONE` 이 되어 **컴파일러가 못 하는 것처럼 보인다** — 아니다.
+        #    파일명이 같은 것이 metafile 디렉터리에 있으면 그것을 쓴다.
+        if not os.path.exists(cfg):
+            alt = os.path.join(os.path.dirname(p), os.path.basename(cfg))
+            if os.path.exists(alt):
+                cfg = alt
         seen.add(fam)
         out.append((fam, cfg, m.get("Weights", "")))
     return out
@@ -149,13 +158,15 @@ REF = r'''
 import os, sys, numpy as np, torch
 sys.path.insert(0, "%(FE)s"); sys.path.insert(0, "%(FE_DET)s")
 import mmpose_wrap
-H, W = mmpose_wrap.input_size("%(CFG)s")
-m, shapes = mmpose_wrap.build("%(CFG)s", "%(CK)s", (H, W))
+IN = mmpose_wrap.input_shape("%(CFG)s")     # 이미지면 (1,3,H,W), pose-lift 면 (1,C,1)
+m, shapes = mmpose_wrap.build("%(CFG)s", "%(CK)s", IN)
 torch.save(m, "pose.pt")
+open("shape.txt", "w").write(",".join(str(v) for v in IN))
+H, W = (IN[2], IN[3]) if len(IN) == 4 else (1, 1)
 open("size.txt", "w").write(f"{W} {H}")
 # 고정 시드 — 시드 없이 뽑으면 실행마다 숫자가 흔들려 회귀 대조가 흐려진다.
 g = torch.Generator().manual_seed(0)
-x = torch.randn(1, 3, H, W, generator=g)
+x = torch.randn(*IN, generator=g)
 with torch.no_grad():
     outs = m(x)
 if isinstance(outs, torch.Tensor):
@@ -166,7 +177,12 @@ for i, t in enumerate(outs):
     np.ascontiguousarray(a).tofile("ref.out.%%d.bin" %% i)
     sh.append(list(a.shape))
 open("ref.shapes.txt", "w").write("\n".join(" ".join(map(str, s)) for s in sh))
-np.ascontiguousarray(x[0].numpy().transpose(1, 2, 0)).tofile("in.bin")   # 러너 입력(cwhn)
+if len(IN) == 4:
+    np.ascontiguousarray(x[0].numpy().transpose(1, 2, 0)).tofile("in.bin")   # 러너 입력(cwhn)
+else:
+    # 이미지가 아닌 입력(pose-lift)은 그대로 낸다. ggml ne=[C,1,1,1] 로 먹이고
+    # 생성 코드의 cwhn→whcn 변환이 [1,1,C,1] 로 돌려놓는다.
+    np.ascontiguousarray(x[0].numpy().astype("float32")).tofile("in.bin")
 print("REF_OK", len(outs), W, H)
 '''
 
@@ -182,7 +198,7 @@ def verify(fam, cfg, weights):
         return fam, "CONFIG_NONE", os.path.basename(cfg)
 
     _wait_for_memory(fam)
-    for stale in ("pose.pt", "ref.shapes.txt", "size.txt"):
+    for stale in ("pose.pt", "ref.shapes.txt", "size.txt", "shape.txt"):
         try:
             os.remove(os.path.join(d, stale))
         except FileNotFoundError:
@@ -194,13 +210,18 @@ def verify(fam, cfg, weights):
     if not os.path.exists(os.path.join(d, "ref.shapes.txt")):
         return fam, "REF_FAIL", _last_error(r.stderr)[:70]
     W, H = [int(v) for v in open(os.path.join(d, "size.txt")).read().split()]
+    in_shape = [int(v) for v in
+                open(os.path.join(d, "shape.txt")).read().split(",")]
+    # 이미지가 아닌 입력이면 러너에 ne 를 직접 준다(`VISP_IN_NE`). cwhn = [C,W,H,N].
+    run_env = ({} if len(in_shape) == 4
+               else {"VISP_IN_NE": f"{in_shape[1]},1,1,1"})
 
     gen = os.path.join(d, "out")
     r = run([PY, "-c", '''
 import sys
-sys.argv = ["g2c","--model","pose.pt","--name","Pose","--output","out","--input-shape","1,3,%d,%d"]
+sys.argv = ["g2c","--model","pose.pt","--name","Pose","--output","out","--input-shape","%s"]
 from shared.compile.pipeline import main; main()
-''' % (H, W)], d, {"PYTHONPATH": f"{FE}:{FE_DET}:{P}:{GGUF_PY}"})
+''' % ",".join(str(v) for v in in_shape)], d, {"PYTHONPATH": f"{FE}:{FE_DET}:{P}:{GGUF_PY}"})
     if not os.path.exists(os.path.join(gen, "Pose.gguf")):
         return fam, "COMPILE_FAIL", _last_error(r.stderr)[:70]
     n_unhandled = open(os.path.join(gen, "Pose.cpp")).read().count("unhandled op")
@@ -222,7 +243,8 @@ from shared.compile.pipeline import main; main()
         if f.startswith("cpp.out.") and f.endswith(".bin"):
             os.remove(os.path.join(d, f))
     x = run([os.path.join(gen, "run_dump"), os.path.join(gen, "Pose.gguf"),
-             os.path.join(d, "in.bin"), os.path.join(d, "cpp"), str(W), str(H)], d)
+             os.path.join(d, "in.bin"), os.path.join(d, "cpp"), str(W), str(H)],
+            d, run_env)
 
     import numpy as np
     shapes = [[int(v) for v in ln.split()]
@@ -238,15 +260,25 @@ from shared.compile.pipeline import main; main()
         if a.size != c.size:
             return fam, "SHAPE_MISMATCH", f"out_{i}: torch {a.size} vs 러너 {c.size}"
         # torch CHW ↔ 러너 HWC. 안 맞추면 값이 아니라 배치가 어긋난다.
+        # 러너는 언제나 **cwhn**(메모리 순서 n,h,w,c)으로 낸다. torch 쪽(배치를 벗긴)
+        # 축을 앞에서부터 (n,c,h,w) 로 읽어 같은 자로 맞춘다.
         if len(sh) == 3:
             ch, h, w = sh
             c = c.reshape(h, w, ch).transpose(2, 0, 1).reshape(-1)
+        elif len(sh) == 4:
+            # ⚠️ **3D 히트맵 head 가 여기 온다.** InterNet 은 torch [1,42,64,64,48]
+            #    (= N,C,D,H,W)를 내고 배치를 벗기면 4D 다. 러너 쪽 ne 는
+            #    [64,48,64,42] = (c=D, w=W, h=H, n=C) 라 **D 가 채널 자리**다.
+            #    안 맞추면 첫 원소만 맞고 rel L1 이 1.76 으로 뜬다 — 값이 아니라 배치다.
+            n, ch, h, w = sh
+            c = c.reshape(n, h, w, ch).transpose(0, 3, 1, 2).reshape(-1)
         den = max(float(np.abs(a).sum()), 1e-9)
         worst_l1 = max(worst_l1, float(np.abs(a - c).sum()) / den)
         worst_l2 = max(worst_l2, float(np.linalg.norm(a - c))
                        / max(float(np.linalg.norm(a)), 1e-9))
     ok = worst_l1 < L1_TOL and worst_l2 < L2_TOL
-    note = f"L1 {worst_l1:.2e} · L2 {worst_l2:.2e} · {W}x{H} · 출력 {len(shapes)}"
+    dims = f"{W}x{H}" if len(in_shape) == 4 else "x".join(str(v) for v in in_shape)
+    note = f"L1 {worst_l1:.2e} · L2 {worst_l2:.2e} · {dims} · 출력 {len(shapes)}"
     if n_unhandled:
         note += f" · ⚠ unhandled op {n_unhandled}"
     return fam, "PASS" if ok else "FAIL", note

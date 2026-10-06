@@ -103,11 +103,22 @@ class MMPoseWrap(nn.Module):
         if self.neck is not None:
             f = self.neck(f)
         out = self.head.forward(f)
-        # ⚠️ **항상 튜플이다.** 예전엔 출력이 하나면 벌거벗은 Tensor 를 돌려줬는데,
-        #    `build()` 는 shape 을 늘 리스트로 알려줘서 **호출자가 두 겹 벗기는 사고**가
-        #    났다 — `outs[0][0]` 이 19장짜리 클래스 맵에서 1장만 남겼다(2026-09-01 실측).
-        #    형태를 하나로 고정해 그 사고 자체를 없앤다. 러너는 `out_i` 로 순서대로 덤프한다.
-        return (out,) if isinstance(out, torch.Tensor) else tuple(out)
+        # 중첩 출력을 평탄화하며 단일 출력도 튜플로 반환한다.
+        flat = []
+
+        def _walk(o):
+            if isinstance(o, torch.Tensor):
+                flat.append(o)
+            elif isinstance(o, (list, tuple)):
+                for e in o:
+                    _walk(e)
+            elif isinstance(o, dict):
+                for _k in sorted(o):
+                    _walk(o[_k])
+            # 그 외(None·스칼라)는 그래프 밖이라 버린다.
+
+        _walk(out)
+        return tuple(flat)
 
 
 def build(config, checkpoint=None, size=(256, 192)):
@@ -130,12 +141,32 @@ def build(config, checkpoint=None, size=(256, 192)):
     pose.eval()
     m = MMPoseWrap(pose)
     m.eval()
-    h, w = size
+    shape = tuple(int(v) for v in size) if len(size) != 2 else (1, 3, int(size[0]), int(size[1]))
     with torch.no_grad():
-        outs = m(torch.randn(1, 3, h, w))
+        outs = m(torch.randn(*shape))
     if isinstance(outs, torch.Tensor):
         outs = (outs,)
     return m, [tuple(o.shape) for o in outs]
+
+
+def input_shape(config):
+    """torch 입력 shape 전체를 돌려준다 — 이미지면 `(1, 3, H, W)`.
+
+    ⚠️ **입력이 이미지가 아닌 계열이 있다.** `PoseLifter`(h36m 의 TCN)는 2D 키포인트
+       `[N, K*2, T]` 를 받는다. 이미지 크기로 재면 `conv1d` 가 4D 입력을 받아 죽는다 —
+       그건 컴파일러가 못 하는 게 아니라 **잘못된 것을 먹인 것**이다.
+    """
+    _stub_xtcocotools()
+    from mmengine.config import Config
+    cfg = Config.fromfile(config)
+    model = cfg.get("model") or {}
+    if str(model.get("type", "")) == "PoseLifter":
+        bb = model.get("backbone") or {}
+        ch = bb.get("in_channels")
+        if ch:
+            return (1, int(ch), 1)      # T=1 (image-pose-lift). 시계열 계열은 미확인(방향모름)
+    h, w = input_size(config)
+    return (1, 3, h, w)
 
 
 def input_size(config):
