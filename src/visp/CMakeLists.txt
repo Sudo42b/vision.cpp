@@ -27,6 +27,12 @@ target_sources(visioncpp PRIVATE
   ${VISP_ARCH_SOURCES}
   arch_registry.cpp
   runtime_graph.cpp
+  mmlab/config.cpp
+  mmlab/modules.cpp
+  mmlab/backbones.cpp
+  mmlab/heads.cpp
+  mmlab/transformers.cpp
+  mmlab/model.cpp
   draw.cpp
   c-api.cpp
   image.cpp

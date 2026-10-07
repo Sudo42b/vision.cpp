@@ -1,4 +1,5 @@
 #include "runtime_graph.h"
+#include "mmlab/config.h"
 #include "nn.h"
 #include "nlohmann/json.hpp"
 
@@ -375,47 +376,8 @@ tensor_data_layout runtime_graph_weight_layout(model_file const& file, tensor_da
     return program.at("input_shape").size()==4 ? preferred : tensor_data_layout::whcn;
 }
 arch_task runtime_graph_task(model_file const& file) {
-    arch_task task;
     auto program=read_program(file);
-    auto shape=runtime_graph_input_shape(file);
-    task.input_w=int(shape[1]);task.input_h=int(shape[2]);
-    auto const& cfg=program.at("config");
-    if(cfg.contains("mean")) task.mean=cfg.at("mean").get<std::array<float,3>>();
-    if(cfg.contains("std")) task.stdv=cfg.at("std").get<std::array<float,3>>();
-    task.to_rgb=cfg.value("to_rgb",false);
-    if(cfg.value("ecosystem",std::string{})=="mmdet" && cfg.value("mmdet_head_type",std::string{"raw"})!="raw") {
-        auto const& j=cfg.at("mmdet");
-        auto& c=task.mmdet;
-        static std::unordered_map<std::string,head_kind> const kinds={
-            {"anchor",head_kind::anchor},
-            {"yolox",head_kind::yolox},
-            {"rpn",head_kind::rpn},
-            {"fcos",head_kind::fcos},
-            {"gfl",head_kind::gfl},
-            {"vfnet",head_kind::vfnet},
-            {"reppoints",head_kind::reppoints},
-            {"sabl",head_kind::sabl},
-            {"tood",head_kind::tood},
-            {"centernet",head_kind::centernet},
-            {"yolof",head_kind::yolof},
-            {"yolo",head_kind::yolo},
-            {"cornernet",head_kind::cornernet},
-            {"detr",head_kind::detr},
-            {"conditional_detr",head_kind::conditional_detr},
-            {"dab_detr",head_kind::dab_detr},
-            {"deformable_detr",head_kind::deformable_detr},
-            {"dino",head_kind::dino},
-            {"ddq",head_kind::ddq},
-        };
-        c.head.kind=kinds.at(j.at("head").at("kind").get<std::string>());
-#include "runtime_mmdet.inc"
-        c.det.input_w=task.input_w;c.det.input_h=task.input_h;
-        std::copy(task.mean.begin(),task.mean.end(),c.img_mean);
-        std::copy(task.stdv.begin(),task.stdv.end(),c.img_std);
-        c.to_rgb=task.to_rgb;
-        task.kind=arch_kind::detect_mmdet;
-    }
-    return task;
+    return mmlab::task_from_metadata(program.at("config"),runtime_graph_input_shape(file));
 }
 // Referenced explicitly from arch_registry.cpp, so static and shared builds retain it.
 void register_runtime_graph() { static arch_registrar registration("mmlab", runtime_graph_forward); }

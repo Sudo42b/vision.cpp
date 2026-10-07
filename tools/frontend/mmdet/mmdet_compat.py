@@ -297,6 +297,21 @@ class _ScalarAffine(_nn.Module):
     def forward(self, x):
         return x * self.w + self.b
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        # Replacement happens during construction, before the learned Linear
+        # checkpoint is loaded. Preserve its values under the scalar buffers.
+        for source, target in (("weight", "w"), ("bias", "b")):
+            name = prefix + source
+            if name in state_dict:
+                value = state_dict.pop(name)
+                if value.numel() != 1:
+                    error_msgs.append(f"{name}: expected one affine coefficient")
+                else:
+                    state_dict[prefix + target] = value.reshape(())
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                     missing_keys, unexpected_keys, error_msgs)
+
 
 def _patch_pointrend_coords():
     """PointRend 의 좌표 조립을 **슬라이스 대입 대신 `stack`** 으로 다시 쓴다.

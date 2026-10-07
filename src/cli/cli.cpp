@@ -6,6 +6,7 @@
 #include "util/string.h"
 #include "visp/arch_registry.h"
 #include "visp/runtime_graph.h"
+#include "visp/mmlab.h"
 #include "visp/draw.h"
 #include "visp/mmdet_run.h"
 #include "visp/postproc.h"
@@ -64,7 +65,7 @@ Options:
     -p, --prompt <x> [<y> ...]           Prompt (eg. pixel coordinates)
     -b, --backend <cpu|gpu>              Backend type (default: auto)
     -h, --help                           Print usage and exit
-    --input-tensor <file>                Normalized F32 tensor (mmlab only)
+    --input-tensor <file>                Normalized F32 tensor (MMLab runners)
     --raw-outputs                        Dump graph tensors before detection head
     --composite <file>                   Composite input image with mask
     --tile <size>                        Tile size to split large images
@@ -335,6 +336,7 @@ std::tuple<model_file, model_weights> load_model_weights(
     if (file.arch() == "mmlab") {
         preferred_layout = runtime_graph_weight_layout(file, preferred_layout);
     }
+    if (file.arch() == "mmlab-config") preferred_layout = tensor_data_layout::whcn;
     if (preferred_layout == tensor_data_layout::unknown) {
         preferred_layout = file.tensor_layout();
     }
@@ -794,7 +796,8 @@ void run_generated(cli_args const& args) {
     }
 
     arch_task task = args.arch == "mmlab" ? runtime_graph_task(file) : e->task;
-    if (args.input_tensor && args.arch != "mmlab") throw except("--input-tensor requires mmlab");
+    if(args.arch=="mmlab-config") task=mmlab::config_task(file);
+    if (args.input_tensor && args.arch != "mmlab" && args.arch != "mmlab-config") throw except("--input-tensor requires a MMLab runner");
     image_data image;
     if (!args.input_tensor) {
         require_inputs(args.inputs, 1, "<image>");
@@ -811,6 +814,7 @@ void run_generated(cli_args const& args) {
     const int nch = args.input_tensor ? 3 : n_channels(image.format);
     letterbox_info lb;
     i64x4 input_shape = args.arch == "mmlab" ? runtime_graph_input_shape(file) : i64x4{3,IW,IH,1};
+    if(args.arch=="mmlab-config") input_shape=mmlab::config_input_shape(file);
     std::vector<float> input_cwhn;
     if (args.input_tensor) {
         size_t count=1;

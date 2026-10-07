@@ -13,6 +13,10 @@ target_link_options(test-vision PRIVATE ${VISP_LINK_OPTIONS})
 target_link_libraries(test-vision PRIVATE visioncpp ${VISP_FMT_LINK})
 add_test(NAME vision COMMAND test-vision -v)
 
+add_executable(test-mmlab test-mmlab.cpp)
+target_link_libraries(test-mmlab PRIVATE visioncpp)
+add_test(NAME mmlab-sampling COMMAND test-mmlab)
+
 #
 # Model tests (image comparisons)
 
