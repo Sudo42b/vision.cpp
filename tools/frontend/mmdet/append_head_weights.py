@@ -63,8 +63,13 @@ def append(pt_path: str, gguf_path: str, prefixes=None) -> int:
     """`gguf_path` 를 제자리에서 다시 써서 선언된 가중치를 덧붙인다. 추가된 개수를 돌려준다."""
     import torch
 
-    gguf = _gguf()
     model = torch.load(pt_path, weights_only=False)
+    return append_model(model, gguf_path, prefixes)
+
+
+def append_model(model, gguf_path: str, prefixes=None) -> int:
+    """Append declared weights from an already loaded model, preserving GGUF metadata."""
+    gguf = _gguf()
     if prefixes is None:
         prefixes = tuple(getattr(model, "head_weight_prefixes", ()) or ())
     if not prefixes:
@@ -82,7 +87,7 @@ def append(pt_path: str, gguf_path: str, prefixes=None) -> int:
 
     extra = []
     for key, tensor in model.state_dict().items():
-        if key in have or not key.startswith(prefixes) or key.endswith(_SKIP_SUFFIX):
+        if short_name(key) in have or not key.startswith(prefixes) or key.endswith(_SKIP_SUFFIX):
             continue
         arr = tensor.detach().cpu().numpy()
         # 정수 버퍼를 fp16 으로 구우면 값이 뭉개진다 — 부동소수만 내린다.
@@ -108,6 +113,16 @@ def append(pt_path: str, gguf_path: str, prefixes=None) -> int:
     #    `Duplicated key name 'general.architecture'` 를 뱉는다. 값이 같아 산출물은 멀쩡한데
     #    그 줄이 상위 하네스의 "실패 이유" 로 잡혀 원인을 오도한다.
     writer = gguf.GGUFWriter(tmp, arch=arch)
+    # Keep graph recipes and model configuration when rewriting the container.
+    # GGUF header counters are reader pseudo-fields, not serialised metadata.
+    for key, field in reader.fields.items():
+        if key.startswith("GGUF.") or key == "general.architecture":
+            continue
+        writer.add_key_value(key, field.contents(), field.types[0],
+                             sub_type=field.types[1] if len(field.types) > 1 else None)
+    extra_names = [name for name, _ in extra]
+    if len(set(extra_names)) != len(extra_names):
+        raise ValueError("Extra weight names collide after shortening")
     for name, arr in existing + extra:
         writer.add_tensor(name, arr)
     writer.write_header_to_file()

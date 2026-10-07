@@ -20,13 +20,17 @@ arch_registrar::arch_registrar(std::string_view name, arch_forward_fn forward, a
     registry().push_back(arch_entry{name, forward, std::move(task)});
 }
 
+void register_runtime_graph();
+
 arch_entry const* arch_find(std::string_view name) {
+    register_runtime_graph();
     auto& r = registry();
     auto it = std::find_if(r.begin(), r.end(), [&](arch_entry const& e) { return e.name == name; });
     return it == r.end() ? nullptr : &*it;
 }
 
 std::span<arch_entry const> arch_all() {
+    register_runtime_graph();
     return std::span<arch_entry const>(registry());
 }
 

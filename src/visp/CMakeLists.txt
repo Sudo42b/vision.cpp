@@ -26,6 +26,7 @@ endif()
 target_sources(visioncpp PRIVATE
   ${VISP_ARCH_SOURCES}
   arch_registry.cpp
+  runtime_graph.cpp
   draw.cpp
   c-api.cpp
   image.cpp
@@ -44,7 +45,7 @@ target_compile_options(visioncpp PRIVATE ${VISP_WARNINGS} ${VISP_COMP_OPTIONS})
 target_include_directories(visioncpp PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
-  PRIVATE ..
+  PRIVATE .. ${PROJECT_SOURCE_DIR}/depend/llama/vendor
 )
 target_link_options(visioncpp PRIVATE ${VISP_LINK_OPTIONS})
 target_link_libraries(visioncpp

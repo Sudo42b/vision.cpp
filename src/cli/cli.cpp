@@ -5,6 +5,7 @@
 #include "util/math.h"
 #include "util/string.h"
 #include "visp/arch_registry.h"
+#include "visp/runtime_graph.h"
 #include "visp/draw.h"
 #include "visp/mmdet_run.h"
 #include "visp/postproc.h"
@@ -38,6 +39,8 @@ struct cli_args {
     // std::string_view device = 0; // -d --device
     // ggml_type float_type = GGML_TYPE_COUNT; // -f32 -f16
 
+    char const* input_tensor = nullptr; // normalized F32 CWHN input for reproducible validation
+    bool raw_outputs = false;
     char const* composite = nullptr; // --composite
     int tile_size = -1;              // --tile
 };
@@ -61,6 +64,8 @@ Options:
     -p, --prompt <x> [<y> ...]           Prompt (eg. pixel coordinates)
     -b, --backend <cpu|gpu>              Backend type (default: auto)
     -h, --help                           Print usage and exit
+    --input-tensor <file>                Normalized F32 tensor (mmlab only)
+    --raw-outputs                        Dump graph tensors before detection head
     --composite <file>                   Composite input image with mask
     --tile <size>                        Tile size to split large images
 
@@ -178,6 +183,10 @@ cli_args cli_parse(int argc, char** argv) {
             } else {
                 throw except("Unknown backend type '{}', must be one of: cpu, gpu", backend_arg);
             }
+        } else if (arg == "--input-tensor") {
+            r.input_tensor = next_arg(argc, argv, i);
+        } else if (arg == "--raw-outputs") {
+            r.raw_outputs = true;
         } else if (arg == "--composite") {
             r.composite = next_arg(argc, argv, i);
         } else if (arg == "--tile") {
@@ -323,6 +332,9 @@ std::tuple<model_file, model_weights> load_model_weights(
 
     model_file file = model_load(model_path_str.c_str());
     model_weights weights = model_init(file.n_tensors() + n_tensors);
+    if (file.arch() == "mmlab") {
+        preferred_layout = runtime_graph_weight_layout(file, preferred_layout);
+    }
     if (preferred_layout == tensor_data_layout::unknown) {
         preferred_layout = file.tensor_layout();
     }
@@ -781,10 +793,14 @@ void run_generated(cli_args const& args) {
         throw except("Model arch is '{}' but command is '{}'", file.arch(), e->name);
     }
 
-    require_inputs(args.inputs, 1, "<image>");
-    image_data image = image_load(args.inputs[0]);
-
-    arch_task const& task = e->task;
+    arch_task task = args.arch == "mmlab" ? runtime_graph_task(file) : e->task;
+    if (args.input_tensor && args.arch != "mmlab") throw except("--input-tensor requires mmlab");
+    image_data image;
+    if (!args.input_tensor) {
+        require_inputs(args.inputs, 1, "<image>");
+        image = image_load(args.inputs[0]);
+    }
+    if (args.raw_outputs) task.kind = arch_kind::raw;
     // 비정사각 모델은 `input_w`/`input_h` 를 싣는다. 0 이면 정사각(`input_size`).
     const int IW = task.input_w ? task.input_w : task.input_size;
     const int IH = task.input_h ? task.input_h : task.input_size;
@@ -792,14 +808,29 @@ void run_generated(cli_args const& args) {
     // 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
     // **letterbox 가 아니라 단순 리사이즈**다 — 종횡비가 바뀌므로 박스를 되돌릴 때
     // x·y 배율을 따로 쓴다.
-    const int nch = n_channels(image.format);
+    const int nch = args.input_tensor ? 3 : n_channels(image.format);
     letterbox_info lb;
-    std::vector<float> input_cwhn =
-        task.letterbox
+    i64x4 input_shape = args.arch == "mmlab" ? runtime_graph_input_shape(file) : i64x4{3,IW,IH,1};
+    std::vector<float> input_cwhn;
+    if (args.input_tensor) {
+        size_t count=1;
+        for(int i=0;i<4;++i) count *= size_t(input_shape[i]);
+        auto size=std::filesystem::file_size(args.input_tensor);
+        if(size != count*sizeof(float)) throw except("Input tensor byte size {} != {}",size,count*sizeof(float));
+        input_cwhn.resize(count);
+        FILE* f=fopen(args.input_tensor,"rb");
+        if(!f) throw except("Cannot read {}",args.input_tensor);
+        auto read=fread(input_cwhn.data(),sizeof(float),count,f);
+        fclose(f);
+        if(read!=count) throw except("Short input tensor read");
+    } else {
+        if (input_shape[0]!=3 || input_shape[3]!=1) throw except("This model requires --input-tensor");
+        input_cwhn = task.letterbox
             ? preprocess_letterbox(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
                                    task.mean.data(), task.stdv.data(), task.to_rgb, &lb)
             : preprocess(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
                          task.mean.data(), task.stdv.data(), task.to_rgb);
+    }
 
     // mmdet 검출기는 백본 뒤에 C++ 로 조립하는 head 가 붙고, DDQ 는 층 사이에 호스트 NMS 가
     // 끼어 그래프가 여러 벌로 갈린다. 그 경로 전체를 라이브러리가 맡는다.
@@ -808,15 +839,28 @@ void run_generated(cli_args const& args) {
             mmdet_run(backend, weights, file, e->forward, task.mmdet,
                       std::span<const float>(input_cwhn.data(), input_cwhn.size()), IW, IH);
         printf("- detections: %zu\n", dets.size());
-        report_and_draw(image, dets, task, SZ, lb);
-        image_save(image, args.output);
-        printf("-> %s\n", args.output);
+        if(args.input_tensor) {
+            std::string output=std::string(args.output)+".detections.json";
+            FILE* f=fopen(output.c_str(),"w");
+            if(!f) throw except("Cannot write {}",output);
+            fprintf(f,"[");
+            for(size_t i=0;i<dets.size();++i) {
+                auto const& d=dets[i];
+                fprintf(f,"%s[%.9g,%.9g,%.9g,%.9g,%.9g,%d]",i?",":"",d.x1,d.y1,d.x2,d.y2,d.score,d.label);
+            }
+            fprintf(f,"]\n");fclose(f);
+            printf("-> %s\n",output.c_str());
+        } else {
+            report_and_draw(image, dets, task, SZ, lb);
+            image_save(image, args.output);
+            printf("-> %s\n", args.output);
+        }
         return;
     }
 
     compute_graph graph = compute_graph_init(262144);
     model_ref m(weights, graph);
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, IW, IH, 1}, "x");
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape, "x");
     ggml_build_forward_expand(graph, input);
     ggml_build_forward_expand(graph, e->forward(m, input, file));
     // run_hold 는 출력을 다 읽을 때까지 살아 있어야 한다(sched 버퍼 수명).
@@ -843,10 +887,11 @@ void run_generated(cli_args const& args) {
     if (task.kind != arch_kind::detect_yolo) {
         for (size_t i = 0; i < outs.size(); ++i) {
             std::string path = std::string(args.output) + "." + std::to_string(i) + ".bin";
-            if (FILE* f = fopen(path.c_str(), "wb")) {
-                fwrite(outs[i].data(), sizeof(float), outs[i].size(), f);
-                fclose(f);
-            }
+            FILE* f = fopen(path.c_str(), "wb");
+            if(!f) throw except("Cannot write output {}",path);
+            auto written=fwrite(outs[i].data(),sizeof(float),outs[i].size(),f);
+            fclose(f);
+            if(written!=outs[i].size()) throw except("Short output write {}",path);
         }
         printf("-> raw outputs saved to %s.<i>.bin\n", args.output);
         return;
