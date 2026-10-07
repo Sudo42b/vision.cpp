@@ -24,6 +24,7 @@ Tensors modules(model_ref, Json const&, Tensors const&);
 Tensors backbones(model_ref, Json const&, Tensors const&);
 Tensors heads(model_ref, Json const&, Tensors const&);
 Tensors transformers(model_ref, Json const&, Tensors const&);
+Tensors text_fusion(model_ref, Json const&, Tensors const&);
 Tensors models(model_ref, Json const&, Tensors const&);
 Tensors build_architecture(model_ref, std::string const&, Json const&, Tensors const&);
 tensor config_forward(model_ref, tensor, model_file const&);

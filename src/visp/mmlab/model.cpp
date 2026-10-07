@@ -14,7 +14,7 @@ Tensors build_architecture(model_ref m, std::string const& name, Json const& spe
     };
     auto it=architectures.find(name);
     if(it==architectures.end())throw std::runtime_error("unregistered MMLab architecture: "+name);
-    auto expected=it->second=="mmdet"?"MMDetBackbone":it->second=="mmseg"?"MMSegWrap":"MMPoseWrap";
+    auto expected=name=="mmdet.GLIP"?"MMDetTextCond":it->second=="mmdet"?"MMDetBackbone":it->second=="mmseg"?"MMSegWrap":"MMPoseWrap";
     if(spec.at("type")!=expected)throw std::runtime_error("architecture/module protocol mismatch");
     return models(m,spec,inputs);
 }
@@ -34,6 +34,10 @@ Tensors models(model_ref m, Json const& n, Tensors const& inputs) {
     auto out=run(m,child(n,"backbone"),inputs);
     if(c.contains("neck")) out=run(m,child(n,"neck"),out);
     if(type=="MMDetBackbone") return out;
+    if(type=="MMDetTextCond") {
+        out.push_back(parameter(m,n,"text_embedded"));
+        return run(m,child(n,"bbox_head"),out);
+    }
     if(type=="MMSegWrap") {
         if(n.at("attrs").value("multimodal",false))
             throw std::runtime_error("special segmentation predict protocol not implemented");
@@ -72,7 +76,8 @@ tensor config_forward(model_ref m, tensor x, model_file const& f) {
     if(out.empty()) throw std::runtime_error("mmlab-config: empty output");
     tensor result=nullptr;
     for(size_t i=0;i<out.size();++i) {
-        auto y=image?contiguous_2d_to_cwhn(m,out[i]):out[i];
+        bool token_output=j.at("module").at("type")=="MMDetTextCond" && i<out.size()/3;
+        auto y=image&&!token_output?contiguous_2d_to_cwhn(m,out[i]):out[i];
         result=compute_graph_output(m,y,tensor_name(("out_"+std::to_string(i)).c_str()));
     }
     return result;

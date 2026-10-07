@@ -31,6 +31,7 @@ target_sources(visioncpp PRIVATE
   mmlab/backbones.cpp
   mmlab/heads.cpp
   mmlab/transformers.cpp
+  mmlab/text_fusion.cpp
   mmlab/model.cpp
   draw.cpp
   c-api.cpp
