@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """vision_install.py — g2c 생성물을 등록하고 vision.cpp 를 다시 빌드한다.
 
-    vision-install Yolo26m
+    vision-install ResNet
     vision-install Seg --mean 123.675,116.28,103.53 --std 58.395,57.12,57.375
 
 install_arch.py 로 등록한 뒤 CMake configure·build 를 수행하고, cmake --install 로
@@ -75,7 +75,7 @@ def main(argv=None):
         prog="vision-install",
         description="g2c 생성물을 vision.cpp 에 등록하고 다시 빌드한다.",
         epilog="여기서 인식하지 않는 옵션은 install_arch.py 로 그대로 넘어간다 "
-               "(--detect-yolo, --nms, --mean, --std, --classes, --size 등).",
+               "(--mmdet, --mean, --std, --size 등).",
     )
     ap.add_argument("name", help="아키텍처 이름. g2c 의 --name 값이다")
     ap.add_argument("--source", default=None, help="생성물 폴더 (기본: output/<name>)")

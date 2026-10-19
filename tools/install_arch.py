@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """g2c 산출물을 vision.cpp 라이브러리에 붙인다 (arch 등록).
 
-    python tools/install_arch.py <g2c_출력폴더> [--name Yolo26m] [--detect-yolo]
+    python tools/install_arch.py <g2c_출력폴더> [--name ResNet] [--mmdet]
 
 하는 일:
   1. `<Arch>.cpp` / `<Arch>.h` → `src/visp/arch/` 복사
@@ -9,8 +9,8 @@
   3. 끝. **CMake 는 안 건드린다** — `arch/*.cpp` 를 glob 으로 모은다.
 
 왜 g2c 가 아니라 여기서 하나:
-  g2c 는 main 의 source of truth 라 이 경로의 사정을 떠안기지 않는다. 그리고 검출
-  파라미터(클래스 수·stride·NMS-free)는 **gguf 에 없다** — 여기서 채워 넣는다.
+  g2c 는 main 의 source of truth 라 이 경로의 사정을 떠안기지 않는다. 그리고 실행
+  파라미터(입력 크기·전처리·mmdet head 설정)는 **gguf 에 없다** — 여기서 채워 넣는다.
 
 ⚠️ 등록은 **공유 라이브러리 전제**다. static 으로 링크하면 아무도 참조하지 않는 전역
    객체를 링커가 버려 등록이 통째로 사라진다(`--whole-archive` 필요) → `DECISIONS.md`.
@@ -130,35 +130,6 @@ def gguf_arch(out_dir, cls):
     return m.group(1)
 
 
-def detect_shapes(out_dir, cls):
-    r"""생성 `<cls>.py` 에서 탐지 헤드의 클래스 수를 읽는다. 못 읽으면 80.
-
-    ⚠️ **예전엔 `<cls>.weights.txt` 에서 `cv3.*\[(\d+),` 를 찾았는데 그 파일에는
-       shape 대괄호가 없다** — 순수 텐서 이름만 있다. 정규식이 **한 번도 안 맞아서**
-       언제나 80 으로 조용히 떨어졌다(2026-09-01 실측). COCO 모델은 우연히 맞았고
-       커스텀 클래스 수 모델은 조용히 틀렸다.
-
-       생성 `.py` 에는 `out_channels=` 가 주석의 모듈 경로와 함께 남는다. 탐지 헤드
-       (`Detect[...]`) 안의 마지막 `cv3` conv 출력 채널이 클래스 수다.
-    """
-    py = os.path.join(out_dir, cls + ".py")
-    if not os.path.exists(py):
-        print(f"  ⚠ {cls}.py 가 없다 — 클래스 수를 80 으로 둔다. 다르면 --classes 로 줘라")
-        return 80
-    nc = None
-    for line in open(py, encoding="utf-8"):
-        if "CONV2D" not in line or "Detect[" not in line or "cv3" not in line:
-            continue
-        m = re.search(r"out_channels=(\d+)", line)
-        if m:
-            nc = int(m.group(1))
-    if nc is None:
-        print(f"  ⚠ {cls}.py 에서 탐지 헤드를 못 찾았다 — 80 으로 둔다. "
-              f"다르면 --classes 로 줘라")
-        return 80
-    return nc
-
-
 def traced_size(out_dir, cls, fallback):
     """생성 `<Arch>.py` 에서 trace 입력 크기를 읽는다.
 
@@ -183,16 +154,12 @@ def traced_size(out_dir, cls, fallback):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", help="g2c --output 폴더")
-    ap.add_argument("--name", help="클래스명(예: Yolo26m). 생략하면 .cpp 가 하나일 때 자동")
-    ap.add_argument("--detect-yolo", action="store_true",
-                    help="YOLO dense 검출기로 등록(디코드+박스 그리기)")
+    ap.add_argument("--name", help="클래스명(예: ResNet). 생략하면 .cpp 가 하나일 때 자동")
     ap.add_argument("--mmdet", action="store_true",
                     help="mmdet 검출기로 등록. mmpt 가 만든 <Cls>.postproc.h 를 함께 설치해 "
                          "head 조립과 디코드 파라미터를 등록 단위에 싣는다")
     ap.add_argument("--postproc",
                     help="mmpt 가 만든 <이름>.postproc.h 경로. 생략하면 출력 폴더에서 찾는다")
-    ap.add_argument("--classes", type=int, default=0, help="클래스 수(0=자동)")
-    ap.add_argument("--strides", default="8,16,32")
     ap.add_argument("--size", type=int, default=0,
                     help="입력 해상도. 생략하면 생성 <Arch>.py 에서 읽는다")
     ap.add_argument("--mean", default="0,0,0",
@@ -200,9 +167,6 @@ def main():
                          "'123.675,116.28,103.53'")
     ap.add_argument("--std", default="255,255,255",
                     help="전처리 표준편차. torchvision 분류기는 '58.395,57.12,57.375'")
-    ap.add_argument("--score-thr", type=float, default=0.25)
-    ap.add_argument("--nms", action="store_true",
-                    help="NMS 를 건다(기본은 NMS-free — YOLOv10/26 은 one2one 이라 필요 없다)")
     a = ap.parse_args()
 
     cls, cpp, hdr = find_outputs(a.out_dir, a.name)
@@ -257,28 +221,6 @@ def main():
             body.append("            " + ", ".join(f'"{n}"' for n in COCO80[i:i + 6]) + ",")
         body.append("        };")
         body.append("    }")
-    elif a.detect_yolo:
-        nc = a.classes or detect_shapes(a.out_dir, cls)
-        strides = [s.strip() for s in a.strides.split(",") if s.strip()]
-        names = COCO80 if nc == 80 else []
-        body = [
-            "    t.kind = visp::arch_kind::detect_yolo;",
-            f"    t.num_classes = {nc};",
-            "    t.strides = {" + ", ".join(f"{s}.0f" for s in strides) + "};",
-            f"    t.nms_free = {'false' if a.nms else 'true'};",
-            f"    t.score_thr = {a.score_thr}f;",
-            f"    t.input_size = {size};",
-            f"    t.input_w = {iw};",
-            f"    t.input_h = {ih};",
-            # YOLO 는 letterbox 를 전제한다. 직접 리사이즈로 넣으면 비정사각 이미지에서
-            # 종횡비가 뭉개져 점수가 흔들린다(2026-09-02 실측).
-            "    t.letterbox = true;",
-        ] + norm
-        if names:
-            body.append("    t.class_names = {")
-            for i in range(0, len(names), 6):
-                body.append("        " + ", ".join(f'"{n}"' for n in names[i:i + 6]) + ",")
-            body.append("    };")
     else:
         # 검출기가 아니어도 크기는 실어야 한다 — 러너가 그 크기로 입력을 만든다.
         body = ["    t.kind = visp::arch_kind::raw;",

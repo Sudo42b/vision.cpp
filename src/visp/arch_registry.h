@@ -1,8 +1,8 @@
 // arch_registry.h — g2c 가 생성한 arch 를 **이름으로** 찾아 실행한다.
 //
 // 왜 있나: 생성물을 CLI 에 붙일 때마다 enum·도움말·인자파싱·전방선언·switch·본체를
-// 손으로 고쳐야 했다. `inference_yolov9t.cpp` 가 그렇게 7곳을 고쳤는데 CMake 한 줄을
-// 빠뜨려 **빌드에서 통째로 빠진 채 죽은 코드**가 됐다(아무도 모르고 있었다).
+// 손으로 고쳐야 했다. 한 번은 그렇게 7곳을 고쳤는데 CMake 한 줄을 빠뜨려
+// **빌드에서 통째로 빠진 채 죽은 코드**가 됐다(아무도 모르고 있었다).
 // 생성물은 시그니처가 균일하므로 등록으로 대신할 수 있다:
 //
 //     tensor <Arch>_forward(model_ref, tensor, <Arch>_params const&);
@@ -33,19 +33,12 @@ using arch_forward_fn = tensor (*)(model_ref, tensor, model_file const&);
 
 // 그래프 뒤에 무엇을 해야 하는지. **gguf 에 이 정보가 없다** — g2c 가 안 쓴다.
 // g2c 를 고치지 않기로 했으므로 `tools/install_arch.py` 가 모델을 보고 등록 TU 에 박는다.
-enum class arch_kind { raw, detect_yolo, detect_mmdet };
+enum class arch_kind { raw, detect_mmdet };
 
 struct arch_task {
     arch_kind kind = arch_kind::raw;
 
-    // detect_yolo 전용. 그래프가 내는 것은 **격자 단위 ltrb + 클래스 로짓**이고,
-    // 격자점 곱·시그모이드·top-k 는 호스트가 한다(g2c 가 그 앞에서 끊는다).
     int num_classes = 80;
-    std::vector<float> strides{8, 16, 32};
-    bool nms_free = true;          // YOLO26/v10: one2one 이라 NMS 없이 top-k
-    float score_thr = 0.25f;
-    float nms_thr = 0.7f;          // nms_free 면 안 쓴다
-    int max_det = 300;
     int input_size = 640;          // 정사각 모델의 한 변
     // ⚠️ **비정사각 모델은 여기에 실어야 한다.** 0 이면 `input_size` 를 정사각으로 쓴다.
     //    안 실으면 러너가 정사각으로 리사이즈해 **조용히 틀린 출력**을 낸다 —
@@ -54,13 +47,7 @@ struct arch_task {
     int input_w = 0;
     int input_h = 0;
 
-    // 비율을 유지하고 남는 자리를 회색으로 채운다(YOLO 규약). **YOLO 계열에서만 켠다** —
-    // 분할·자세는 비율을 뭉개는 직접 리사이즈가 맞다.
-    // ⚠️ 정사각 이미지로만 재면 이 값이 틀려도 안 드러난다(2026-09-02 실측:
-    //    512×512 는 차이 없고, 452×627 에서 handbag 점수가 0.87 vs 0.94 로 갈렸다).
-    bool letterbox = false;
-
-    // 전처리 정규화 `(v - mean) / std`. 기본값은 0~1 (YOLO 규약).
+    // 전처리 정규화 `(v - mean) / std`. 기본값은 0~1.
     // ⚠️ **모델마다 다르다.** torchvision 분류기는 ImageNet 통계를 쓰는데, 0~1 로 돌리면
     //    크래시 없이 값만 틀린다(ResNet-18 실측 상대 L1 5.1e-02, argmax 는 우연히 일치).
     std::array<float, 3> mean{0.0f, 0.0f, 0.0f};
@@ -68,9 +55,6 @@ struct arch_task {
     // 채널 순서를 뒤집는다. mmdet 설정의 `to_rgb` 가 그대로 온다 — 안 뒤집으면 크래시 없이
     // 값만 틀린다.
     bool to_rgb = false;
-    // 그래프 출력 중 몇 번이 박스/점수인지. 생성 모델마다 다르다(one2many 분기가 앞에 올 수 있다).
-    int box_out = -1;              // -1 = 자동(뒤에서 두 번째 4채널 출력)
-    int score_out = -1;
     std::vector<std::string> class_names;   // 비면 "class N"
 
     // detect_mmdet 전용. head 조립과 디코드에 필요한 값 전부가 여기 들어간다.

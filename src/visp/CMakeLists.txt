@@ -1,13 +1,12 @@
 add_library(visioncpp)
 
 # arch/*.cpp 는 **자동으로 모은다.** 예전엔 손으로 나열했는데, g2c 생성물을 붙일 때마다
-# 한 줄 추가를 빠뜨리면 그 파일이 통째로 빌드에서 빠진 채 아무도 모른다
-# (`src/cli/inference_yolov9t.cpp` 가 실제로 그렇게 죽은 코드가 됐다).
+# 한 줄 추가를 빠뜨리면 그 파일이 통째로 빌드에서 빠진 채 아무도 모른다.
 # ⚠️ CONFIGURE_DEPENDS 가 있어야 파일을 추가했을 때 CMake 가 다시 돈다.
 file(GLOB VISP_ARCH_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/arch/*.cpp")
 
 # VISP_ARCHS 를 주면 그 이름만 빌드한다. 안 주면 위에서 모은 arch/ 전체 — 기본 동작은 그대로다.
-#   cmake -S . -B build -DVISP_ARCHS="Yolo26m;Seg"
+#   cmake -S . -B build -DVISP_ARCHS="ResNet;FamAnn"
 # ⚠️ 없는 이름은 여기서 멈춘다. 조용히 빠지면 「등록했는데 vision-cli 에 안 보인다」로
 #    나타나고, 원인이 이 목록이라 찾기 어렵다.
 if(VISP_ARCHS)

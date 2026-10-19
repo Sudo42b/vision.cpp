@@ -287,7 +287,7 @@ d = np.fromfile("boxes.bin", dtype="float32").reshape(-1, 6)
 ## Models whose head survives tracing
 
 Everything above splits the model because an MMDetection head cannot be traced. Most other
-detectors have no such problem — an ultralytics YOLO or a torchvision model traces whole, and
+models have no such problem — a torchvision model, for example, traces whole, and
 then none of the steps above apply. A compiler emits the entire graph, `install_arch.py` drops
 it into `src/visp/arch/` with a registration unit beside it, and `vision-cli` dispatches on the
 architecture name recorded in the GGUF:
@@ -299,12 +299,13 @@ started inside `vision.cpp/` finds no project there: it builds a second virtual 
 then fails to spawn.
 
 ```sh
-uv run g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m \
-    --output out --input-shape 1,3,640,640
-python vision.cpp/tools/install_arch.py out --name Yolo26m --detect-yolo
+uv run g2c --model "torchvision.models.resnet18(weights='DEFAULT')" --name Resnet18 \
+    --output out --input-shape 1,3,224,224
+python vision.cpp/tools/install_arch.py out --name Resnet18 \
+    --mean 123.675,116.28,103.53 --std 58.395,57.12,57.375
 cmake --build vision.cpp/build -j4
-./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf \
-    -i vision.cpp/tests/input/cat-and-hat.jpg -o detected.png
+./vision.cpp/build/bin/vision-cli <arch> -m out/Resnet18.gguf \
+    -i vision.cpp/tests/input/cat-and-hat.jpg -o out/resnet18
 ```
 
 > ⚠️ **Read the `→ gguf:` line, not the exit code.** A `g2c` run that prints `done` without a
@@ -315,22 +316,15 @@ cmake --build vision.cpp/build -j4
 > so a static link discards the whole translation unit. The build succeeds and the command
 > silently disappears from `vision-cli --help`.
 
-`--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
-is NMS-free — so the result comes back as boxes: `vision-cli` draws them and prints their
-coordinates and scores. Registered without the flag, the same command writes the graph
-outputs as raw `float32` files instead, which is what a numerical comparison needs. The `.bin`
-rule described under *Output* above belongs to `run_mmdet`; a registered detector writes an
-image whatever the output path is called. An MMDetection detector registered with `--mmdet`
-behaves like `--detect-yolo` here: `vision-cli` draws the boxes and prints them.
+`<arch>` is the architecture name that `install_arch.py` prints after registration. A model
+registered this way writes its graph outputs as raw `float32` files (`<output>.<i>.bin`), which
+is what a numerical comparison needs. The `.bin` rule described under *Output* above belongs to
+`run_mmdet`. An MMDetection detector registered with `--mmdet` is decoded instead: `vision-cli`
+draws the boxes and prints their coordinates and scores.
 
 The full version of this route — options, failure modes, how to measure it — is
 `docs/vision-cpp-mmdet-guide-en.md` in the compiler checkout that carries this repository
 as a submodule.
-
-Measured on `yolo26m` at 640, against ultralytics on the same pixels: the three detections
-above 0.25 agree in class and score (cat 0.918, couch 0.771, tv 0.681) with box coordinates
-within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxes and
-4.7e-04 on the class logits.
 
 ## What decodes to boxes
 

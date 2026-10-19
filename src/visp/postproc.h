@@ -198,25 +198,6 @@ std::vector<detection> detect_yolox(
     std::vector<std::vector<float>> const& obj,
     std::vector<std::pair<int, int>> const& feat_hw, yolox_params const& p);
 
-// ── YOLO dense (v8/v10/v26 계열, 격자 ltrb) ─────────────────────────────────
-// g2c 생성 그래프는 **디코드 앞에서 끊는다** — 격자 단위 ltrb 와 클래스 **로짓**을 낸다.
-// 여기서 stride 곱 · 격자점 더하기 · 시그모이드 · top-k 를 한다(전부 호스트).
-struct yolo_dense_params {
-    std::vector<float> strides{8, 16, 32};
-    float point_offset = 0.5f;   // ultralytics make_anchors 규약
-    int num_classes = 80;
-    float score_thr = 0.25f;
-    float nms_thr = 0.7f;
-    bool nms_free = true;        // one2one(YOLOv10/26) 은 NMS 없이 top-k 만
-    int max_det = 300;
-    int input_w = 0, input_h = 0;
-};
-// box[4*N] · score[nc*N] 은 **채널 우선**(flat[c*N + a]) — 그래프 덤프 레이아웃 그대로다.
-// N = Σ(W_l·H_l). feat_hw 는 레벨별 (H, W).
-std::vector<detection> detect_yolo_dense(
-    float const* box, float const* score,
-    std::vector<std::pair<int, int>> const& feat_hw, yolo_dense_params const& p);
-
 // ── SABL (Side-Aware Boundary Localization) ─────────────────────────────────
 // 박스를 델타로 한 번에 내지 않는다. **변(l,r,t,d)마다** 앵커를 `num_buckets` 칸으로 나눠
 // ① 어느 칸인지 **분류**하고 ② 그 칸 안의 **오프셋**을 회귀한다. 그래서 box 갈래가 둘이다.
@@ -402,21 +383,6 @@ std::vector<float> roi_align(
 std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
                               int dst_w, int dst_h, float const mean[3], float const std[3],
                               bool to_rgb, int* out_w = nullptr, int* out_h = nullptr);
-
-// letterbox: **비율을 유지**하고 남는 자리를 회색(114)으로 채운다. YOLO 계열이 이 규약이다.
-// ⚠️ **분할·자세 계열에 켜지 마라.** 그쪽은 비율을 뭉개는 직접 리사이즈가 맞다
-//    (mmseg cityscapes 512×1024 는 512×1024 로 그대로 넣는다).
-// ⚠️ 켜면 좌표계가 달라진다 — 되돌릴 때 `(좌표 - pad) / scale` 이다. 단순 배율로 되돌리면
-//    비정사각 이미지에서 박스가 밀린다(2026-09-02 실측: handbag 점수 0.87 vs 0.94).
-struct letterbox_info {
-    float scale = 1.0f;   // 원본 → 리사이즈 배율(가로·세로 동일)
-    float pad_x = 0.0f;   // 왼쪽 패딩(픽셀)
-    float pad_y = 0.0f;   // 위쪽 패딩(픽셀)
-};
-std::vector<float> preprocess_letterbox(uint8_t const* img, int img_h, int img_w, int img_c,
-                                        int dst_w, int dst_h, float const mean[3],
-                                        float const std[3], bool to_rgb, letterbox_info* info,
-                                        float pad_value = 114.0f);
 
 // 정사각 편의 오버로드 — 기존 호출부 호환.
 inline std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
