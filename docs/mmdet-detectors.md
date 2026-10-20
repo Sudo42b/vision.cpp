@@ -14,7 +14,7 @@ that way serves every family that shares its structure.
 ```
  image ──▶ backbone + neck (compiled ggml graph) ──▶ FPN levels
                                                           │
-                                                    head  │  tools/detect/head.cpp
+                                                    head  │  src/visp/mmdet_head.cpp
                                                           ▼
                                                     raw cls / bbox
                                                           │
@@ -80,17 +80,19 @@ python tools/frontend/mmdet/mmdet_to_pt.py \
 
 Outputs:
 
-`backbone.pt`
-:   The backbone and neck as a traceable module. The head is kept as an attribute so that its
-    weights are preserved in the `state_dict`, but it does not participate in the forward pass.
+**`backbone.pt`**
 
-`backbone.postproc.h`
-:   Everything the C++ side needs to reconstruct the head and decode its output: anchor
-    generator settings, bbox coder statistics, head convolution layout, and the pre-processing
-    normalisation taken from the config's `data_preprocessor` — emitted as a generated
-    `mmdet_params()` function. These values are constants once the architecture is chosen, so
-    they are compiled into the runner rather than read at run time.
-    See [Configuration reference](#configuration-reference).
+  The backbone and neck as a traceable module. The head is kept as an attribute so that its
+  weights are preserved in the `state_dict`, but it does not participate in the forward pass.
+
+**`backbone.postproc.h`**
+
+  Everything the C++ side needs to reconstruct the head and decode its output: anchor
+  generator settings, bbox coder statistics, head convolution layout, and the pre-processing
+  normalisation taken from the config's `data_preprocessor` — emitted as a generated
+  `mmdet_params()` function. These values are constants once the architecture is chosen, so
+  they are compiled into the runner rather than read at run time.
+  See [Configuration reference](#configuration-reference).
 
 Those two are what you read. Two more land beside them, and they are not optional: saving a
 module pickles its classes by module name, so whatever opens the `.pt` has to be able to
@@ -151,24 +153,41 @@ Graph contract
 If a level cannot be found the runner stops and reports the missing `out_<n>`, which means the
 generated graph did not name its outputs as expected.
 
-### Step 3 — Build the runner
+### Step 3 — Register and build
+
+```sh
+python tools/install_arch.py output/MMDetBackbone --mmdet --postproc backbone.postproc.h
+cmake --build build -j8
+```
+
+Registration copies the generated graph and the parameters header into `src/visp/arch/` and
+writes a registration unit that carries the head configuration, so `vision-cli` finds the
+detector by name. The parameters header is renamed per architecture, which is what lets more
+than one detector live in the same executable.
+
+### Step 3b — The verification runner
+
+`vision-cli` covers the normal path. The separate runner exists for comparison work: it accepts
+an already pre-processed `.bin` tensor as input, and `MMDET_DUMP_HEAD` writes the tensors before
+decoding.
 
 ```sh
 bash tools/build/build_mmdet_cpp.sh output/MMDetBackbone backbone.postproc.h
 ```
 
-The script compiles three translation units together, with the generated parameters
-included as a header, and links them against `libvisioncpp`:
+The script compiles the runner and the generated graph, with the generated parameters included
+as a header, and links them against `libvisioncpp`, which now carries the head assembler and the
+decode sequence:
 
-- `tools/verify/backbone/run_mmdet.cpp` — the runner,
-- `tools/detect/head.cpp` — the head component,
+- `tools/verify/mmdet/backbone/run_mmdet.cpp` — the verification runner,
 - `output/MMDetBackbone/MMDetBackbone.cpp` — the generated graph,
 - `backbone.postproc.h` — the generated parameters.
 
-`build_mmdet_cpp.sh <gen_dir> [params.h] [arch_name]`
-:   `gen_dir` is the directory holding the generated `.cpp`, `.h` and `.gguf`. The parameters
-    header is found in `gen_dir` when it is there, and named explicitly otherwise.
-    `arch_name` defaults to the base name of the `.cpp` found there.
+**`build_mmdet_cpp.sh <gen_dir> [params.h] [arch_name]`**
+
+  `gen_dir` is the directory holding the generated `.cpp`, `.h` and `.gguf`. The parameters
+  header is found in `gen_dir` when it is there, and named explicitly otherwise.
+  `arch_name` defaults to the base name of the `.cpp` found there.
 
 The library is looked up in `build/`, which is where [Building](../README.md#building) puts it.
 If you configured elsewhere, name that directory:
@@ -183,33 +202,39 @@ The result is `<gen_dir>/run_mmdet`.
 ### Step 4 — Run
 
 ```sh
-output/MMDetBackbone/run_mmdet \
-    output/MMDetBackbone/MMDetBackbone.gguf \
-    image.jpg \
-    detected.png \
-    512
+build/bin/vision-cli mmdetbackbone \
+    -m output/MMDetBackbone/MMDetBackbone.gguf \
+    -i image.jpg \
+    -o detected.png
 ```
+
+The input resolution is fixed at registration, so it is not passed on the command line. The
+verification runner takes it as an argument because it also accepts raw tensors.
 
 ```
 run_mmdet <gguf> <input> <output> [size=512]
 ```
 
-`<gguf>`
-:   Weights produced in step 2.
+**`<gguf>`**
 
-`<input>`
-:   An image (`.jpg`, `.jpeg`, `.png`, `.bmp`) or a pre-processed tensor (`.bin`).
-    Images are resized and normalised in-process using `preprocess()`; the mean, standard
-    deviation and channel order are compiled in. A `.bin` file is taken as-is and must
-    contain `3 × size × size` `float32` values in CWHN order.
+  Weights produced in step 2.
 
-`<output>`
-:   Where to write the result. The extension decides what is written: `.bin` gives raw
-    detections, anything else gives the input image with the boxes drawn on it.
+**`<input>`**
 
-`[size]`
-:   Input resolution. Must match the value passed to `--size` in step 1 and the shape the graph
-    was compiled for.
+  An image (`.jpg`, `.jpeg`, `.png`, `.bmp`) or a pre-processed tensor (`.bin`).
+  Images are resized and normalised in-process using `preprocess()`; the mean, standard
+  deviation and channel order are compiled in. A `.bin` file is taken as-is and must
+  contain `3 × size × size` `float32` values in CWHN order.
+
+**`<output>`**
+
+  Where to write the result. The extension decides what is written: `.bin` gives raw
+  detections, anything else gives the input image with the boxes drawn on it.
+
+**`[size]`**
+
+  Input resolution. Must match the value passed to `--size` in step 1 and the shape the graph
+  was compiled for.
 
 ### Output
 
@@ -256,13 +281,13 @@ import numpy as np
 d = np.fromfile("boxes.bin", dtype="float32").reshape(-1, 6)
 ```
 
-`tools/verify/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
+`tools/verify/common/draw_boxes.py` draws such a file afterwards, with class names and scores as text.
 
 
 ## Models whose head survives tracing
 
 Everything above splits the model because an MMDetection head cannot be traced. Most other
-detectors have no such problem — an ultralytics YOLO or a torchvision model traces whole, and
+models have no such problem — a torchvision model, for example, traces whole, and
 then none of the steps above apply. A compiler emits the entire graph, `install_arch.py` drops
 it into `src/visp/arch/` with a registration unit beside it, and `vision-cli` dispatches on the
 architecture name recorded in the GGUF:
@@ -274,12 +299,13 @@ started inside `vision.cpp/` finds no project there: it builds a second virtual 
 then fails to spawn.
 
 ```sh
-uv run g2c --model "ultralytics.YOLO('yolo26m.pt')" --name Yolo26m \
-    --output out --input-shape 1,3,640,640
-python vision.cpp/tools/install_arch.py out --name Yolo26m --detect-yolo
+uv run g2c --model "torchvision.models.resnet18(weights='DEFAULT')" --name Resnet18 \
+    --output out --input-shape 1,3,224,224
+python vision.cpp/tools/install_arch.py out --name Resnet18 \
+    --mean 123.675,116.28,103.53 --std 58.395,57.12,57.375
 cmake --build vision.cpp/build -j4
-./vision.cpp/build/bin/vision-cli yolo26m -m out/Yolo26m.gguf \
-    -i vision.cpp/tests/input/cat-and-hat.jpg -o detected.png
+./vision.cpp/build/bin/vision-cli <arch> -m out/Resnet18.gguf \
+    -i vision.cpp/tests/input/cat-and-hat.jpg -o out/resnet18
 ```
 
 > ⚠️ **Read the `→ gguf:` line, not the exit code.** A `g2c` run that prints `done` without a
@@ -290,21 +316,15 @@ cmake --build vision.cpp/build -j4
 > so a static link discards the whole translation unit. The build succeeds and the command
 > silently disappears from `vision-cli --help`.
 
-`--detect-yolo` supplies what the GGUF does not carry — class count, strides, whether the head
-is NMS-free — so the result comes back as boxes: `vision-cli` draws them and prints their
-coordinates and scores. Registered without the flag, the same command writes the graph
-outputs as raw `float32` files instead, which is what a numerical comparison needs. The `.bin`
-rule described under *Output* above belongs to `run_mmdet`; a registered detector writes an
-image whatever the output path is called.
+`<arch>` is the architecture name that `install_arch.py` prints after registration. A model
+registered this way writes its graph outputs as raw `float32` files (`<output>.<i>.bin`), which
+is what a numerical comparison needs. The `.bin` rule described under *Output* above belongs to
+`run_mmdet`. An MMDetection detector registered with `--mmdet` is decoded instead: `vision-cli`
+draws the boxes and prints their coordinates and scores.
 
 The full version of this route — options, failure modes, how to measure it — is
 `docs/vision-cpp-mmdet-guide-en.md` in the compiler checkout that carries this repository
 as a submodule.
-
-Measured on `yolo26m` at 640, against ultralytics on the same pixels: the three detections
-above 0.25 agree in class and score (cat 0.918, couch 0.771, tv 0.681) with box coordinates
-within 0.1 px, and the pre-decode tensors are at relative L1 1.7e-03 on the boxes and
-4.7e-04 on the class logits.
 
 ## What decodes to boxes
 
@@ -324,7 +344,7 @@ If you need to know how far to trust the number, read the method section above i
 ## Detection heads
 
 Head components take FPN features and produce the raw per-level tensors that the decoders
-expect. They are declared in `tools/detect/head.h`.
+expect. They are declared in `src/visp/mmdet_head.h`.
 
 ### `anchor_head_forward`
 
@@ -385,9 +405,9 @@ reg_denom`).
 
 ### Adding a head
 
-1. Add a `<name>_head_forward` function to `tools/detect/head.cpp` that turns FPN features
-   into raw per-level tensors. Use library primitives (`conv_2d`, `group_norm`,
-   `conv_2d_deform`); do not add framework-specific code to `src/visp`.
+1. Add a `<name>_head_forward` function to `src/visp/mmdet_head.cpp` that turns FPN features
+   into raw per-level tensors, and dispatch to it from `mmdet_head_forward`. Build on library
+   primitives (`conv_2d`, `group_norm`, `conv_2d_deform`).
 2. Extract the head's structural parameters in `mmdet_wrap.postproc_cfg`; they are emitted
    into the generated parameters header.
 3. Connect the raw output to the matching decoder in `visp/postproc.h`, or add one if the
@@ -409,35 +429,40 @@ struct detection {
 
 ### Pre-processing
 
-`std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c, int out_size, float const mean[3], float const std[3], bool to_rgb, int* out_w = nullptr, int* out_h = nullptr)`
-:   Resize to `out_size × out_size` and normalise to `(v - mean) / std`, optionally swapping
-    channel order. Returns a CWHN `float32` tensor ready for the graph input.
+**`std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c, int out_size, float const mean[3], float const std[3], bool to_rgb, int* out_w = nullptr, int* out_h = nullptr)`**
+
+  Resize to `out_size × out_size` and normalise to `(v - mean) / std`, optionally swapping
+  channel order. Returns a CWHN `float32` tensor ready for the graph input.
 
 ### Dense heads
 
 <a id="detect_anchor"></a>
-`std::vector<detection> detect_anchor(cls_scores, bbox_preds, feat_hw, det_params const& p, score_factors = nullptr)`
-:   Anchor-based decoding: anchor generation, delta decoding, per-level top-k, score
-    thresholding and NMS. Used by RetinaNet, ATSS, PAA and other delta-coded heads.
-    `score_factors` is the optional centerness/IoU branch. MMDetection thresholds and takes
-    top-k on the class score **alone** and multiplies the factor in afterwards, so passing it
-    here rather than folding it into `cls_scores` keeps the surviving set the same.
+**`std::vector<detection> detect_anchor(cls_scores, bbox_preds, feat_hw, det_params const& p, score_factors = nullptr)`**
 
-`std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`
-:   Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
-    the class score and have no such branch. `bbox_preds` are already pixel distances: the head
-    component applies the DFL integral — DFL is Distribution Focal Loss, which predicts each
-    box edge as a distribution over bins and recovers the distance by integrating it — plus the
-    stride multiply and the exponent, so this function
-    must not apply a stride again. `point_offset` is 0.5 for FCOS and 0 for the heads built on
-    an `AnchorGenerator`.
+  Anchor-based decoding: anchor generation, delta decoding, per-level top-k, score
+  thresholding and NMS. Used by RetinaNet, ATSS, PAA and other delta-coded heads.
+  `score_factors` is the optional centerness/IoU branch. MMDetection thresholds and takes
+  top-k on the class score **alone** and multiplies the factor in afterwards, so passing it
+  here rather than folding it into `cls_scores` keeps the surviving set the same.
 
-`std::vector<detection> detect_yolox(cls, box, obj, feat_hw, yolox_params const& p)`
-:   Grid-based decoding with an objectness branch; score is `sigmoid(cls) * sigmoid(obj)`.
+**`std::vector<detection> detect_fcos(cls_scores, bbox_preds, centerness, feat_hw, fcos_params const& p)`**
 
-`std::vector<detection> detect_detr(float const* cls, float const* bbox, detr_params const& p)`
-:   Set prediction. Takes query logits and normalised `cxcywh` boxes, applies top-k, and
-    performs no NMS. Set `use_sigmoid` for Deformable-DETR-style heads.
+  Anchor-free distance decoding. `centerness` may be empty — GFL and VFNet fold quality into
+  the class score and have no such branch. `bbox_preds` are already pixel distances: the head
+  component applies the DFL integral — DFL is Distribution Focal Loss, which predicts each
+  box edge as a distribution over bins and recovers the distance by integrating it — plus the
+  stride multiply and the exponent, so this function
+  must not apply a stride again. `point_offset` is 0.5 for FCOS and 0 for the heads built on
+  an `AnchorGenerator`.
+
+**`std::vector<detection> detect_yolox(cls, box, obj, feat_hw, yolox_params const& p)`**
+
+  Grid-based decoding with an objectness branch; score is `sigmoid(cls) * sigmoid(obj)`.
+
+**`std::vector<detection> detect_detr(float const* cls, float const* bbox, detr_params const& p)`**
+
+  Set prediction. Takes query logits and normalised `cxcywh` boxes, applies top-k, and
+  performs no NMS. Set `use_sigmoid` for Deformable-DETR-style heads.
 
 `det_params` carries the anchor generator (`strides`, `octave_base_scale`, `octave_scales`,
 `ratios`, `center_offset`), the bbox coder (`means`, `stds`), and the test-time thresholds
@@ -446,32 +471,38 @@ image.
 
 ### Two-stage components
 
-`std::vector<detection> detect_rpn(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`
-:   Region proposals with their objectness scores. NMS runs **per level**, not per class —
-    MMDetection passes level ids to `batched_nms` — and there is no pre-NMS score threshold.
-    The returned `label` is the level the proposal came from.
+**`std::vector<detection> detect_rpn(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`**
 
-`std::vector<float> rpn_proposals(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`
-:   The same computation with the scores dropped: `M × 4` boxes in image coordinates,
-    `M ≤ max_per_img`, which is the form the RoIAlign stage takes.
+  Region proposals with their objectness scores. NMS runs **per level**, not per class —
+  MMDetection passes level ids to `batched_nms` — and there is no pre-NMS score threshold.
+  The returned `label` is the level the proposal came from.
 
-`std::vector<float> roi_align(feats, feat_hw, float const* rois, int m, roi_align_params const& p)`
-:   MMCV-compatible RoIAlign (`aligned = true`, adaptive `sampling_ratio`). Level assignment
-    follows `clamp(floor(log2(sqrt(w*h) / finest_scale + 1e-6)), 0, L-1)`.
-    Returns `M × C × out × out` in NCHW order.
+**`std::vector<float> rpn_proposals(rpn_cls, rpn_bbox, feat_hw, rpn_params const& p)`**
 
-`std::vector<detection> detect_roi(float const* scores, float const* bbox_deltas, float const* proposals, int n, roi_params const& p)`
-:   Final RoI-head decoding: class-wise delta decoding and per-class NMS. `scores` are
-    post-softmax with background last. Set `class_agnostic` when `bbox_pred` has four columns
-    instead of `num_classes * 4`.
+  The same computation with the scores dropped: `M × 4` boxes in image coordinates,
+  `M ≤ max_per_img`, which is the form the RoIAlign stage takes.
+
+**`std::vector<float> roi_align(feats, feat_hw, float const* rois, int m, roi_align_params const& p)`**
+
+  MMCV-compatible RoIAlign (`aligned = true`, adaptive `sampling_ratio`). Level assignment
+  follows `clamp(floor(log2(sqrt(w*h) / finest_scale + 1e-6)), 0, L-1)`.
+  Returns `M × C × out × out` in NCHW order.
+
+**`std::vector<detection> detect_roi(float const* scores, float const* bbox_deltas, float const* proposals, int n, roi_params const& p)`**
+
+  Final RoI-head decoding: class-wise delta decoding and per-class NMS. `scores` are
+  post-softmax with background last. Set `class_agnostic` when `bbox_pred` has four columns
+  instead of `num_classes * 4`.
 
 ### Masks and keypoints
 
-`std::vector<uint8_t> paste_mask(float const* mask_logit, int mh, int mw, detection const& box, float thr = 0.5f, int* out_h = nullptr, int* out_w = nullptr)`
-:   Sigmoid, resize to the box, threshold. Returns a binary mask covering the box.
+**`std::vector<uint8_t> paste_mask(float const* mask_logit, int mh, int mw, detection const& box, float thr = 0.5f, int* out_h = nullptr, int* out_w = nullptr)`**
 
-`std::vector<float> decode_keypoints(float const* heatmap, int k, int hm_h, int hm_w, float stride)`
-:   Per-keypoint argmax over a heatmap; returns `k × 3` as `(x, y, score)`.
+  Sigmoid, resize to the box, threshold. Returns a binary mask covering the box.
+
+**`std::vector<float> decode_keypoints(float const* heatmap, int k, int hm_h, int hm_w, float stride)`**
+
+  Per-keypoint argmax over a heatmap; returns `k × 3` as `(x, y, score)`.
 
 ### Building blocks
 

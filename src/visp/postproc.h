@@ -198,25 +198,6 @@ std::vector<detection> detect_yolox(
     std::vector<std::vector<float>> const& obj,
     std::vector<std::pair<int, int>> const& feat_hw, yolox_params const& p);
 
-// ── YOLO dense (v8/v10/v26 계열, 격자 ltrb) ─────────────────────────────────
-// g2c 생성 그래프는 **디코드 앞에서 끊는다** — 격자 단위 ltrb 와 클래스 **로짓**을 낸다.
-// 여기서 stride 곱 · 격자점 더하기 · 시그모이드 · top-k 를 한다(전부 호스트).
-struct yolo_dense_params {
-    std::vector<float> strides{8, 16, 32};
-    float point_offset = 0.5f;   // ultralytics make_anchors 규약
-    int num_classes = 80;
-    float score_thr = 0.25f;
-    float nms_thr = 0.7f;
-    bool nms_free = true;        // one2one(YOLOv10/26) 은 NMS 없이 top-k 만
-    int max_det = 300;
-    int input_w = 0, input_h = 0;
-};
-// box[4*N] · score[nc*N] 은 **채널 우선**(flat[c*N + a]) — 그래프 덤프 레이아웃 그대로다.
-// N = Σ(W_l·H_l). feat_hw 는 레벨별 (H, W).
-std::vector<detection> detect_yolo_dense(
-    float const* box, float const* score,
-    std::vector<std::pair<int, int>> const& feat_hw, yolo_dense_params const& p);
-
 // ── SABL (Side-Aware Boundary Localization) ─────────────────────────────────
 // 박스를 델타로 한 번에 내지 않는다. **변(l,r,t,d)마다** 앵커를 `num_buckets` 칸으로 나눠
 // ① 어느 칸인지 **분류**하고 ② 그 칸 안의 **오프셋**을 회귀한다. 그래서 box 갈래가 둘이다.
@@ -392,9 +373,33 @@ std::vector<float> roi_align(
     float const* level_rois = nullptr);
 
 // ── 전처리: 이미지(HWC u8) → 모델 입력 텐서(CWHN f32) ───────────────────────
-// resize(size×size) + normalize((v-mean)/std). BGR/RGB·mean/std 는 인자.
+// resize(dst_w×dst_h) + normalize((v-mean)/std). BGR/RGB·mean/std 는 인자.
+//
+// ⚠️ **가로·세로를 따로 받는다.** 예전엔 `out_size` 하나로 정사각 리사이즈만 했는데,
+//    그러면 비정사각 모델이 **조용히 틀린다** — mmseg cityscapes(512×1024)를 넣으면
+//    512×512 로 줄여 출력이 절반만 나오고 에러는 안 난다(2026-09-01 실측).
+//    mmpose 는 전부 256×192 라 하나도 못 돌았다.
+//    정사각 모델은 두 인자에 같은 값을 주면 예전과 동일하다.
 std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
-                              int out_size, float const mean[3], float const std[3],
+                              int dst_w, int dst_h, float const mean[3], float const std[3],
                               bool to_rgb, int* out_w = nullptr, int* out_h = nullptr);
+
+// 비율 유지 전처리 — MMDetection `Resize(keep_ratio=True)` + `Pad`.
+// 배율 f = min(dst_w/img_w, dst_h/img_h) 로 줄인 이미지를 **왼쪽 위**에 두고, 나머지를
+// `pad_value`(정규화 전 픽셀 값)로 채운다. mmdet 은 오른쪽·아래만 채우므로 가운데 정렬
+// letterbox 와 다르다. `scale_x`/`scale_y` 는 (리사이즈 크기 / 원본 크기)이며, 박스를
+// 원본 좌표로 되돌릴 때 이 값으로 나눈다.
+std::vector<float> preprocess_keep_ratio(uint8_t const* img, int img_h, int img_w, int img_c,
+                                         int dst_w, int dst_h, float const mean[3],
+                                         float const std[3], bool to_rgb, float const pad_value[3],
+                                         float* scale_x, float* scale_y);
+
+// 정사각 편의 오버로드 — 기존 호출부 호환.
+inline std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
+                                     int out_size, float const mean[3], float const std[3],
+                                     bool to_rgb, int* out_w = nullptr, int* out_h = nullptr) {
+    return preprocess(img, img_h, img_w, img_c, out_size, out_size, mean, std,
+                      to_rgb, out_w, out_h);
+}
 
 }  // namespace visp

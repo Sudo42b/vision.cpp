@@ -1,7 +1,14 @@
+#include <cctype>
+#include <map>
+#include <string>
+
 #include "util/math.h"
 #include "util/string.h"
 #include "visp/arch_registry.h"
+#include "visp/runtime_graph.h"
+#include "visp/mmlab.h"
 #include "visp/draw.h"
+#include "visp/mmdet_run.h"
 #include "visp/postproc.h"
 #include "visp/vision.h"
 
@@ -33,6 +40,8 @@ struct cli_args {
     // std::string_view device = 0; // -d --device
     // ggml_type float_type = GGML_TYPE_COUNT; // -f32 -f16
 
+    char const* input_tensor = nullptr; // normalized F32 CWHN input for reproducible validation
+    bool raw_outputs = false;
     char const* composite = nullptr; // --composite
     int tile_size = -1;              // --tile
 };
@@ -56,6 +65,8 @@ Options:
     -p, --prompt <x> [<y> ...]           Prompt (eg. pixel coordinates)
     -b, --backend <cpu|gpu>              Backend type (default: auto)
     -h, --help                           Print usage and exit
+    --input-tensor <file>                Normalized F32 tensor (MMLab runners)
+    --raw-outputs                        Dump graph tensors before detection head
     --composite <file>                   Composite input image with mask
     --tile <size>                        Tile size to split large images
 
@@ -173,6 +184,10 @@ cli_args cli_parse(int argc, char** argv) {
             } else {
                 throw except("Unknown backend type '{}', must be one of: cpu, gpu", backend_arg);
             }
+        } else if (arg == "--input-tensor") {
+            r.input_tensor = next_arg(argc, argv, i);
+        } else if (arg == "--raw-outputs") {
+            r.raw_outputs = true;
         } else if (arg == "--composite") {
             r.composite = next_arg(argc, argv, i);
         } else if (arg == "--tile") {
@@ -318,10 +333,18 @@ std::tuple<model_file, model_weights> load_model_weights(
 
     model_file file = model_load(model_path_str.c_str());
     model_weights weights = model_init(file.n_tensors() + n_tensors);
+    if (file.arch() == "mmlab") {
+        preferred_layout = runtime_graph_weight_layout(file, preferred_layout);
+    }
+    if (file.arch() == "mmlab-config") preferred_layout = tensor_data_layout::whcn;
     if (preferred_layout == tensor_data_layout::unknown) {
         preferred_layout = file.tensor_layout();
     }
-    model_transfer(file, weights, dev, dev.preferred_float_type(), preferred_layout);
+    // GTX(NPU) 백엔드는 f16 을 선호한다고 답하지만, 가중치를 f16 으로 올리면 f32 활성과
+    // 섞여 값이 어긋난다. 장치는 내부에서 f16 으로 변환하므로 여기서는 f32 로 통일한다.
+    ggml_type transfer_type = dev.type() == backend_type::cpu ? dev.preferred_float_type()
+                                                              : GGML_TYPE_F32;
+    model_transfer(file, weights, dev, transfer_type, preferred_layout);
     printf("done (%s)\n", t.elapsed_str());
 
     ggml_type ftype = file.float_type();
@@ -346,6 +369,264 @@ void compute_timed(compute_graph const& g, backend_device const& b) {
     compute(g, b);
     printf("complete (%s)\n", t.elapsed_str());
 }
+
+// 장치에 커널이 없는 op(pool_2d·sub·sqrt·div·max 등)를 CPU 로 내려보낸다.
+// ggml_backend_sched 가 op 단위로 백엔드를 고르므로 장치가 못 받는 노드만 CPU 가 맡는다.
+// 폴백이 없으면 그 노드가 실패한 채로 값을 다음 노드에 넘겨 결과가 조용히 틀린다.
+// CPU 백엔드로 실행할 때는 갈라 보낼 곳이 없으므로 기존 경로를 그대로 쓴다.
+// 입력 전송은 그래프 할당 뒤에 해야 하므로 이 함수 안에서 함께 처리한다.
+// sched 와 폴백 CPU 백엔드의 수명을 호출한 쪽으로 넘긴다. 출력 텐서가 sched 버퍼에 있어
+// 결과를 다 읽기 전에 해제하면 안 된다.
+struct sched_run {
+    ggml_backend_sched_t sched = nullptr;
+    ggml_backend_t cpu = nullptr;
+
+    sched_run() = default;
+    sched_run(ggml_backend_sched_t s, ggml_backend_t c) : sched(s), cpu(c) {}
+    sched_run(sched_run const&) = delete;
+    sched_run& operator=(sched_run const&) = delete;
+    sched_run(sched_run&& o) noexcept : sched(o.sched), cpu(o.cpu) {
+        o.sched = nullptr;
+        o.cpu = nullptr;
+    }
+    ~sched_run() {
+        if (sched) {
+            ggml_backend_sched_free(sched);
+        }
+        if (cpu) {
+            ggml_backend_free(cpu);
+        }
+    }
+};
+
+// 그래프를 할당한다. 장치 백엔드로 실행할 때는 ggml_backend_sched 로 할당해 op 단위로
+// 백엔드를 고를 수 있게 한다. 장치에 커널이 없는 op(pool_2d·sub·sqrt·div·max 등)는
+// CPU 가 맡는다. 폴백이 없으면 그 노드가 실패한 채로 값을 다음 노드에 넘겨 결과가
+// 조용히 틀린다.
+//
+// 반환한 sched_run 은 출력을 다 읽을 때까지 살려 둔다. 출력 텐서가 sched 버퍼 안에 있다.
+sched_run graph_allocate_split(compute_graph& g, backend_device const& b) {
+    // 백엔드마다 build flag 가 달라 **같은 모델이라도 그래프 모양이 달라진다.**
+    // CPU 와 장치의 값을 댈 때 그래프가 같은지 먼저 확인하지 않으면, 커널이 틀린 것과
+    // 그래프가 다른 것을 구별할 수 없다. G2C_NPU_OP_CENSUS=1 로 op 분포를 찍는다.
+    if (std::getenv("G2C_NPU_OP_CENSUS")) {
+        std::map<std::string, int> census;
+        for (int i = 0; i < ggml_graph_n_nodes(g.graph); ++i) {
+            ++census[ggml_op_name(ggml_graph_node(g.graph, i)->op)];
+        }
+        printf("- op census (%s, %d nodes):", b.type() == backend_type::cpu ? "cpu" : "dev",
+               ggml_graph_n_nodes(g.graph));
+        for (auto const& [name, n] : census) {
+            printf(" %s=%d", name.c_str(), n);
+        }
+        printf("\n");
+        // 장치의 supports_op 은 **축마다** ne <= UINT16_MAX 만 본다. 축이 다 작아도
+        // 총 원소가 65535 를 넘는 텐서는 그 검사를 통과한다. 몇 개인지 센다.
+        {
+            int over = 0, total = 0;
+            int64_t worst = 0;
+            std::map<std::string, int> over_by_op;
+            for (int i = 0; i < ggml_graph_n_nodes(g.graph); ++i) {
+                ggml_tensor* n = ggml_graph_node(g.graph, i);
+                ++total;
+                int64_t ne = ggml_nelements(n);
+                if (ne > 65535) {
+                    ++over;
+                    ++over_by_op[ggml_op_name(n->op)];
+                    worst = std::max(worst, ne);
+                }
+            }
+            printf("- 원소 65535 초과 노드: %d / %d (최대 %lld):", over, total,
+                   (long long)worst);
+            for (auto const& [name, n] : over_by_op) {
+                printf(" %s=%d", name.c_str(), n);
+            }
+            printf("\n");
+        }
+        // stride 까지 찍는다. 장치의 conv 문지기는 nb[0] 만 보므로, 바깥 축이 뒤섞인
+        // 텐서도 통과한다. 그 상황인지는 nb 를 눈으로 봐야 갈린다.
+        for (int i = 0; i < ggml_graph_n_nodes(g.graph); ++i) {
+            ggml_tensor* n = ggml_graph_node(g.graph, i);
+            if (n->op != GGML_OP_CONV_2D) {
+                continue;
+            }
+            auto dump = [](char const* tag, ggml_tensor* t) {
+                printf("    %s ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] %s%s\n", tag,
+                       (long long)t->ne[0], (long long)t->ne[1], (long long)t->ne[2],
+                       (long long)t->ne[3], t->nb[0], t->nb[1], t->nb[2], t->nb[3],
+                       ggml_type_name(t->type), ggml_is_contiguous(t) ? " cont" : " NOTCONT");
+            };
+            printf("  conv[%d]\n", i);
+            dump("w  ", n->src[0]);
+            dump("x  ", n->src[1]);
+            dump("out", n);
+        }
+    }
+    if (b.type() == backend_type::cpu) {
+        compute_graph_allocate(g, b);
+        return sched_run{};
+    }
+    ggml_backend_t b_dev = (ggml_backend_t)b;
+    ggml_backend_t b_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (!b_cpu) {
+        throw except("CPU backend unavailable for fallback");
+    }
+    ggml_backend_t backs[2] = {b_dev, b_cpu};
+    ggml_cgraph* cg = g.graph;
+    sched_run hold(ggml_backend_sched_new(backs, nullptr, 2, ggml_graph_size(cg), false, true),
+                   b_cpu);
+
+    // sched 를 켜면 장치의 MUL 이 브로드캐스트 경로에서 깨진다. SOFT_MAX 와 모양이 다른
+    // MUL/ADD 는 CPU 로 못 박는다. G2C_NPU_NOPIN_BCAST 로 이 핀을 끌 수 있다.
+    bool no_pin_bcast = std::getenv("G2C_NPU_NOPIN_BCAST") != nullptr;
+    char const* pin_ops = std::getenv("G2C_NPU_PIN_OPS");
+    int64_t pin_big = 0;
+    if (char const* s_big = std::getenv("G2C_NPU_PIN_BIG")) {
+        pin_big = std::atoll(s_big);
+    }
+    // 장치에 **남길** op 만 지정한다. G2C_NPU_PIN_OPS 의 반대다.
+    // sched 는 전송을 줄이려고 그래프를 재분할하므로, op 하나를 CPU 로 빼면 이웃이 함께
+    // 따라간다. 그래서 "이것만 장치"를 표현하려면 나머지를 전부 못박아야 한다.
+    char const* only_ops = std::getenv("G2C_NPU_ONLY_OPS");
+    // 같은 op 이 여럿일 때 어느 것이 틀렸는지 이분으로 좁힌다. 노드 번호를 쉼표로 잇는다.
+    // 번호는 G2C_NPU_OP_CENSUS=1 이 찍는 conv[i] 의 i 와 같다.
+    std::vector<int> pin_nodes;
+    if (char const* s = std::getenv("G2C_NPU_PIN_NODES")) {
+        int v = -1;
+        for (char const* p = s;; ++p) {
+            if (*p >= '0' && *p <= '9') {
+                v = (v < 0 ? 0 : v * 10) + (*p - '0');
+            } else {
+                if (v >= 0) {
+                    pin_nodes.push_back(v);
+                }
+                v = -1;
+                if (*p == '\0') {
+                    break;
+                }
+            }
+        }
+    }
+    int pinned = 0;
+    for (int i = 0; i < ggml_graph_n_nodes(cg); ++i) {
+        ggml_tensor* node = ggml_graph_node(cg, i);
+        bool to_cpu = node->op == GGML_OP_SOFT_MAX;
+        if (!to_cpu && std::find(pin_nodes.begin(), pin_nodes.end(), i) != pin_nodes.end()) {
+            to_cpu = true;
+        }
+        // 원소 수가 이 값을 넘는 노드를 CPU 로 뺀다. 장치의 계산이 크기에서 깨지는지
+        // 확인할 때 쓴다 — `gtx_smoke` 는 65536 부터 graph_compute 가 실패한다.
+        if (!to_cpu && pin_big > 0 && ggml_nelements(node) > pin_big) {
+            to_cpu = true;
+        }
+        // 뷰 계열은 계산이 없고 부모의 버퍼를 그대로 쓴다. 여기에 백엔드를 못박으면
+        // sched 가 분할을 못 만들고 죽는다(실측: 코어 덤프). 그대로 둔다.
+        bool is_view = node->op == GGML_OP_RESHAPE || node->op == GGML_OP_VIEW ||
+                       node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE ||
+                       node->op == GGML_OP_NONE;
+        if (!to_cpu && only_ops != nullptr && !is_view) {
+            std::string want = ggml_op_name(node->op);
+            for (auto& c : want) c = (char) std::toupper((unsigned char) c);
+            std::string list = only_ops;
+            for (auto& c : list) c = (char) std::toupper((unsigned char) c);
+            bool keep = false;
+            size_t at = list.find(want);
+            while (at != std::string::npos) {
+                bool lb = at == 0 || list[at - 1] == ',';
+                size_t end = at + want.size();
+                bool rb = end == list.size() || list[end] == ',';
+                if (lb && rb) { keep = true; break; }
+                at = list.find(want, at + 1);
+            }
+            if (!keep) {
+                to_cpu = true;
+            } else {
+                // 남길 op 은 **장치로 명시 배정**한다. 안 하면 이웃이 전부 CPU 일 때
+                // sched 가 지역성을 우선해 이것도 CPU 로 데려간다(실측).
+                ggml_backend_sched_set_tensor_backend(hold.sched, node, b_dev);
+            }
+        }
+        if (!to_cpu && !no_pin_bcast && (node->op == GGML_OP_MUL || node->op == GGML_OP_ADD) &&
+            node->src[0] && node->src[1] && !ggml_are_same_shape(node->src[0], node->src[1])) {
+            to_cpu = true;
+        }
+        // 어느 op 이 장치에서 틀린 값을 내는지 좁힐 때 쓴다. 쉼표로 이은 op 이름을
+        // G2C_NPU_PIN_OPS 에 주면 그 종류를 통째로 CPU 로 뺀다.
+        //     G2C_NPU_PIN_OPS=CONV_2D,MUL_MAT
+        // 이름은 ggml_op_name() 이 내는 것과 같다. 대소문자를 가리지 않는다.
+        if (!to_cpu && pin_ops != nullptr) {
+            std::string want = ggml_op_name(node->op);
+            for (auto& c : want) c = (char) std::toupper((unsigned char) c);
+            std::string list = pin_ops;
+            for (auto& c : list) c = (char) std::toupper((unsigned char) c);
+            size_t at = list.find(want);
+            while (at != std::string::npos) {
+                bool lb = at == 0 || list[at - 1] == ',';
+                size_t end = at + want.size();
+                bool rb = end == list.size() || list[end] == ',';
+                if (lb && rb) { to_cpu = true; break; }
+                at = list.find(want, at + 1);
+            }
+        }
+        if (to_cpu) {
+            ggml_backend_sched_set_tensor_backend(hold.sched, node, b_cpu);
+            ++pinned;
+        }
+    }
+    printf("- CPU-pinned (SOFT_MAX, broadcast MUL/ADD%s): %d nodes\n",
+           pin_ops ? ", G2C_NPU_PIN_OPS" : "", pinned);
+
+    if (!ggml_backend_sched_alloc_graph(hold.sched, cg)) {
+        throw except("ggml_backend_sched_alloc_graph failed");
+    }
+    int n_dev = 0, n_cpu = 0, n_nodes = ggml_graph_n_nodes(cg);
+    std::map<std::string, int> dev_ops;
+    int64_t dev_max_ne = 0;
+    for (int i = 0; i < n_nodes; ++i) {
+        ggml_tensor* nd = ggml_graph_node(cg, i);
+        ggml_backend_t sel = ggml_backend_sched_get_tensor_backend(hold.sched, nd);
+        if (sel == b_dev) {
+            ++n_dev;
+            ++dev_ops[ggml_op_name(nd->op)];
+            dev_max_ne = std::max(dev_max_ne, ggml_nelements(nd));
+        } else if (sel == b_cpu) {
+            ++n_cpu;
+        }
+    }
+    if (std::getenv("G2C_NPU_OP_CENSUS")) {
+        // 장치가 실제로 맡은 op 과 그중 가장 큰 텐서. 값이 맞는 구성과 틀리는 구성이
+        // 무엇으로 갈리는지 보려면 개수가 아니라 **무엇을 맡았는지**를 봐야 한다.
+        printf("- 장치가 맡은 op (최대 원소 %lld):", (long long)dev_max_ne);
+        for (auto const& [name, n] : dev_ops) {
+            printf(" %s=%d", name.c_str(), n);
+        }
+        printf("\n");
+    }
+    printf("- sched routing: %s=%d, CPU=%d / %d nodes\n", ggml_backend_name(b_dev), n_dev, n_cpu,
+           n_nodes);
+
+    for (tensor_data const& buf : g.buffers) {
+        transfer_to_backend(buf);
+    }
+    g.buffers.clear();
+    return hold;
+}
+
+// graph_allocate_split 로 할당한 그래프를 실행한다. 입력 전송은 할당과 실행 사이에 한다.
+void compute_timed_split(compute_graph const& g, backend_device const& b, sched_run const& r) {
+    if (!r.sched) {
+        compute_timed(g, b);
+        return;
+    }
+    timer t;
+    printf("Running inference... ");
+    enum ggml_status st = ggml_backend_sched_graph_compute(r.sched, g.graph);
+    printf("complete (%s)\n", t.elapsed_str());
+    if (st != GGML_STATUS_SUCCESS) {
+        throw except("graph compute failed (status={})", (int)st);
+    }
+}
+
 
 void composite_image_with_mask(image_view image, image_view mask, char const* output_path) {
     if (!output_path) {
@@ -439,11 +720,11 @@ void run_sam(cli_args const& args) {
 
     sam_prediction output = sam_predict_mask(m, image_embed, prompt_embed);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(image_tensor, image_data_);
     transfer_to_backend(point_tensor, span(prompt_data.v, 4));
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     timer t_post;
     printf("Postprocessing output... ");
@@ -469,6 +750,29 @@ void run_sam(cli_args const& args) {
 //
 // g2c 생성 arch (레지스트리 경유). **모델이 늘어도 이 함수는 안 바뀐다.**
 
+// 좌표까지 찍는다. 그리기만 하면 결과를 수치로 확인할 방법이 없어서, 참조 구현과
+// 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
+// `sx`/`sy` 는 모델 입력 좌표 → 원본 좌표 배율이다.
+static void report_and_draw(image_data& image, std::vector<detection> dets,
+                            arch_task const& task, float sx, float sy) {
+    // 비율 유지 입력에서는 박스가 패딩 쪽으로 나갈 수 있다. mmdet 처럼 원본 안으로 자른다.
+    const float W = float(image.extent[0]), H = float(image.extent[1]);
+    for (detection& d : dets) {
+        d.x1 = std::clamp(d.x1 * sx, 0.0f, W) / sx; d.x2 = std::clamp(d.x2 * sx, 0.0f, W) / sx;
+        d.y1 = std::clamp(d.y1 * sy, 0.0f, H) / sy; d.y2 = std::clamp(d.y2 * sy, 0.0f, H) / sy;
+    }
+    printf("  %4s %9s %9s %9s %9s %8s  %s\n", "#", "x1", "y1", "x2", "y2", "score", "class");
+    for (size_t i = 0; i < dets.size(); ++i) {
+        detection const& d = dets[i];
+        char const* name = (d.label >= 0 && size_t(d.label) < task.class_names.size())
+                               ? task.class_names[d.label].c_str()
+                               : "";
+        printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d %s\n", i,
+               d.x1 * sx, d.y1 * sy, d.x2 * sx, d.y2 * sy, d.score, d.label, name);
+    }
+    draw_detections(image_span(image), dets, task.class_names, sx, sy);
+}
+
 void run_generated(cli_args const& args) {
     arch_entry const* e = arch_find(args.arch);
     ASSERT(e != nullptr, "arch not registered");   // 파싱에서 이미 확인했다
@@ -482,31 +786,88 @@ void run_generated(cli_args const& args) {
         throw except("Model arch is '{}' but command is '{}'", file.arch(), e->name);
     }
 
-    require_inputs(args.inputs, 1, "<image>");
-    image_data image = image_load(args.inputs[0]);
+    arch_task task = args.arch == "mmlab" ? runtime_graph_task(file) : e->task;
+    if(args.arch=="mmlab-config") task=mmlab::config_task(file);
+    if (args.input_tensor && args.arch != "mmlab" && args.arch != "mmlab-config") throw except("--input-tensor requires a MMLab runner");
+    image_data image;
+    if (!args.input_tensor) {
+        require_inputs(args.inputs, 1, "<image>");
+        image = image_load(args.inputs[0]);
+    }
+    if (args.raw_outputs) task.kind = arch_kind::raw;
+    // 비정사각 모델은 `input_w`/`input_h` 를 싣는다. 0 이면 정사각(`input_size`).
+    const int IW = task.input_w ? task.input_w : task.input_size;
+    const int IH = task.input_h ? task.input_h : task.input_size;
+    // 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
+    // 단순 리사이즈다 — 종횡비가 바뀌므로 박스를 되돌릴 때 x·y 배율을 따로 쓴다.
+    const int nch = args.input_tensor ? 3 : n_channels(image.format);
+    i64x4 input_shape = args.arch == "mmlab" ? runtime_graph_input_shape(file) : i64x4{3,IW,IH,1};
+    if(args.arch=="mmlab-config") input_shape=mmlab::config_input_shape(file);
+    std::vector<float> input_cwhn;
+    float fit_x = 1.0f, fit_y = 1.0f;   // 원본 → 모델 입력 배율
+    if (args.input_tensor) {
+        size_t count=1;
+        for(int i=0;i<4;++i) count *= size_t(input_shape[i]);
+        auto size=std::filesystem::file_size(args.input_tensor);
+        if(size != count*sizeof(float)) throw except("Input tensor byte size {} != {}",size,count*sizeof(float));
+        input_cwhn.resize(count);
+        FILE* f=fopen(args.input_tensor,"rb");
+        if(!f) throw except("Cannot read {}",args.input_tensor);
+        auto read=fread(input_cwhn.data(),sizeof(float),count,f);
+        fclose(f);
+        if(read!=count) throw except("Short input tensor read");
+    } else {
+        if (input_shape[0]!=3 || input_shape[3]!=1) throw except("This model requires --input-tensor");
+        if (task.keep_ratio) {
+            input_cwhn = preprocess_keep_ratio(image.data.get(), image.extent[1], image.extent[0],
+                                               nch, IW, IH, task.mean.data(), task.stdv.data(),
+                                               task.to_rgb, task.pad_value.data(), &fit_x, &fit_y);
+        } else {
+            input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
+                                    task.mean.data(), task.stdv.data(), task.to_rgb);
+            fit_x = float(IW) / float(image.extent[0]);
+            fit_y = float(IH) / float(image.extent[1]);
+        }
+    }
 
-    arch_task const& task = e->task;
-    const int SZ = task.input_size;
-    // 정사각 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
-    // **letterbox 가 아니라 단순 리사이즈**다 — 종횡비가 바뀌므로 박스를 되돌릴 때
-    // x·y 배율을 따로 쓴다.
-    const int nch = n_channels(image.format);
-    std::vector<float> input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0],
-                                               nch, SZ, task.mean.data(), task.stdv.data(), /*to_rgb=*/false);
+    // mmdet 검출기는 백본 뒤에 C++ 로 조립하는 head 가 붙고, DDQ 는 층 사이에 호스트 NMS 가
+    // 끼어 그래프가 여러 벌로 갈린다. 그 경로 전체를 라이브러리가 맡는다.
+    if (task.kind == arch_kind::detect_mmdet) {
+        std::vector<detection> dets =
+            mmdet_run(backend, weights, file, e->forward, task.mmdet,
+                      std::span<const float>(input_cwhn.data(), input_cwhn.size()), IW, IH);
+        printf("- detections: %zu\n", dets.size());
+        if(args.input_tensor) {
+            std::string output=std::string(args.output)+".detections.json";
+            FILE* f=fopen(output.c_str(),"w");
+            if(!f) throw except("Cannot write {}",output);
+            fprintf(f,"[");
+            for(size_t i=0;i<dets.size();++i) {
+                auto const& d=dets[i];
+                fprintf(f,"%s[%.9g,%.9g,%.9g,%.9g,%.9g,%d]",i?",":"",d.x1,d.y1,d.x2,d.y2,d.score,d.label);
+            }
+            fprintf(f,"]\n");fclose(f);
+            printf("-> %s\n",output.c_str());
+        } else {
+            report_and_draw(image, dets, task, 1.0f / fit_x, 1.0f / fit_y);
+            image_save(image, args.output);
+            printf("-> %s\n", args.output);
+        }
+        return;
+    }
 
     compute_graph graph = compute_graph_init(262144);
     model_ref m(weights, graph);
-    tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, SZ, SZ, 1}, "x");
+    tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape, "x");
     ggml_build_forward_expand(graph, input);
     ggml_build_forward_expand(graph, e->forward(m, input, file));
-    compute_graph_allocate(graph, backend);
+    // run_hold 는 출력을 다 읽을 때까지 살아 있어야 한다(sched 버퍼 수명).
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(input, std::span<const float>(input_cwhn.data(), input_cwhn.size()));
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
-    // 등록된 out_0.. 를 전부 읽는다. **개수를 강제하지 않는다** — 계열마다 분기 수가 다르다
-    // (YOLO26 은 one2many/one2one 두 벌을 낸다).
+    // 등록된 out_0.. 를 전부 읽는다. **개수를 강제하지 않는다** — 계열마다 분기 수가 다르다.
     std::vector<std::vector<float>> outs;
-    std::vector<std::pair<int, int>> hw;
     for (int i = 0;; ++i) {
         tensor o = ggml_graph_get_tensor(graph, ("out_" + std::to_string(i)).c_str());
         if (!o) {
@@ -515,83 +876,18 @@ void run_generated(cli_args const& args) {
         std::vector<float> d((size_t)ggml_nelements(o));
         transfer_from_backend(o, std::span<float>(d.data(), d.size()));
         outs.push_back(std::move(d));
-        hw.push_back({(int)o->ne[2], (int)o->ne[1]});
     }
     printf("- outputs: %zu\n", outs.size());
 
-    if (task.kind != arch_kind::detect_yolo) {
-        for (size_t i = 0; i < outs.size(); ++i) {
-            std::string path = std::string(args.output) + "." + std::to_string(i) + ".bin";
-            if (FILE* f = fopen(path.c_str(), "wb")) {
-                fwrite(outs[i].data(), sizeof(float), outs[i].size(), f);
-                fclose(f);
-            }
-        }
-        printf("-> raw outputs saved to %s.<i>.bin\n", args.output);
-        return;
+    for (size_t i = 0; i < outs.size(); ++i) {
+        std::string path = std::string(args.output) + "." + std::to_string(i) + ".bin";
+        FILE* f = fopen(path.c_str(), "wb");
+        if(!f) throw except("Cannot write output {}",path);
+        auto written=fwrite(outs[i].data(),sizeof(float),outs[i].size(),f);
+        fclose(f);
+        if(written!=outs[i].size()) throw except("Short output write {}",path);
     }
-
-    // 박스/점수 출력 고르기. 지정이 없으면 **뒤에서부터** 찾는다 — YOLO26 은 one2many 가 앞이고
-    // 추론에 쓰는 one2one 이 뒤다. 앞 것을 쓰면 조용히 다른 분기를 재게 된다.
-    int bi = task.box_out, si = task.score_out;
-    if (bi < 0 || si < 0) {
-        for (int i = (int)outs.size() - 1; i >= 0; --i) {
-            if (si < 0 && hw[i].first == task.num_classes) {
-                si = i;
-            } else if (si >= 0 && bi < 0 && hw[i].first == 4) {
-                bi = i;
-            }
-        }
-    }
-    if (bi < 0 || si < 0) {
-        throw except("Could not find box/score outputs (num_classes={})", task.num_classes);
-    }
-    const int n_anchor = hw[si].second;
-    printf("- decode: box=out_%d score=out_%d anchors=%d\n", bi, si, n_anchor);
-
-    // 레벨별 격자는 stride 와 입력 크기로 정해진다. 합이 앵커 수와 안 맞으면 stride 가 틀린 것 —
-    // 그대로 디코드하면 박스가 통째로 엉뚱한 데 찍힌다.
-    std::vector<std::pair<int, int>> feat_hw;
-    int sum = 0;
-    for (float s : task.strides) {
-        const int g = int(float(SZ) / s);
-        feat_hw.push_back({g, g});
-        sum += g * g;
-    }
-    if (sum != n_anchor) {
-        throw except("anchor mismatch: strides give {} but graph has {}", sum, n_anchor);
-    }
-
-    yolo_dense_params dp;
-    dp.strides = task.strides;
-    dp.num_classes = task.num_classes;
-    dp.score_thr = task.score_thr;
-    dp.nms_thr = task.nms_thr;
-    dp.nms_free = task.nms_free;
-    dp.max_det = task.max_det;
-    dp.input_w = SZ;
-    dp.input_h = SZ;
-    std::vector<detection> dets =
-        detect_yolo_dense(outs[bi].data(), outs[si].data(), feat_hw, dp);
-
-    const float sx = float(image.extent[0]) / float(SZ);
-    const float sy = float(image.extent[1]) / float(SZ);
-
-    // 좌표까지 찍는다. 그리기만 하면 결과를 수치로 확인할 방법이 없어서, 참조 구현과
-    // 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
-    printf("  %4s %9s %9s %9s %9s %8s  %s\n", "#", "x1", "y1", "x2", "y2", "score", "class");
-    for (size_t i = 0; i < dets.size(); ++i) {
-        detection const& d = dets[i];
-        char const* name = (d.label >= 0 && size_t(d.label) < task.class_names.size())
-                               ? task.class_names[d.label].c_str()
-                               : "";
-        printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d %s\n", i,
-               d.x1 * sx, d.y1 * sy, d.x2 * sx, d.y2 * sy, d.score, d.label, name);
-    }
-
-    draw_detections(image_span(image), dets, task.class_names, sx, sy);
-    image_save(image, args.output);
-    printf("-> %zu boxes drawn, saved to %s\n", dets.size(), args.output);
+    printf("-> raw outputs saved to %s.<i>.bin\n", args.output);
 }
 
 void run_birefnet(cli_args const& args) {
@@ -617,13 +913,13 @@ void run_birefnet(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
     tensor output = birefnet_predict(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(input, input_data);
     for (tensor_data const& buf : buffers) {
         transfer_to_backend(buf);
     }
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     tensor_data mask_data = transfer_from_backend(output);
     image_view mask_output(extent, mask_data.as_f32());
@@ -659,10 +955,10 @@ void run_depth_anything(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, extent[0], extent[1], 1});
     tensor output = depthany_predict(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(input, input_data);
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     tensor_data output_data = transfer_from_backend(output);
     image_data depth_raw = depthany_process_output(output_data.as_f32(), image.extent, params);
@@ -696,10 +992,10 @@ void run_migan(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
     tensor output = migan_generate(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
     transfer_to_backend(input, input_data);
 
-    compute_timed(graph, backend);
+    compute_timed_split(graph, backend, run_hold);
 
     tensor_data output_data = transfer_from_backend(output);
     image_data output_image = migan_process_output(output_data.as_f32(), image.extent, params);
@@ -738,7 +1034,7 @@ void run_esrgan(cli_args const& args) {
     tensor input = compute_graph_input(m, GGML_TYPE_F32, input_shape);
     tensor output = esrgan_generate(m, input, params);
 
-    compute_graph_allocate(graph, backend);
+    sched_run run_hold = graph_allocate_split(graph, backend);
 
     timer total;
     printf(
@@ -753,7 +1049,14 @@ void run_esrgan(cli_args const& args) {
         image_u8_to_f32(image, input_tile, f32x4(0), f32x4(1), tile_offset);
         transfer_to_backend(input, input_tile);
 
-        compute(graph, backend);
+        if (run_hold.sched) {
+            enum ggml_status st = ggml_backend_sched_graph_compute(run_hold.sched, graph.graph);
+            if (st != GGML_STATUS_SUCCESS) {
+                throw except("graph compute failed (status={})", (int)st);
+            }
+        } else {
+            compute(graph, backend);
+        }
 
         transfer_from_backend(output, output_tile);
         tile_merge(output_tile, output_image, tile_coord, tiles_out);

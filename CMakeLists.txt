@@ -102,6 +102,13 @@ else()
   set(VISP_NO_WARNINGS -w)
 endif()
 
+# 설치본은 자기 위치 기준으로 라이브러리를 찾는다. ggml 을 포함한 모든 공유 라이브러리가
+# 같은 디렉터리에 설치되므로 $ORIGIN 하나면 되고, 이 값이 없으면 <prefix>/lib 가 로더
+# 검색 경로가 아닌 환경에서 실행이 `cannot open shared object file` 로 실패한다.
+if(NOT APPLE AND NOT WIN32)
+  set(CMAKE_INSTALL_RPATH "\$ORIGIN")
+endif()
+
 # Dependencies
 
 add_subdirectory(depend/stb)
@@ -166,6 +173,10 @@ install(TARGETS visioncpp
   RUNTIME DESTINATION ${VISP_BIN_INSTALL_DIR}
   LIBRARY DESTINATION ${VISP_LIB_INSTALL_DIR}
   ARCHIVE DESTINATION ${VISP_LIB_INSTALL_DIR})
+
+# libvisioncpp 는 ggml 라이브러리와 같은 디렉터리에 설치된다. 그 자리를 자기 기준으로 찾게
+# 해야 <prefix>/lib 가 로더 검색 경로에 없는 환경에서도 열린다.
+set_target_properties(visioncpp PROPERTIES INSTALL_RPATH "\$ORIGIN")
 install(DIRECTORY include/ DESTINATION ${VISP_INCLUDE_INSTALL_DIR})
 if(PROJECT_IS_TOP_LEVEL)
   install(FILES README.md LICENSE DESTINATION .)
@@ -176,9 +187,10 @@ endif()
 
 install(TARGETS vision-cli RUNTIME DESTINATION ${VISP_BIN_INSTALL_DIR})
 
-if(VISP_CI OR VISP_DEV)
-  set_target_properties(vision-cli PROPERTIES INSTALL_RPATH "\$ORIGIN/../${VISP_LIB_INSTALL_DIR}")
-endif()
+# 설치본은 자기 위치 기준으로 라이브러리를 찾는다. 이 값이 없으면 CMake 가 RPATH 를 비워
+# 설치하고, <prefix>/lib 가 로더 검색 경로가 아닌 환경에서 실행이
+# `libvisioncpp.so.0: cannot open shared object file` 로 실패한다.
+set_target_properties(vision-cli PROPERTIES INSTALL_RPATH "\$ORIGIN/../${VISP_LIB_INSTALL_DIR}")
 
 install(DIRECTORY bindings/python DESTINATION . PATTERN "__pycache__" EXCLUDE)
 

@@ -4,7 +4,7 @@
 #   ./tools/example_torchvision.sh                # resnet18
 #   ./tools/example_torchvision.sh resnet50
 #
-# yolo 예제와 다른 점: 분류 모델은 박스가 없다. `vision-cli` 대신 생성된 `.py` 로
+# 검출 예제와 다른 점: 분류 모델은 박스가 없다. `vision-cli` 대신 생성된 `.py` 로
 # ggml 커널에서 돌리고 **torch 와 값을 대조**한다 — 그게 이 갈래의 "끝까지" 다.
 #
 # ⚠️ `weights='DEFAULT'` 를 쓴다. 랜덤 초기화로 재지 마라 — 항등 초기값(γ=1·β=0)이
