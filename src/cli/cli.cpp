@@ -752,11 +752,15 @@ void run_sam(cli_args const& args) {
 
 // 좌표까지 찍는다. 그리기만 하면 결과를 수치로 확인할 방법이 없어서, 참조 구현과
 // 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
-// SZ 는 그래프가 구워진 입력 크기 — 원본 이미지 크기로 되돌리는 배율을 여기서 만든다.
-static void report_and_draw(image_data& image, std::vector<detection> const& dets,
-                            arch_task const& task, int SZ) {
-    const float sx = float(image.extent[0]) / float(SZ);
-    const float sy = float(image.extent[1]) / float(SZ);
+// `sx`/`sy` 는 모델 입력 좌표 → 원본 좌표 배율이다.
+static void report_and_draw(image_data& image, std::vector<detection> dets,
+                            arch_task const& task, float sx, float sy) {
+    // 비율 유지 입력에서는 박스가 패딩 쪽으로 나갈 수 있다. mmdet 처럼 원본 안으로 자른다.
+    const float W = float(image.extent[0]), H = float(image.extent[1]);
+    for (detection& d : dets) {
+        d.x1 = std::clamp(d.x1 * sx, 0.0f, W) / sx; d.x2 = std::clamp(d.x2 * sx, 0.0f, W) / sx;
+        d.y1 = std::clamp(d.y1 * sy, 0.0f, H) / sy; d.y2 = std::clamp(d.y2 * sy, 0.0f, H) / sy;
+    }
     printf("  %4s %9s %9s %9s %9s %8s  %s\n", "#", "x1", "y1", "x2", "y2", "score", "class");
     for (size_t i = 0; i < dets.size(); ++i) {
         detection const& d = dets[i];
@@ -794,13 +798,13 @@ void run_generated(cli_args const& args) {
     // 비정사각 모델은 `input_w`/`input_h` 를 싣는다. 0 이면 정사각(`input_size`).
     const int IW = task.input_w ? task.input_w : task.input_size;
     const int IH = task.input_h ? task.input_h : task.input_size;
-    const int SZ = IW;  // 정사각 경로의 옛 이름 — 아래 박스 되돌리기가 쓴다
     // 리사이즈 + **등록된** mean/std. `install_arch.py --mean/--std` 가 박는다.
     // 단순 리사이즈다 — 종횡비가 바뀌므로 박스를 되돌릴 때 x·y 배율을 따로 쓴다.
     const int nch = args.input_tensor ? 3 : n_channels(image.format);
     i64x4 input_shape = args.arch == "mmlab" ? runtime_graph_input_shape(file) : i64x4{3,IW,IH,1};
     if(args.arch=="mmlab-config") input_shape=mmlab::config_input_shape(file);
     std::vector<float> input_cwhn;
+    float fit_x = 1.0f, fit_y = 1.0f;   // 원본 → 모델 입력 배율
     if (args.input_tensor) {
         size_t count=1;
         for(int i=0;i<4;++i) count *= size_t(input_shape[i]);
@@ -814,8 +818,16 @@ void run_generated(cli_args const& args) {
         if(read!=count) throw except("Short input tensor read");
     } else {
         if (input_shape[0]!=3 || input_shape[3]!=1) throw except("This model requires --input-tensor");
-        input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
-                                task.mean.data(), task.stdv.data(), task.to_rgb);
+        if (task.keep_ratio) {
+            input_cwhn = preprocess_keep_ratio(image.data.get(), image.extent[1], image.extent[0],
+                                               nch, IW, IH, task.mean.data(), task.stdv.data(),
+                                               task.to_rgb, task.pad_value.data(), &fit_x, &fit_y);
+        } else {
+            input_cwhn = preprocess(image.data.get(), image.extent[1], image.extent[0], nch, IW, IH,
+                                    task.mean.data(), task.stdv.data(), task.to_rgb);
+            fit_x = float(IW) / float(image.extent[0]);
+            fit_y = float(IH) / float(image.extent[1]);
+        }
     }
 
     // mmdet 검출기는 백본 뒤에 C++ 로 조립하는 head 가 붙고, DDQ 는 층 사이에 호스트 NMS 가
@@ -837,7 +849,7 @@ void run_generated(cli_args const& args) {
             fprintf(f,"]\n");fclose(f);
             printf("-> %s\n",output.c_str());
         } else {
-            report_and_draw(image, dets, task, SZ);
+            report_and_draw(image, dets, task, 1.0f / fit_x, 1.0f / fit_y);
             image_save(image, args.output);
             printf("-> %s\n", args.output);
         }

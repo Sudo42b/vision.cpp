@@ -55,6 +55,11 @@ struct arch_task {
     // 채널 순서를 뒤집는다. mmdet 설정의 `to_rgb` 가 그대로 온다 — 안 뒤집으면 크래시 없이
     // 값만 틀린다.
     bool to_rgb = false;
+    // MMDetection 시험 파이프라인의 `Resize(keep_ratio=True)` + 오른쪽·아래 패딩.
+    // 끄면 가로·세로를 따로 늘린다 — 분할·자세는 그게 맞지만, 검출기에 쓰면 비정사각
+    // 이미지에서 점수가 벌어지고 중복 박스가 나온다(YOLO 실측 2026-09-02, bowl 0.70→0.93).
+    bool keep_ratio = false;
+    std::array<float, 3> pad_value{0.0f, 0.0f, 0.0f};   // 패딩 픽셀 값(0~255, 정규화 전)
     std::vector<std::string> class_names;   // 비면 "class N"
 
     // detect_mmdet 전용. head 조립과 디코드에 필요한 값 전부가 여기 들어간다.

@@ -384,6 +384,16 @@ std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_
                               int dst_w, int dst_h, float const mean[3], float const std[3],
                               bool to_rgb, int* out_w = nullptr, int* out_h = nullptr);
 
+// 비율 유지 전처리 — MMDetection `Resize(keep_ratio=True)` + `Pad`.
+// 배율 f = min(dst_w/img_w, dst_h/img_h) 로 줄인 이미지를 **왼쪽 위**에 두고, 나머지를
+// `pad_value`(정규화 전 픽셀 값)로 채운다. mmdet 은 오른쪽·아래만 채우므로 가운데 정렬
+// letterbox 와 다르다. `scale_x`/`scale_y` 는 (리사이즈 크기 / 원본 크기)이며, 박스를
+// 원본 좌표로 되돌릴 때 이 값으로 나눈다.
+std::vector<float> preprocess_keep_ratio(uint8_t const* img, int img_h, int img_w, int img_c,
+                                         int dst_w, int dst_h, float const mean[3],
+                                         float const std[3], bool to_rgb, float const pad_value[3],
+                                         float* scale_x, float* scale_y);
+
 // 정사각 편의 오버로드 — 기존 호출부 호환.
 inline std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_c,
                                      int out_size, float const mean[3], float const std[3],

@@ -729,6 +729,25 @@ std::vector<float> preprocess(uint8_t const* img, int img_h, int img_w, int img_
     return out;
 }
 
+std::vector<float> preprocess_keep_ratio(uint8_t const* img, int img_h, int img_w, int img_c,
+                                         int dst_w, int dst_h, float const mean[3],
+                                         float const std[3], bool to_rgb, float const pad_value[3],
+                                         float* scale_x, float* scale_y) {
+    // mmcv `rescale_size`: 새 크기는 int(w*f + 0.5).
+    const double f = std::min(double(dst_w) / img_w, double(dst_h) / img_h);
+    const int rw = std::clamp(int(img_w * f + 0.5), 1, dst_w);
+    const int rh = std::clamp(int(img_h * f + 0.5), 1, dst_h);
+    if (scale_x) *scale_x = float(rw) / float(img_w);
+    if (scale_y) *scale_y = float(rh) / float(img_h);
+    std::vector<float> resized = preprocess(img, img_h, img_w, img_c, rw, rh, mean, std, to_rgb);
+    std::vector<float> out((size_t)dst_w * dst_h * 3);
+    for (size_t i = 0; i < (size_t)dst_w * dst_h; ++i)
+        for (int c = 0; c < 3; ++c) out[i * 3 + c] = (pad_value[c] - mean[c]) / std[c];
+    for (int y = 0; y < rh; ++y)
+        std::copy_n(resized.begin() + (size_t)y * rw * 3, (size_t)rw * 3,
+                    out.begin() + (size_t)y * dst_w * 3);
+    return out;
+}
 
 // ── YOLOv3 ───────────────────────────────────────────────────────────────────
 // mmdet `YOLOV3Head.predict_by_feat` + `YOLOBBoxCoder.decode`.

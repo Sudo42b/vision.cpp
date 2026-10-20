@@ -20,8 +20,8 @@ visp::arch_task make_task() {
     t.input_size = 224;
     t.input_w = 224;
     t.input_h = 224;
-    t.mean = {0.0f, 0.0f, 0.0f};
-    t.stdv = {255.0f, 255.0f, 255.0f};
+    t.mean = {123.675f, 116.28f, 103.53f};
+    t.stdv = {58.395f, 57.12f, 57.375f};
     return t;
 }
 

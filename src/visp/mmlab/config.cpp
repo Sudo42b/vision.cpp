@@ -87,6 +87,9 @@ arch_task task_from_metadata(Json const& cfg, i64x4 shape) {
     if(cfg.contains("mean")) task.mean=cfg.at("mean").get<std::array<float,3>>();
     if(cfg.contains("std")) task.stdv=cfg.at("std").get<std::array<float,3>>();
     task.to_rgb=cfg.value("to_rgb",false);
+    // 이 키가 없는 옛 GGUF 는 예전처럼 가로·세로를 따로 늘린다.
+    task.keep_ratio=cfg.value("keep_ratio",false);
+    if(cfg.contains("pad_value")) task.pad_value=cfg.at("pad_value").get<std::array<float,3>>();
     if(cfg.value("ecosystem",std::string{})=="mmdet" && cfg.value("mmdet_head_type",std::string{"raw"})!="raw") {
         auto const& j=cfg.at("mmdet");
         auto& c=task.mmdet;

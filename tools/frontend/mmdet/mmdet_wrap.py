@@ -588,6 +588,9 @@ def postproc_cfg(det):
             img_mean = [float(v) for v in dp.mean.flatten().tolist()]
         if getattr(dp, "std", None) is not None:
             img_std = [float(v) for v in dp.std.flatten().tolist()]
+    # 채널 순서는 정규화 여부와 무관하다. YOLOX 처럼 mean/std 가 없는(정규화를 끈)
+    # 모델도 BGR 을 받으므로, 이 줄이 위 분기 안에 있으면 RGB 를 그대로 먹인다.
+    if dp is not None:
         to_rgb = not bool(getattr(dp, "_channel_conversion", False))
 
     # ── 디코드 임계값: mmdet 의 test_cfg 가 정본이다 ────────────────────────────
