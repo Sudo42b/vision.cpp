@@ -376,7 +376,13 @@ tensor pad_reflect_axis(model_ref m, tensor x, int dim, int lo, int hi) {
     for (int k = 1; k <= hi; ++k) {
         parts.push_back(pad_reflect_slice(m, x, dim, n - 1 - k));
     }
-    return ggml_concat_n(m, parts.data(), (int)parts.size(), dim);
+    // 두 입력 CONCAT 을 차례로 잇는다. GTXPY 의 CONCAT 은 src[0]·src[1] 만 읽어서
+    // `ggml_concat_n`(입력 3개 이상)은 ISS·FPGA 에서 reshape 오류로 실패했다.
+    tensor y = parts[0];
+    for (size_t i = 1; i < parts.size(); ++i) {
+        y = ggml_concat(m, y, parts[i], dim);
+    }
+    return y;
 }
 
 }  // namespace
