@@ -8,6 +8,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef GGML_USE_GTX
+#    include "ggml-gtx.h"
+#endif
+
 namespace visp {
 
 //
@@ -24,6 +28,10 @@ std::string_view to_string(backend_type type) {
 
 bool load_ggml_backends() {
     static const bool loaded = []() {
+#ifdef GGML_USE_GTX
+        // depend/ggml-gtx 는 ggml 밖에서 빌드되므로 ggml 의 정적 등록 목록에 없다.
+        ggml_backend_register(ggml_backend_gtx_reg());
+#endif
         if (ggml_backend_reg_count() > 0) {
             return true; // already loaded
         }

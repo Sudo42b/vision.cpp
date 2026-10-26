@@ -12,6 +12,7 @@ option(VISP_INSTALL_MODELS "Download and install default models" ${VISP_PACKAGE}
 option(VISP_FMT_LIB "Use external fmt library instead of standard C++ <format>" OFF)
 option(VISP_STATIC_GGML "Force static build of ggml" OFF)
 option(VISP_ASAN "Enable AddressSanitizer" OFF)
+option(GGML_GTX "Build the GTX NPU ggml backend (depend/ggml-gtx)" OFF)
 
 include(GNUInstallDirs)
 set(VISP_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header files")
@@ -150,6 +151,11 @@ endif()
 # 갈린다(`char name[GGML_MAX_NAME]` 이 구조체 레이아웃이다).
 
 add_subdirectory(depend/llama/ggml)
+# GTX NPU 백엔드는 depend/llama 밖(depend/ggml-gtx)에 둔다. depend/llama 가 upstream 태그를
+# 그대로 가리켜야 클론한 사람이 서브모듈을 받을 수 있다(g2c DECISIONS.md 「GGML_MAX_NAME」).
+if(GGML_GTX)
+  add_subdirectory(depend/ggml-gtx)
+endif()
 set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
 
 # Vision.cpp libraries and executables

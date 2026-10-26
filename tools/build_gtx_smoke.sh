@@ -5,7 +5,7 @@ set -e
 SELF="$(cd "$(dirname "$0")" && pwd)"; V="$(cd "$SELF/.." && pwd)"
 BUILD="${VISP_BUILD:-$V/build}"; LIB="$BUILD/lib"
 [ -f "$LIB/libggml-gtx.so" ] || { echo "libggml-gtx.so 없음: $LIB (cmake -DGGML_GTX=ON 필요)"; exit 1; }
-g++ -std=c++20 -O2 -I"$V/depend/llama/ggml/include" \
+g++ -std=c++20 -O2 -I"$V/depend/llama/ggml/include" -I"$V/depend/ggml-gtx/include" \
   "$SELF/gtx_smoke.cpp" \
   -L"$LIB" -lggml -lggml-base -lggml-cpu -lggml-gtx -Wl,-rpath,"$LIB" \
   -o "${1:-$BUILD/bin}/gtx_smoke"

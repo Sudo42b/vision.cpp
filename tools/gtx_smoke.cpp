@@ -18,6 +18,7 @@
 #include <ggml.h>
 #include <ggml-alloc.h>
 #include <ggml-backend.h>
+#include <ggml-gtx.h>
 
 #include <cmath>
 #include <cstdio>
@@ -127,6 +128,8 @@ int main(int argc, char** argv) {
     }
 
     // ── L0: 백엔드 init ──────────────────────────────────────────────
+    // GTX 백엔드는 ggml 밖(depend/ggml-gtx)에서 빌드되므로 ggml 등록 목록에 직접 넣는다.
+    ggml_backend_register(ggml_backend_gtx_reg());
     ggml_backend_t gtx = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
     if (!want_limits) {
         step("L0 backend", gtx != nullptr, gtx ? ggml_backend_name(gtx) : "GPU 백엔드 없음");
