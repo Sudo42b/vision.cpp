@@ -2737,14 +2737,9 @@ static uint32_t gtx_normalize_host_op(const ggml_tensor * tensor) {
 
     const char * host_op_name = ggml_op_name((ggml_op) raw_op);
 
-    // Newer llama.cpp ggml inserts GATED_DELTA_NET before UNARY, so raw UNARY/GLU
-    // values arrive shifted by +1 compared to this backend's bundled ggml headers.
-    if (raw_op == (uint32_t) (GGML_OP_UNARY + 1)) {
-        const int32_t unary_op = tensor->op_params[0];
-        if (tensor->src[1] == nullptr && gtx_is_valid_unary_op(unary_op)) {
-            return (uint32_t) GGML_OP_UNARY;
-        }
-    }
+    // 이 백엔드는 vision.cpp 안에서 호스트와 같은 ggml 헤더로 빌드된다. 예전에 있던
+    // 「UNARY+1 이면 UNARY」·「COUNT 이면 GLU」 같은 번호 보정은 지웠다 — 같은 헤더에서는
+    // UNARY+1 이 MAP_CUSTOM1 이라 그 노드를 UNARY 로 잘못 읽을 수 있었다.
 
     // Dynamic backends can be loaded by a newer ggml host whose op enum has
     // drifted from this backend's bundled headers.  Prefer the host's op name
@@ -2754,13 +2749,6 @@ static uint32_t gtx_normalize_host_op(const ggml_tensor * tensor) {
         const int32_t unary_op = tensor->op_params[0];
         if (tensor->src[1] == nullptr && gtx_is_valid_unary_op(unary_op)) {
             return (uint32_t) GGML_OP_UNARY;
-        }
-    }
-
-    if (raw_op == (uint32_t) GGML_OP_COUNT) {
-        const int32_t glu_op = tensor->op_params[0];
-        if (tensor->src[1] != nullptr && gtx_is_valid_glu_op(glu_op)) {
-            return (uint32_t) GGML_OP_GLU;
         }
     }
 
@@ -2899,11 +2887,120 @@ static bool gtx_is_cont_same_shape(const ggml_tensor * tensor) {
     return true;
 }
 
+// ggml 연산 → 장치로 보내는 GTX 연산 번호.
+//
+// 와이어 번호는 ggml enum 에 묶지 않는다. depend/llama 는 upstream 을 따라가고, upstream 은
+// 새 연산을 enum 중간에 끼워 넣는다(vision-20260331 의 CONV_2D_DEFORM 이 그 뒤 39개를 1씩 밀었다).
+// 그래서 번호는 2026-10-26 에 ISS 에서 검증한 판(GGML_OP_COUNT 97)으로 고정했고, 여기서
+// **이름으로** 짝짓는다. upstream 에 새 연산이 생기면 default 로 떨어진다.
+static uint32_t gtx_wire_op_from_ggml_op(uint32_t op) {
+    switch ((ggml_op) op) {
+        case GGML_OP_NONE: return GGML_GTX_OP_NONE;
+        case GGML_OP_DUP: return GGML_GTX_OP_DUP;
+        case GGML_OP_ADD: return GGML_GTX_OP_ADD;
+        case GGML_OP_ADD_ID: return GGML_GTX_OP_ADD_ID;
+        case GGML_OP_ADD1: return GGML_GTX_OP_ADD1;
+        case GGML_OP_ACC: return GGML_GTX_OP_ACC;
+        case GGML_OP_SUB: return GGML_GTX_OP_SUB;
+        case GGML_OP_MUL: return GGML_GTX_OP_MUL;
+        case GGML_OP_DIV: return GGML_GTX_OP_DIV;
+        case GGML_OP_SQR: return GGML_GTX_OP_SQR;
+        case GGML_OP_SQRT: return GGML_GTX_OP_SQRT;
+        case GGML_OP_LOG: return GGML_GTX_OP_LOG;
+        case GGML_OP_SIN: return GGML_GTX_OP_SIN;
+        case GGML_OP_COS: return GGML_GTX_OP_COS;
+        case GGML_OP_SUM: return GGML_GTX_OP_SUM;
+        case GGML_OP_SUM_ROWS: return GGML_GTX_OP_SUM_ROWS;
+        case GGML_OP_CUMSUM: return GGML_GTX_OP_CUMSUM;
+        case GGML_OP_MEAN: return GGML_GTX_OP_MEAN;
+        case GGML_OP_ARGMAX: return 18;
+        case GGML_OP_COUNT_EQUAL: return 19;
+        case GGML_OP_REPEAT: return GGML_GTX_OP_REPEAT;
+        case GGML_OP_REPEAT_BACK: return 21;
+        case GGML_OP_CONCAT: return GGML_GTX_OP_CONCAT;
+        case GGML_OP_SILU_BACK: return 23;
+        case GGML_OP_NORM: return GGML_GTX_OP_NORM;
+        case GGML_OP_RMS_NORM: return GGML_GTX_OP_RMS_NORM;
+        case GGML_OP_RMS_NORM_BACK: return 26;
+        case GGML_OP_GROUP_NORM: return GGML_GTX_OP_GROUP_NORM;
+        case GGML_OP_L2_NORM: return GGML_GTX_OP_L2_NORM;
+        case GGML_OP_MUL_MAT: return GGML_GTX_OP_MUL_MAT;
+        case GGML_OP_MUL_MAT_ID: return GGML_GTX_OP_MUL_MAT_ID;
+        case GGML_OP_OUT_PROD: return GGML_GTX_OP_OUT_PROD;
+        case GGML_OP_SCALE: return GGML_GTX_OP_SCALE;
+        case GGML_OP_SET: return GGML_GTX_OP_SET;
+        case GGML_OP_CPY: return GGML_GTX_OP_CPY;
+        case GGML_OP_CONT: return GGML_GTX_OP_CONT;
+        case GGML_OP_RESHAPE: return GGML_GTX_OP_RESHAPE;
+        case GGML_OP_VIEW: return GGML_GTX_OP_VIEW;
+        case GGML_OP_PERMUTE: return GGML_GTX_OP_PERMUTE;
+        case GGML_OP_TRANSPOSE: return GGML_GTX_OP_TRANSPOSE;
+        case GGML_OP_GET_ROWS: return GGML_GTX_OP_GET_ROWS;
+        case GGML_OP_GET_ROWS_BACK: return 41;
+        case GGML_OP_SET_ROWS: return GGML_GTX_OP_SET_ROWS;
+        case GGML_OP_DIAG: return GGML_GTX_OP_DIAG;
+        case GGML_OP_DIAG_MASK_INF: return GGML_GTX_OP_DIAG_MASK_INF;
+        case GGML_OP_DIAG_MASK_ZERO: return GGML_GTX_OP_DIAG_MASK_ZERO;
+        case GGML_OP_SOFT_MAX: return GGML_GTX_OP_SOFTMAX;
+        case GGML_OP_SOFT_MAX_BACK: return 47;
+        case GGML_OP_ROPE: return GGML_GTX_OP_ROPE;
+        case GGML_OP_ROPE_BACK: return 49;
+        case GGML_OP_CLAMP: return GGML_GTX_OP_CLAMP;
+        case GGML_OP_CONV_TRANSPOSE_1D: return GGML_GTX_OP_CONV_TRANSPOSE_1D;
+        case GGML_OP_IM2COL: return GGML_GTX_OP_IM2COL;
+        case GGML_OP_IM2COL_BACK: return 53;
+        case GGML_OP_IM2COL_3D: return GGML_GTX_OP_IM2COL_3D;
+        case GGML_OP_CONV_2D: return GGML_GTX_OP_CONV_2D;
+        case GGML_OP_CONV_3D: return GGML_GTX_OP_CONV_3D;
+        case GGML_OP_CONV_2D_DW: return GGML_GTX_OP_CONV_2D_DW;
+        case GGML_OP_CONV_TRANSPOSE_2D: return GGML_GTX_OP_CONV_TRANSPOSE_2D;
+        case GGML_OP_POOL_1D: return GGML_GTX_OP_POOL_1D;
+        case GGML_OP_POOL_2D: return GGML_GTX_OP_POOL_2D;
+        case GGML_OP_POOL_2D_BACK: return 61;
+        case GGML_OP_UPSCALE: return GGML_GTX_OP_UPSCALE;
+        case GGML_OP_PAD: return GGML_GTX_OP_PAD;
+        case GGML_OP_PAD_REFLECT_1D: return GGML_GTX_OP_PAD_REFLECT_1D;
+        case GGML_OP_ROLL: return GGML_GTX_OP_ROLL;
+        case GGML_OP_ARANGE: return GGML_GTX_OP_ARANGE;
+        case GGML_OP_TIMESTEP_EMBEDDING: return GGML_GTX_OP_TIMESTEP_EMBEDDING;
+        case GGML_OP_ARGSORT: return GGML_GTX_OP_ARGSORT;
+        case GGML_OP_TOP_K: return GGML_GTX_OP_TOP_K;
+        case GGML_OP_LEAKY_RELU: return GGML_GTX_OP_LEAKY_RELU;
+        case GGML_OP_TRI: return GGML_GTX_OP_TRI;
+        case GGML_OP_FILL: return GGML_GTX_OP_FILL;
+        case GGML_OP_FLASH_ATTN_EXT: return GGML_GTX_OP_FLASH_ATTN_EXT;
+        case GGML_OP_FLASH_ATTN_BACK: return 74;
+        case GGML_OP_SSM_CONV: return GGML_GTX_OP_SSM_CONV;
+        case GGML_OP_SSM_SCAN: return GGML_GTX_OP_SSM_SCAN;
+        case GGML_OP_WIN_PART: return GGML_GTX_OP_WIN_PART;
+        case GGML_OP_WIN_UNPART: return GGML_GTX_OP_WIN_UNPART;
+        case GGML_OP_GET_REL_POS: return GGML_GTX_OP_GET_REL_POS;
+        case GGML_OP_ADD_REL_POS: return GGML_GTX_OP_ADD_REL_POS;
+        case GGML_OP_RWKV_WKV6: return 81;
+        case GGML_OP_GATED_LINEAR_ATTN: return GGML_GTX_OP_GATED_LINEAR_ATTN;
+        case GGML_OP_RWKV_WKV7: return 83;
+        case GGML_OP_SOLVE_TRI: return GGML_GTX_OP_SOLVE_TRI;
+        case GGML_OP_GATED_DELTA_NET: return 85;
+        case GGML_OP_UNARY: return 86;
+        case GGML_OP_MAP_CUSTOM1: return 87;
+        case GGML_OP_MAP_CUSTOM2: return 88;
+        case GGML_OP_MAP_CUSTOM3: return 89;
+        case GGML_OP_CUSTOM: return 90;
+        case GGML_OP_CROSS_ENTROPY_LOSS: return 91;
+        case GGML_OP_CROSS_ENTROPY_LOSS_BACK: return 92;
+        case GGML_OP_OPT_STEP_ADAMW: return 93;
+        case GGML_OP_OPT_STEP_SGD: return 94;
+        case GGML_OP_GLU: return 95;
+        case GGML_OP_CONV_2D_DEFORM: return 96;
+        default: return GGML_GTX_OP_UNSUPPORTED_HOST;
+    }
+}
+
 static uint32_t gtx_wire_op_from_tensor(const ggml_tensor * tensor) {
     const uint32_t op = gtx_normalize_host_op(tensor);
 
     if (tensor == nullptr) {
-        return op;
+        return gtx_wire_op_from_ggml_op(op);
     }
 
     if (op == (uint32_t) GGML_OP_UNARY) {
@@ -2930,7 +3027,7 @@ static uint32_t gtx_wire_op_from_tensor(const ggml_tensor * tensor) {
             case GGML_UNARY_OP_CEIL:         return GGML_GTX_OP_CEIL;
             case GGML_UNARY_OP_ROUND:        return GGML_GTX_OP_ROUND;
             case GGML_UNARY_OP_TRUNC:        return GGML_GTX_OP_TRUNC;
-            default:                         return op;
+            default:                         return gtx_wire_op_from_ggml_op(op);
         }
     }
 
@@ -2938,7 +3035,7 @@ static uint32_t gtx_wire_op_from_tensor(const ggml_tensor * tensor) {
         return GGML_GTX_OP_GLU;
     }
 
-    return op;
+    return gtx_wire_op_from_ggml_op(op);
 }
 
 static gtx_rpc_tensor gtx_serialize_tensor(const ggml_tensor * tensor) {
