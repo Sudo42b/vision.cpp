@@ -700,7 +700,7 @@ void run_sam(cli_args const& args) {
     sam_params params{};
 
     require_inputs(args.inputs, 1, "<image>");
-    image_data image = image_load(args.inputs[0]);
+    image_data image = image_load_color(args.inputs[0]);
     image_data image_data_ = sam_process_input(image, params);
 
     sam_prompt prompt = sam_parse_prompt(args.prompt, image.extent);
@@ -792,7 +792,7 @@ void run_generated(cli_args const& args) {
     image_data image;
     if (!args.input_tensor) {
         require_inputs(args.inputs, 1, "<image>");
-        image = image_load(args.inputs[0]);
+        image = image_load_color(args.inputs[0]);
     }
     if (args.raw_outputs) task.kind = arch_kind::raw;
     // 비정사각 모델은 `input_w`/`input_h` 를 싣는다. 0 이면 정사각(`input_size`).
@@ -896,7 +896,7 @@ void run_birefnet(cli_args const& args) {
         args, backend, "BiRefNet-lite-F16.gguf", 0, backend.preferred_layout());
 
     require_inputs(args.inputs, 1, "<image>");
-    image_data image = image_load(args.inputs[0]);
+    image_data image = image_load_color(args.inputs[0]);
     birefnet_params params = birefnet_detect_params(file, image.extent, backend.max_alloc());
     image_data input_data = birefnet_process_input(image, params);
 
@@ -940,7 +940,7 @@ void run_depth_anything(cli_args const& args) {
         args, backend, "DepthAnythingV2-Small-F32.gguf", 0, backend.preferred_layout());
 
     require_inputs(args.inputs, 1, "<image>");
-    image_data image = image_load(args.inputs[0]);
+    image_data image = image_load_color(args.inputs[0]);
     depthany_params params = depthany_detect_params(file, image.extent);
     image_data input_data = depthany_process_input(image, params);
 
@@ -978,7 +978,7 @@ void run_migan(cli_args const& args) {
     params.invert_mask = true; // -> inpaint opaque areas
 
     require_inputs(args.inputs, 2, "<image> <mask>");
-    image_data image = image_load(args.inputs[0]);
+    image_data image = image_load_color(args.inputs[0]);
     image_data mask = image_load(args.inputs[1]);
     if (mask.format != image_format::alpha_u8) {
         mask = image_to_mask(mask);
@@ -1017,7 +1017,7 @@ void run_esrgan(cli_args const& args) {
     printf("- block count: %d\n", params.n_blocks);
 
     require_inputs(args.inputs, 1, "<image>");
-    image_data image = image_load(args.inputs[0]);
+    image_data image = image_load_color(args.inputs[0]);
     int tile_size = args.tile_size > 0 ? args.tile_size : 224;
 
     tile_layout tiles = tile_layout(image.extent, tile_size, 16);

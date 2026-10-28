@@ -106,6 +106,9 @@ VISP_API void image_clear(image_span const&);
 // Load image from file (PNG, JPEG, etc.)
 VISP_API image_data image_load(char const* filepath);
 
+// Load a color input image: grayscale files are expanded to RGB, others load as stored.
+VISP_API image_data image_load_color(char const* filepath);
+
 // Save image to file (PNG, JPEG, etc.)
 VISP_API void image_save(image_view const& img, char const* filepath);
 

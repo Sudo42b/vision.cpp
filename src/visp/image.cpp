@@ -195,6 +195,21 @@ image_data image_load(char const* filepath) {
     return image_data{extent, format, std::unique_ptr<uint8_t[]>(pixels)};
 }
 
+image_data image_load_color(char const* filepath) {
+    i32x2 extent = {0, 0};
+    int channels = 0;
+    if (!stbi_info(filepath, &extent[0], &extent[1], &channels) || channels >= 3) {
+        return image_load(filepath);
+    }
+    // Grayscale (1) and grayscale+alpha (2) files: let stb expand them to RGB so the
+    // 3-channel preprocessing never reads past a 1- or 2-channel row.
+    uint8_t* pixels = stbi_load(filepath, &extent[0], &extent[1], &channels, 3);
+    if (!pixels) {
+        throw except("Failed to load image {}: {}", filepath, stbi_failure_reason());
+    }
+    return image_data{extent, image_format::rgb_u8, std::unique_ptr<uint8_t[]>(pixels)};
+}
+
 void image_save(image_view const& img, char const* filepath) {
     ASSERT(img.extent[0] > 0 && img.extent[1] > 0);
 
