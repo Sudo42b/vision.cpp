@@ -770,6 +770,10 @@ static void report_and_draw(image_data& image, std::vector<detection> dets,
         printf("  %4zu %9.2f %9.2f %9.2f %9.2f %8.4f  %d %s\n", i,
                d.x1 * sx, d.y1 * sy, d.x2 * sx, d.y2 * sy, d.score, d.label, name);
     }
+    // 표는 전부 찍고, 그림에는 점수 0.3 이상만 그린다. mmdet test_cfg 의 score_thr(YOLOX 0.01)는
+    // mAP 평가용이라 그대로 그리면 낮은 점수 박스가 그림을 덮는다.
+    constexpr float kDrawScoreMin = 0.3f;
+    std::erase_if(dets, [](detection const& d) { return d.score < kDrawScoreMin; });
     draw_detections(image_span(image), dets, task.class_names, sx, sy);
 }
 
