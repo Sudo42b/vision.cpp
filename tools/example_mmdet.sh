@@ -5,7 +5,7 @@
 #   ./tools/example_mmdet.sh fcos             # 다른 계열
 #   MMDET=~/mmbuild/mmdetection ./tools/example_mmdet.sh
 #
-# yolo·torchvision 예제와 갈리는 지점: **mmdet head 는 트레이스를 통과하지 못한다.**
+# torchvision 예제와 갈리는 지점: **mmdet head 는 트레이스를 통과하지 못한다.**
 # 그래서 `.pt` 로 나가는 것은 backbone+neck 뿐이고, head 는 C++ 부품이 조립한다.
 # `bbox_head` 는 속성으로 남아 state_dict(→GGUF)에 실린다 — 연산만 빼고 가중치는 남긴다.
 # 자세한 배경은 `docs/mmdet-detectors.md`.
@@ -20,7 +20,7 @@ SIZE="${SIZE:-512}"
 VCPP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MMDET="${MMDET:-$HOME/mmbuild/mmdetection}"
 WORK="${WORK:-/tmp/visp-example-$FAM}"
-DH="$VCPP/tools/verify/dense_head"
+DH="$VCPP/tools/verify/mmdet/dense_head"
 
 # ⚠️ 이 예제만 **mmdet 이 설치된 인터프리터**가 필요하다. 앞의 세 예제와 갈리는 지점이다 —
 #    거긴 `uv run --project` 로 g2c 환경을 쓰면 됐지만, 여기선 하네스가 mmdet 을 import 한다.

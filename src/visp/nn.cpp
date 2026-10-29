@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <vector>
 #include "nn.h"
 #include "util/string.h"
@@ -85,12 +86,33 @@ tensor add_bias_2d(model_ref m, tensor x) {
     return x;
 }
 
+// PReLU — **채널마다 다른 기울기**를 갖는다(`nn.PReLU(num_parameters=C)`).
+//   y = max(0,x) + w * min(0,x) = relu(x) + w * (x - relu(x))
+// ⚠️ **`leaky_relu(0.25)` 로 근사하지 마라.** 0.25 는 torch 의 **기본 초기값**이라
+//    랜덤 초기화 모델에서는 근사가 정확히 맞아떨어져 **PASS 가 나온다** — 학습된
+//    가중치에서만 틀린다(cgnet 실측: 랜덤 1.91e-04 PASS → 학습 5.09e+00 FAIL).
+//    `num_parameters=1` 이면 w 가 스칼라라 같은 식이 그대로 성립한다.
+tensor prelu(model_ref m, tensor x) {
+    tensor w = m.weights("weight");
+    if (!(m.flags & model_build_flag::cwhn)) {
+        // WHCN 은 채널이 ne[2] 다 — [1,1,C,1] 로 펴야 broadcast 된다(add_bias_2d 와 같은 규칙).
+        w = ggml_reshape_4d(m, w, 1, 1, w->ne[0], 1);
+    }
+    tensor pos = ggml_relu(m, x);
+    tensor neg = ggml_sub(m, x, pos);              // min(x, 0)
+    return ggml_add(m, pos, ggml_mul(m, neg, w));
+}
+
 // conv_2d 의 본체 — weight 를 인자로 받고 bias 는 붙이지 않는다.
 // conv_2d / conv_2d_wt 가 공유한다. dilation 기본값 1 은 기존 동작과 동일하다.
-static tensor conv_2d_impl(model_ref m, tensor x, tensor weight, int stride, int pad,
-                           int dilation) {
+static tensor conv_2d_impl(model_ref m, tensor x, tensor weight, int sw, int sh, int pw,
+                           int ph, int dw, int dh) {
+    // ⚠️ 축별 인자다. ggml 은 원래 축별로 받는데(`s0`=W, `s1`=H) 여기서 하나로 묶어
+    //    넘기고 있었다 — 비대칭 conv(ERFNet 의 3x1/1x3)이 **조용히 대칭으로** 돌았다.
     if (m.flags & model_build_flag::cwhn) {
-        if (weight->ne[1] == 1 && weight->ne[2] == 1 && stride == 1 && dilation == 1) {
+        // 1x1 fast path 는 padding 을 아예 안 태운다 → pad 가 0 일 때만 쓸 수 있다.
+        if (weight->ne[1] == 1 && weight->ne[2] == 1 && sw == 1 && sh == 1 && dw == 1 &&
+            dh == 1 && pw == 0 && ph == 0) {
             auto [c, w, h, b] = nelements(x);
             weight = ggml_reshape_2d(m, weight, weight->ne[0], weight->ne[3]);
             x = ggml_reshape_2d(m, x, x->ne[0], w * h * b);
@@ -100,32 +122,71 @@ static tensor conv_2d_impl(model_ref m, tensor x, tensor weight, int stride, int
         } else if (m.flags & model_build_flag::conv_2d_direct_cwhn) {
             weight = permute_cwhn_to_whcn(m, weight);
             x = permute_cwhn_to_whcn(m, x);
-            x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
+            x = ggml_conv_2d_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
             x = permute_whcn_to_cwhn(m, x);
 
         } else {
             weight = ggml_cont(m, permute_cwhn_to_whcn(m, weight));
             x = ggml_cont(m, permute_cwhn_to_whcn(m, x));
-            x = ggml_conv_2d(m, weight, x, stride, stride, pad, pad, dilation, dilation);
+            x = ggml_conv_2d(m, weight, x, sw, sh, pw, ph, dw, dh);
             x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
         }
     } else { // WHCN layout
-        x = ggml_conv_2d_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
+        // conv 를 하나의 CONV_2D 노드로 낼지, im2col + mul_mat 두 노드로 쪼갤지 고른다.
+        // 둘 다 ggml 의 정식 표현이라 결과는 같아야 한다. 장치의 CONV_2D 커널이 틀린 값을
+        // 낼 때 im2col 조합으로 우회할 수 있고, 반대로 어느 쪽이 계약을 안 지키는지도 가른다.
+        if (std::getenv("VISP_CONV_IM2COL")) {
+            x = ggml_conv_2d(m, weight, x, sw, sh, pw, ph, dw, dh);
+        } else {
+            x = ggml_conv_2d_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
+        }
     }
     return x;
 }
 
 tensor conv_2d(model_ref m, tensor x, int stride, int pad, int dilation) {
-    x = conv_2d_impl(m, x, m.weights("weight"), stride, pad, dilation);
+    x = conv_2d_impl(m, x, m.weights("weight"), stride, stride, pad, pad, dilation, dilation);
+    return add_bias_2d(m, x);
+}
+
+// 축별 conv — 커널·padding·dilation 이 H 와 W 에서 다른 경우(ERFNet 의 3x1/1x3 분리 conv).
+// 인자 순서는 ggml 과 같은 **W 먼저**다(`ggml_conv_2d(s0=W, s1=H, …)`).
+tensor conv_2d_ex(model_ref m, tensor x, int stride_w, int stride_h, int pad_w, int pad_h,
+                  int dilation_w, int dilation_h) {
+    x = conv_2d_impl(m, x, m.weights("weight"), stride_w, stride_h, pad_w, pad_h, dilation_w,
+                     dilation_h);
     return add_bias_2d(m, x);
 }
 
 tensor conv_2d_wt(model_ref m, tensor x, tensor weight, tensor bias, int stride, int pad,
                   int dilation) {
-    x = conv_2d_impl(m, x, weight, stride, pad, dilation);
+    x = conv_2d_impl(m, x, weight, stride, stride, pad, pad, dilation, dilation);
     if (bias) {
         // WHCN 은 채널이 ne[2] 라 broadcast 를 위해 [1,1,C,1] 로 편다 (add_bias_2d 와 같은 규칙).
         if (!(m.flags & model_build_flag::cwhn)) {
+            bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
+        }
+        x = ggml_add_inplace(m, x, bias);
+    }
+    return x;
+}
+
+tensor conv_2d_wt_dw(model_ref m, tensor x, tensor weight, tensor bias, int stride, int pad,
+                     int dilation) {
+    // ⚠️ **입력을 whcn 연속으로 만들어 넘긴다.** `ggml_compute_forward_conv_2d_dw` 는
+    //    src 가 contiguous 면 whcn 커널을, contiguous_channels 면 cwhn 커널을 타는데
+    //    cwhn 쪽은 **kernel 에도** `nb[0] >= nb[2]` 를 요구한다. 동적 커널은 그래프에서
+    //    torch 순서(`[kw,kh,1,C]` 연속)로 오므로 그 단언에 걸린다 — cwhn 모델이어도
+    //    입력을 whcn 으로 돌려 whcn 커널을 타게 하는 편이 레이아웃 가정을 안 만든다.
+    bool cwhn = bool(m.flags & model_build_flag::cwhn);
+    x = cwhn ? ggml_cont(m, permute_cwhn_to_whcn(m, x)) : ggml_cont(m, x);
+    weight = ggml_cont(m, weight);
+    x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, dilation, dilation);
+    if (cwhn) {
+        x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
+    }
+    if (bias) {
+        if (!cwhn) {
             bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
         }
         x = ggml_add_inplace(m, x, bias);
@@ -169,22 +230,32 @@ tensor conv_2d_grouped(model_ref m, tensor x, int stride, int pad, int dilation,
     return add_bias_2d(m, y);
 }
 
-tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad) {
+// `dilation` 은 torch 와 같은 뜻이다. ⚠️ **안 받으면 조용히 커진다** — 호출자가 padding 만
+// 넘기고 dilation 을 못 넘기면 출력이 `in + 2p - (k-1)` 이 되어 입력보다 크게 나오고,
+// 그 크기는 **다음 op(concat)에서** 어긋나 죽는다(mmseg DeepLabV3+ 의 depthwise ASPP:
+// dilation 12/24/36 인데 64x64 가 86/110/134 로 커졌다).
+tensor conv_2d_depthwise_ex(model_ref m, tensor x, int sw, int sh, int pw, int ph, int dw,
+                            int dh) {
     tensor weight = m.weights("weight");
 
     if (m.flags & model_build_flag::cwhn) {
         weight = ggml_permute(m, weight, 3, 2, 0, 1);
         x = permute_cwhn_to_whcn(m, x);
-        x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
+        x = ggml_conv_2d_dw_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
         x = permute_whcn_to_cwhn(m, x);
     } else {
-        x = ggml_conv_2d_dw_direct(m, weight, x, stride, stride, pad, pad, 1, 1);
+        x = ggml_conv_2d_dw_direct(m, weight, x, sw, sh, pw, ph, dw, dh);
     }
     x = add_bias_2d(m, x);
     return x;
 }
 
-tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad, int groups) {
+tensor conv_2d_depthwise(model_ref m, tensor x, int stride, int pad, int dilation) {
+    return conv_2d_depthwise_ex(m, x, stride, stride, pad, pad, dilation, dilation);
+}
+
+tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad, int groups,
+                         int output_padding) {
     tensor weight = m.weights("weight");
     // ⚠️ **커널은 F16 이어야 한다.** `ggml_compute_forward_conv_transpose_2d` 는
     //    `GGML_ASSERT(src0->type == GGML_TYPE_F16)` 로 시작한다(ggml-cpu/ops.cpp).
@@ -227,12 +298,28 @@ tensor conv_transpose_2d(model_ref m, tensor x, int stride, int pad, int groups)
     //    **다음 op 에서** 어긋나 죽는다 — 크래시 지점이 원인 지점이 아니다
     //    (centernet 실측: deconv 가 34x34 를 내고 다음 DCN 의 offset 32 와 안 맞았다).
     //    mmdet 의 deconv 는 전부 대칭 padding 이라 양쪽을 같은 값으로 자르면 된다.
-    if (pad > 0) {
-        const int64_t w = x->ne[0] - 2 * pad, h = x->ne[1] - 2 * pad;
-        GGML_ASSERT(w > 0 && h > 0);
-        x = ggml_cont(m, ggml_view_4d(m, x, w, h, x->ne[2], x->ne[3],
-                                      x->nb[1], x->nb[2], x->nb[3],
-                                      pad * x->nb[0] + pad * x->nb[1]));
+    // ⚠️ **`output_padding` 은 「덜 자른다」로 처리한다.** torch 는 출력 오른쪽·아래를
+    //    그만큼 더 갖는데, p0 버퍼는 자르기 전이라 그 자리를 대개 이미 갖고 있다.
+    //    torch 출력 인덱스 j 는 버퍼 인덱스 j+pad 다. 버퍼가 모자라는 만큼
+    //    (output_padding > pad) 은 실제로 기여가 0 인 자리라 0 으로 채운다.
+    //    안 처리하면 출력이 output_padding 만큼 작고, 뒤의 residual add 가
+    //    `ggml_can_repeat` 로 죽는다 — 크래시 지점이 원인 지점이 아니다
+    //    (erfnet UpsamplerBlock: stride 2 · pad 1 · output_padding 1 → 2n-1 vs 2n).
+    if (pad > 0 || output_padding > 0) {
+        const int64_t bw = x->ne[0], bh = x->ne[1];
+        const int64_t ow = bw - 2 * pad + output_padding;
+        const int64_t oh = bh - 2 * pad + output_padding;
+        GGML_ASSERT(ow > 0 && oh > 0);
+        const int64_t vw = ow < bw - pad ? ow : bw - pad;   // 버퍼에서 꺼낼 수 있는 만큼
+        const int64_t vh = oh < bh - pad ? oh : bh - pad;
+        if (pad > 0 || vw != bw || vh != bh) {
+            x = ggml_cont(m, ggml_view_4d(m, x, vw, vh, x->ne[2], x->ne[3],
+                                          x->nb[1], x->nb[2], x->nb[3],
+                                          pad * x->nb[0] + pad * x->nb[1]));
+        }
+        if (vw < ow || vh < oh) {
+            x = ggml_pad(m, x, (int) (ow - vw), (int) (oh - vh), 0, 0);
+        }
     }
     if (m.flags & model_build_flag::cwhn) {
         x = ggml_cont(m, permute_whcn_to_cwhn(m, x));
@@ -289,7 +376,13 @@ tensor pad_reflect_axis(model_ref m, tensor x, int dim, int lo, int hi) {
     for (int k = 1; k <= hi; ++k) {
         parts.push_back(pad_reflect_slice(m, x, dim, n - 1 - k));
     }
-    return ggml_concat_n(m, parts.data(), (int)parts.size(), dim);
+    // 두 입력 CONCAT 을 차례로 잇는다. GTXPY 의 CONCAT 은 src[0]·src[1] 만 읽어서
+    // `ggml_concat_n`(입력 3개 이상)은 ISS·FPGA 에서 reshape 오류로 실패했다.
+    tensor y = parts[0];
+    for (size_t i = 1; i < parts.size(); ++i) {
+        y = ggml_concat(m, y, parts[i], dim);
+    }
+    return y;
 }
 
 }  // namespace

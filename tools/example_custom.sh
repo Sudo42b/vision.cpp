@@ -3,7 +3,7 @@
 #
 #   ./tools/example_custom.sh
 #
-# 앞의 세 예제는 라이브러리가 모델을 준다(ultralytics·torchvision·mmdet). 이건 아니다 —
+# 앞의 두 예제는 라이브러리가 모델을 준다(torchvision·mmdet). 이건 아니다 —
 # 클래스를 내가 쓰고, `.pt` 로 저장하고, g2c 에 그 `.pt` 를 준다. 다른 부서가 자기 모델을
 # 얹을 때 밟는 경로가 이것이다.
 #
