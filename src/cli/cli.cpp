@@ -754,7 +754,7 @@ void run_sam(cli_args const& args) {
 // 맞춰 보려면 디코더를 밖에서 다시 짜야 했다. 여기 이미 다 있는 값이다.
 // `sx`/`sy` 는 모델 입력 좌표 → 원본 좌표 배율이다.
 static void report_and_draw(image_data& image, std::vector<detection> dets,
-                            arch_task const& task, float sx, float sy) {
+                            arch_task const& task, float sx, float sy, char const* output) {
     // 비율 유지 입력에서는 박스가 패딩 쪽으로 나갈 수 있다. mmdet 처럼 원본 안으로 자른다.
     const float W = float(image.extent[0]), H = float(image.extent[1]);
     for (detection& d : dets) {
@@ -775,6 +775,21 @@ static void report_and_draw(image_data& image, std::vector<detection> dets,
     constexpr float kDrawScoreMin = 0.3f;
     std::erase_if(dets, [](detection const& d) { return d.score < kDrawScoreMin; });
     draw_detections(image_span(image), dets, task.class_names, sx, sy);
+    // 그린 박스를 `<output>.json` 에도 남긴다. SMM Studio 는 이 파일을 읽어 동영상 프레임의
+    // `detections` 를 채운다 — 없으면 null 이 된다. 좌표는 원본 이미지 픽셀이다.
+    std::string json_path = std::string(output) + ".json";
+    FILE* f = fopen(json_path.c_str(), "w");
+    if (!f) throw except("Cannot write {}", json_path);
+    fprintf(f, "[");
+    for (size_t i = 0; i < dets.size(); ++i) {
+        detection const& d = dets[i];
+        std::string name = (d.label >= 0 && size_t(d.label) < task.class_names.size())
+                               ? task.class_names[d.label] : "class " + std::to_string(d.label);
+        fprintf(f, "%s{\"x1\":%.2f,\"y1\":%.2f,\"x2\":%.2f,\"y2\":%.2f,\"score\":%.4f,\"class_id\":%d,\"label\":\"%s\"}",
+                i ? "," : "", d.x1 * sx, d.y1 * sy, d.x2 * sx, d.y2 * sy, d.score, d.label, name.c_str());
+    }
+    fprintf(f, "]\n");
+    fclose(f);
 }
 
 void run_generated(cli_args const& args) {
@@ -853,7 +868,7 @@ void run_generated(cli_args const& args) {
             fprintf(f,"]\n");fclose(f);
             printf("-> %s\n",output.c_str());
         } else {
-            report_and_draw(image, dets, task, 1.0f / fit_x, 1.0f / fit_y);
+            report_and_draw(image, dets, task, 1.0f / fit_x, 1.0f / fit_y, args.output);
             image_save(image, args.output);
             printf("-> %s\n", args.output);
         }
